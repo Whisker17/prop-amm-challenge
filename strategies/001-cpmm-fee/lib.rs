@@ -7,7 +7,7 @@ const NAME: &str = "001 CPMM Fee";
 // field describing which model produced that mechanism hasn't changed either.
 const MODEL_USED: &str = "GPT-5.3-Codex";
 // === PARAMS BEGIN ===
-const FEE_BPS: u128 = 500; // range: 1..=500
+const FEE_BPS: u128 = 66; // range: 1..=500
 // === PARAMS END ===
 const STORAGE_SIZE: usize = 1024;
 
@@ -56,11 +56,13 @@ pub fn get_model_used() -> &'static str {
 
 /// Constant-product AMM with a single free parameter: the fee, in basis points out of
 /// 10,000 (the same convention `crates/shared/src/normalizer.rs` uses). This is the 0-line
-/// (docs/DESIGN.md §2.8) — `FEE_BPS = 500` is exactly the starter's own 950/1000 fee ratio
-/// (`(10_000 - 500) / 10_000 = 950 / 1000`, and scaling a truncating integer division's
-/// numerator and denominator by the same factor never changes its floor, so this rewrite is
-/// bit-for-bit equivalent to the pre-WHI-1194 arithmetic for every input) — fitted by
-/// `bench fit --strategy strategies/001-cpmm-fee` per `NOTES.md` § Fitted point.
+/// (docs/DESIGN.md §2.8). The `FEE_BPS = 500` this replaced was exactly the starter's own
+/// 950/1000 fee ratio (`(10_000 - 500) / 10_000 = 950 / 1000`, and scaling a truncating
+/// integer division's numerator and denominator by the same factor never changes its floor,
+/// so the bps rewrite was bit-for-bit equivalent to the starter's own arithmetic for every
+/// input — verified via `bench anchor` before any search ran). The committed value below is
+/// `bench fit --strategy strategies/001-cpmm-fee`'s winning point; see `NOTES.md` § Fitted
+/// point for the full curve and train/validation numbers.
 pub fn compute_swap(data: &[u8]) -> u64 {
     let decoded: ComputeSwapInstruction = match wincode::deserialize(data) {
         Ok(decoded) => decoded,
