@@ -112,17 +112,29 @@ undetected for days — `mantle-stocks-arbitrage-bots`, WHI-1097). Tracker
 reachability is a fallback ladder — do not hard-bind a git operation to MCP.
 
 1. **Primary: the issue-title prefix `[X.Y.Z]`** (e.g. `[0.2.0] [Scheduler] …`).
-   Tracker-independent, always visible, no API call.
-2. **Cross-check: the tracker's release/version binding**, as defined in
-   `docs/agents/issue-tracker.md` § Release ↔ version binding. If the active
-   tracker binding defines no release entity, the cross-check is vacuous and the
-   title prefix stands alone — a missing or ambiguous prefix still refuses.
+   Doesn't depend on any release entity being linked, and is usually already in hand —
+   from the ticket text whoever handed you the issue pasted, or the branch/PR name — so it
+   rarely needs its own `get_issue` call even though the title itself lives in Linear now.
+2. **Cross-check: Linear's linked release entity** (`releases[].version` on the issue,
+   fetched via `get_issue({includeReleases: true})`), as defined in
+   `docs/agents/issue-tracker.md` § Release ↔ version binding. This is a genuinely
+   separate field from the title text — verified non-vacuous, not assumed
+   (`docs/agents/issue-tracker.md` § Decisions, #3). Governance and `upstream-sync`
+   issues carry no version prefix and no linked release — for them this row does not
+   apply and the cross-check is skipped entirely, not silently satisfied.
 
 If the two signals disagree, or the cross-check exists and either signal is
 missing, **refuse to start and surface it. Never default to `dev`.** A silent
 fallback recreates the trunk pollution this rule exists to prevent, and does it
 invisibly. If `origin/release/v{version}` does not exist, refuse and ask — do
 not create it as a side effect of picking up a ticket.
+
+**Tracker unreachable is a different failure than tracker disagrees.** If Linear
+itself can't be reached (MCP/network failure) — the fallback-ladder case this
+section opens with — proceed on the title prefix alone and say in the PR body
+that the cross-check couldn't run, rather than refusing outright: an outage is
+not evidence the prefix is wrong. Refuse only when a signal that *was*
+successfully read is missing, ambiguous, or disagrees with the other.
 
 The issue template asks for the release field; that is a prompt, not a gate —
 trackers generally do not enforce non-empty fields. Enforcement is this refusal.
@@ -178,8 +190,8 @@ The example below uses `origin/dev` (the governance row); substitute
 ```bash
 git fetch origin
 
-# Branch name: type/pamm-<id>-short-topic (all lowercase, dash-separated)
-ISSUE=pamm-123
+# Branch name: prefer Linear's gitBranchName, or type/whi-<id>-short-topic by hand
+ISSUE=whi-1234
 BRANCH=feat/${ISSUE}-short-topic
 WT="../prop-amm-challenge-wt/${ISSUE}"
 BASE=origin/dev   # or origin/release/vX.Y.Z / origin/main — from the table
@@ -196,8 +208,8 @@ git rev-parse "$BASE"
 Tracker: set the issue to **`In Progress`**. Optionally note the worktree path,
 branch name, and **resolved base** on the issue.
 
-The issue file's `Branch:` line records the branch name once you pick it
-(`docs/agents/issue-tracker.md`) — but the base **must** be the latest
+Linear's `gitBranchName` on the issue already suggests a branch name
+(`docs/agents/issue-tracker.md` § Field mapping) — but the base **must** be the latest
 `origin/<resolved-base>`, never a stale tip and never a guessed `dev`.
 
 > ⚠️ **Base trap.** Never assume your tooling's default base. Run the `merge-base` /
@@ -222,13 +234,13 @@ The issue file's `Branch:` line records the branch name once you pick it
 ```bash
 git push -u origin HEAD
 gh pr create --base "$PR_BASE" \
-  --title "feat(PAMM-123): short description" \
+  --title "feat(WHI-1234): short description" \
   --body "$(cat <<'EOF'
 ## Summary
 - ...
 
 ## Tracker
-Closes PAMM-123
+Closes WHI-1234
 
 ## Base resolution
 - Category: version-scoped | governance | hotfix
@@ -255,7 +267,7 @@ PR conventions:
 - **base is the resolved base** (version-scoped work never targets `dev`;
   features/fixes never target `main` except an issue labelled `hotfix`, see
   [§ Hotfix](#hotfix))
-- Title carries `PAMM-NNN`
+- Title carries `WHI-NNNN`
 - Body links the tracker issue **and states the resolved base plus the
   signals it was derived from**
 - Merge strategy: **squash and merge** into `dev` or a long-lived
@@ -329,7 +341,7 @@ documented exceptions — they are not PR-gated and they push with
 1. **Squash-merge + drop the remote branch:** `gh pr merge <N> --squash --delete-branch`
 2. **Remove the worktree:** `git worktree remove <worktree-path>` then
    `git worktree prune`
-3. **Delete the local branch:** `git branch -D feat/pamm-123-topic`
+3. **Delete the local branch:** `git branch -D feat/whi-1234-topic`
    (fails while the worktree still holds the branch — do step 2 first)
 4. **Fast-forward the resolved base:** `git fetch origin --prune` then
    `git merge --ff-only origin/<resolved-base>` (must fast-forward — if it
@@ -516,11 +528,11 @@ base.
 
 ```bash
 git fetch origin
-git worktree add -b hotfix/pamm-123-short-topic \
-    ../prop-amm-challenge-wt/hotfix-pamm-123 origin/main
+git worktree add -b hotfix/whi-1234-short-topic \
+    ../prop-amm-challenge-wt/hotfix-whi-1234 origin/main
 
 # Verify the base immediately — these two values must be equal
-git -C ../prop-amm-challenge-wt/hotfix-pamm-123 merge-base HEAD origin/main
+git -C ../prop-amm-challenge-wt/hotfix-whi-1234 merge-base HEAD origin/main
 git rev-parse origin/main
 ```
 
@@ -529,7 +541,7 @@ Then:
 1. Fix **only** this one issue
 2. **Bump the project version to a patch release** (`0.1.5` → `0.1.5.1`) — otherwise tag
    `v0.1.5.1` points at a tree that calls itself `0.1.5`
-3. `gh pr create --base main`, title/body carry `PAMM-NNN`; tracker →
+3. `gh pr create --base main`, title/body carry `WHI-NNNN`; tracker →
    `In Review`
 4. **Merge with a merge commit, not squash** (see
    [§ Merge strategy](#merge-strategy-per-lane))
@@ -563,7 +575,7 @@ If any one of them disagrees, a step was skipped:
 
 | Place | Artifact | Question it answers |
 |-------|----------|---------------------|
-| Tracker | `.scratch/releases/0.1.5.md` — the release record (see `docs/agents/issue-tracker.md` § Release records) | **Plan**: which issues are in this version |
+| Tracker | the Linear **release entity** on the "Prop-AMM-Challenge" pipeline (see `docs/agents/issue-tracker.md` § Release records) | **Plan**: which issues are in this version |
 | Git | annotated tag `v0.1.5` | **Fact**: which tree this version is |
 | GitHub | the GitHub Release on that tag | **Ship**: public changelog and artifacts |
 
@@ -573,13 +585,15 @@ If any one of them disagrees, a step was skipped:
 tied back to a tree, and the next local measurement is not comparable to the one that
 scored. Record the score on the release record when it comes back.
 
-- Every version-scoped issue belongs to exactly one release record, and its `Release:`
-  line **must match** the `[X.Y.Z]` title prefix. A missing or disagreeing `Release:` is an
-  implementation refuse, not a default-to-`dev`. Governance and `upstream-sync` issues have
-  no release. Once a release record lists issues, those issues leave `Backlog` for `Todo`.
-- After shipping, backfill the release record's **`CommitSha:`** (the commit the tag points
-  at, *not* the tag object — see the footgun below). This is the only authoritative binding
-  between "a version" and "some code".
+- Every version-scoped issue is linked to exactly one Linear release entity
+  (`save_issue({addReleases: [...]})`), and that link **must match** the `[X.Y.Z]` title
+  prefix. A missing or disagreeing link is an implementation refuse, not a default-to-`dev`.
+  Governance and `upstream-sync` issues have no linked release. Once issues are linked to a
+  release, they leave `Backlog` for `Todo`.
+- After shipping, backfill the release entity's **`commitSha`**
+  (`linear.save_release({id, commitSha})`) — the commit the tag points at, *not* the tag
+  object — see the footgun below. This is the only authoritative binding between "a
+  version" and "some code".
 - Milestones and Releases are **orthogonal axes**: a milestone is *which capability stage*,
   a Release is *when it ships* (and how git routes). Don't use milestones to
   express release batches, and don't put the milestone in the title.
@@ -615,16 +629,21 @@ This means the GitHub repo must have **both** `Allow squash merge` and
 
 ## Branch naming
 
+**Prefer Linear's own `gitBranchName`** for the issue (`get_issue(...).gitBranchName`,
+e.g. `demiwhisker/whi-1196-governance-rebind-...`) over hand-rolling one — it already
+embeds the id and needs no further convention. When authoring a branch name by hand
+(Linear unavailable, or a `type/` prefix is wanted for clarity):
+
 | Type | Format | Example |
 |------|--------|---------|
-| Feature | `feat/pamm-<id>-<topic>` | `feat/pamm-101-user-auth` |
-| Fix | `fix/pamm-<id>-<topic>` | `fix/pamm-112-race-condition` |
-| Chore | `chore/pamm-<id>-<topic>` | `chore/pamm-108-lint-config` |
-| Hotfix | `hotfix/pamm-<id>-<topic>` | `hotfix/pamm-140-login-loop` |
+| Feature | `feat/whi-<id>-<topic>` | `feat/whi-1201-user-auth` |
+| Fix | `fix/whi-<id>-<topic>` | `fix/whi-1212-race-condition` |
+| Chore | `chore/whi-<id>-<topic>` | `chore/whi-1208-lint-config` |
+| Hotfix | `hotfix/whi-<id>-<topic>` | `hotfix/whi-1240-login-loop` |
 | Release | `release/v<version>` | `release/v0.1.0`, `release/v0.1.5.1` |
 
 - All lowercase, words joined with `-`
-- **Must include the tracker id** (`pamm-NNN`) for PR ↔ issue tracing —
+- **Must include the tracker id** (`whi-NNNN`) for PR ↔ issue tracing —
   hotfixes included, they are tracked issues too
 - One PR does one thing
 
@@ -634,8 +653,8 @@ This means the GitHub repo must have **both** `Allow squash merge` and
 ~/Work/src/.../
   prop-amm-challenge/              # primary clone (stays on dev)
   prop-amm-challenge-wt/
-    pamm-101/  # worktree
-    pamm-105/
+    whi-1201/  # worktree
+    whi-1205/
     hotfix-…/
 ```
 

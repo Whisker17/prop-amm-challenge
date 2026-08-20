@@ -2,27 +2,36 @@
 
 The skills speak in terms of five canonical triage roles. This file maps those roles to the
 actual strings used in this repo's issue tracker — which is
-[local markdown](./issue-tracker.md), so a "label" is a value on the `Status:` line of an
-issue file, not a tracker object.
+[Linear](./issue-tracker.md) (team `Whisker-Personal`), so a "label" is a real Linear
+label object attached to the issue, not a value on a text line.
 
-| Label in mattpocock/skills | Value on `Status:` | Meaning                                  |
-| -------------------------- | ------------------ | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`     | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`       | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`  | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`  | Requires human implementation            |
-| `wontfix`                  | `wontfix`          | Will not be actioned                     |
+| Label in mattpocock/skills | Linear label        | Meaning                                  |
+| -------------------------- | ------------------- | ---------------------------------------- |
+| `needs-triage`             | `needs-triage`      | Maintainer needs to evaluate this issue  |
+| `needs-info`                | `needs-info`        | Waiting on reporter for more information |
+| `ready-for-agent`          | `ready-for-agent`   | Fully specified, ready for an AFK agent  |
+| `ready-for-human`          | `ready-for-human`   | Requires human implementation            |
+| `wontfix`                   | `wontfix`           | Will not be actioned                     |
 
-When a skill mentions a role ("apply the AFK-ready triage label"), write the corresponding
-string to `Status:`. One value at a time — it is a role, not a set.
+All five already exist as labels on the `Whisker-Personal` team. When a skill mentions a
+role ("apply the AFK-ready triage label"), attach the corresponding label via
+`linear.save_issue({ id, labels: [...] })` — the triage role is one value in that array,
+not the whole set; keep any type label (below) alongside it, since `labels` replaces the
+full set on every call.
 
-Lifecycle is tracked **separately** on the `State:` line (`Todo` → `In Progress` →
-`In Review` → `Done`). `Status:` says *who* should do the work; `State:` says *how far
-along* it is. Neither implies the other: a `ready-for-human` issue can sit in
+Lifecycle is tracked **separately** on the issue's `state` field (`Todo` → `In Progress` →
+`In Review` → `Done`). The triage label says *who* should do the work; `state` says *how
+far along* it is. Neither implies the other: a `ready-for-human` issue can sit in
 `In Progress`, and a `ready-for-agent` issue can sit in `Todo` for weeks.
 
-Type labels are a third, orthogonal axis, on the `Labels:` line: `bug`, `feature`,
-`research`, `chore`, `hotfix`, `upstream-sync`.
+Type labels are a third, orthogonal axis, also Linear labels: `bug`, `feature`,
+`research`, `chore`, `hotfix`, `upstream-sync`. `research`, `chore`, and `hotfix` already
+exist lowercase on this team, matching this convention exactly. `Bug` and `Feature` also
+exist, but **capitalized** — generic workspace defaults, not created for this lowercase
+convention — so don't reuse them; create lowercase `bug` and `feature` (and
+`upstream-sync`, which doesn't exist in any casing yet) with
+`linear.create_issue_label({ name, team: "Whisker-Personal" })` the first time one is
+needed.
 
 ## The two type labels that change git behaviour
 

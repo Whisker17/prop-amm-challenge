@@ -30,7 +30,7 @@ Commit your work to the current branch.
 A completed review loop means the work is ready to merge — take the PR all the way, unless the change is **gated** (below):
 
 1. Push and open the PR: `git push -u origin HEAD`, then
-   `gh pr create --base <resolved-base>` (title/body include `PAMM-NNN`
+   `gh pr create --base <resolved-base>` (title/body include `WHI-NNNN`
    **and the resolved base plus the signals it was derived from** — see
    `docs/GIT_WORKFLOW.md` § Resolving the base branch). Tracker → `In Review`.
    Version-scoped work targets `release/v{version}`; repo-wide governance

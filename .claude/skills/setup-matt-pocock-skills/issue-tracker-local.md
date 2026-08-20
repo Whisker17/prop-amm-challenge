@@ -1,5 +1,10 @@
 # Issue tracker: Local Markdown
 
+> This is an **option template** `/setup-matt-pocock-skills` copies into
+> `docs/agents/issue-tracker.md` when "Local markdown" is picked — it is not necessarily
+> this repo's current tracker. Check `docs/agents/issue-tracker.md` for the live binding
+> (as of 2026-08-20, this repo uses Linear, not this option).
+
 Issues and specs (you may know a spec as a PRD) for this repo live as markdown files in `.scratch/`.
 
 ## Conventions

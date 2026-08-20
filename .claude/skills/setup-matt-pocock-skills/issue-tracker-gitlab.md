@@ -1,5 +1,10 @@
 # Issue tracker: GitLab
 
+> This is an **option template** `/setup-matt-pocock-skills` copies into
+> `docs/agents/issue-tracker.md` when "GitLab issues" is picked — it is not necessarily
+> this repo's current tracker. Check `docs/agents/issue-tracker.md` for the live binding
+> (as of 2026-08-20, this repo uses Linear, not this option).
+
 Issues and PRDs for this repo live as GitLab issues. Use the [`glab`](https://gitlab.com/gitlab-org/cli) CLI for all operations.
 
 ## Conventions

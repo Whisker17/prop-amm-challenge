@@ -6,8 +6,8 @@ guidance (the `> _italic_` hints). **All issue content is written in English.**
 
 It pairs with:
 
-- `docs/agents/issue-tracker.md` — where issue files live, how they are named, and the
-  metadata block that precedes the body below.
+- `docs/agents/issue-tracker.md` — where issues live (Linear), how ids are assigned, and
+  the field mapping for everything that precedes the body below.
 - `docs/agents/triage-labels.md` — the five canonical triage labels.
 - `docs/DESIGN.md` — the PRD these issues implement; every issue should trace back to a
   section there.
@@ -44,7 +44,7 @@ can open it cold and know *what* to build, *why*, *where* in the codebase, what 
 - **`[X.Y.Z]`** — the **version / Release** this issue ships in (e.g. `[0.2.0]`).
   This is the **primary git-routing signal** (`docs/GIT_WORKFLOW.md` § Resolving
   the base branch). An implementing agent that cannot read a version prefix, or
-  whose prefix disagrees with the tracker's release field, **refuses to start**.
+  whose prefix disagrees with Linear's linked release entity, **refuses to start**.
   Omit the prefix only for repo-wide governance (the carve-out file list in
   that section) — those issues target `dev` and have no version. A `hotfix`-labelled
   issue keeps a prefix too, using the four-segment hotfix version (`[0.1.5.1]`, per
@@ -57,27 +57,30 @@ can open it cold and know *what* to build, *why*, *where* in the codebase, what 
 
 Do **not** put the milestone in the title. Milestone and Release can both render
 as `0.2.0` and have already disagreed in practice (title `[0.2.0]`, milestone
-`0.3.0`). Milestone is a tracker field; the title prefix is the version.
+`0.3.0`). Milestone is a `docs/DESIGN.md` §6 concept, referenced in `## Context`; the
+title prefix is the version.
 
 ---
 
-## Metadata (the block above the body, not inside it)
+## Fields (Linear issue fields, not a markdown block)
 
-The tracker is markdown files, so metadata is a block of `Key: value` lines between the
-title heading and the first `##` section — `docs/agents/issue-tracker.md` § Issue file
-format holds the canonical block.
+The tracker is Linear (`docs/agents/issue-tracker.md`), so what used to be a block of
+`Key: value` lines is now a set of real fields on the issue object, set via
+`linear.save_issue({...})`. The table below is the same mapping as
+`docs/agents/issue-tracker.md` § Field mapping, kept here for how to *set* each one when
+authoring a new issue:
 
-| Line          | How to set it                                                            |
+| Field             | How to set it                                                            |
 | ------------- | ------------------------------------------------------------------------ |
-| `Id:`         | `PAMM-NNN`, allocated from `.scratch/NEXT_ID`. Must match the filename.   |
-| `Release:`    | Required-by-convention for every version-scoped issue. Must match the `[X.Y.Z]` title prefix. **A missing Release blocks implementation** — the agent refuses rather than guessing `dev`. This table is a prompt, not a gate: a markdown file validates nothing; enforcement is the refusal in `docs/GIT_WORKFLOW.md`. Empty for repo-wide governance and `upstream-sync` (no version prefix). |
-| `Milestone:`  | Capability stage (`docs/DESIGN.md` §6). Orthogonal to Release. Do not use it to express the version or to route git. |
-| `Priority:`   | `Urgent` / `High` / `Medium` / `Low` — see the table below.               |
-| `Status:`     | Triage role from `triage-labels.md`. Exactly one value.                   |
-| `Labels:`     | Type labels (`bug`, `feature`, `research`, `chore`, `hotfix`, `upstream-sync`). `hotfix` and `upstream-sync` change the git base branch — see `triage-labels.md`. |
-| `State:`      | Lifecycle: `Todo` / `In Progress` / `In Review` / `Done` / `Canceled`.    |
-| `Assignee:`   | Set when claimed; `—` in the backlog.                                    |
-| `Blocked by:` / `Blocks:` | Both directions must be written — nothing derives the reverse edge for you. |
+| Identifier (`WHI-NNNN`) | Assigned by Linear on create. Never hand-allocated.                |
+| Linked release | `save_issue({ addReleases: ["<release>"] })`. Required-by-convention for every version-scoped issue; must match the `[X.Y.Z]` title prefix. **A missing linked release blocks implementation** — the agent refuses rather than guessing `dev`. Linear validates nothing here; enforcement is the refusal in `docs/GIT_WORKFLOW.md`. Empty for repo-wide governance and `upstream-sync` (no version prefix). |
+| Milestone (doc-only) | Capability stage (`docs/DESIGN.md` §6), referenced in `## Context`, not a Linear field. Orthogonal to the linked release. Do not use it to express the version or to route git. |
+| `priority`   | `Urgent` / `High` / `Medium` / `Low` — see the table below.               |
+| Triage `label` | One of the five roles in `triage-labels.md`, set as a Linear label.     |
+| Type `label`s | `bug`, `feature`, `research`, `chore`, `hotfix`, `upstream-sync`. `hotfix` and `upstream-sync` change the git base branch — see `triage-labels.md`. |
+| `state`      | Lifecycle: `Todo` / `In Progress` / `In Review` / `Done` / `Canceled`.    |
+| `assignee`   | Set when claimed; unset in the backlog.                                  |
+| `blockedBy` / `blocks` | Native relations. Both directions must be set — nothing derives the reverse edge for you. |
 
 ### Priority guide
 
@@ -103,10 +106,10 @@ Background a newcomer needs: the relevant `docs/DESIGN.md` section, prior resear
 or an external platform fact. Skip if the Objective is fully self-explanatory.
 
 ### `## Blocked By` / `## Blocks`
-Dependency graph. List issue identifiers (e.g. `PAMM-042`) and a short reason. These
-sections are the human-readable prose; the machine-readable edges are the `Blocked by:` /
-`Blocks:` metadata lines, and the two must agree. Use `None (entry point)` when there are
-no blockers.
+Dependency graph. List issue identifiers (e.g. `WHI-1042`) and a short reason. These
+sections are the human-readable prose; the machine-readable edges are the native
+`blockedBy` / `blocks` relations set via `save_issue`, and the two must agree. Use
+`None (entry point)` when there are no blockers.
 
 ### `## Implementation`
 The plan of record. Numbered steps, each anchored to a concrete file/module. Include:
@@ -137,21 +140,21 @@ Bare URLs are fine.
 
 ## Copy-paste skeleton
 
-```markdown
-# [X.Y.Z] [Component] <imperative, specific description>
+Create with `linear.save_issue`, title and fields as shown, `description` holding the
+body sections below (the `Id:`/`State:`/… lines are gone — those are now the call's
+fields, not text in the body):
 
-Id: PAMM-NNN
-State: Todo
-Status: ready-for-agent
-Release: X.Y.Z
-Labels: feature
-Milestone: Mn
-Priority: Medium
-Blocked by: None (entry point)
-Blocks: None
-Assignee: —
-Branch: —
-
+```
+linear.save_issue({
+  title: "[X.Y.Z] [Component] <imperative, specific description>",
+  team: "Whisker-Personal",
+  project: "Prop AMM Challenge — strategy layer",
+  state: "Todo",
+  labels: ["ready-for-agent", "feature"],
+  priority: 3,          // Medium
+  addReleases: ["<release id or slug for X.Y.Z>"],
+  blockedBy: [],        // or the blocking issue ids
+  description: `
 ## Objective
 > _One or two sentences: what this delivers and why. State the success outcome._
 
@@ -159,10 +162,10 @@ Branch: —
 > _(optional) Background, docs/DESIGN.md section, platform facts._
 
 ## Blocked By
-> _Issue ids + one-line reason, or `None (entry point)`._
+> _Issue ids + one-line reason, or `None (entry point)`. Prose mirror of the `blockedBy` field set on the call above — keep them in agreement._
 
 ## Blocks
-> _Issue ids this unblocks, or `None`._
+> _Issue ids this unblocks, or `None`. Prose mirror of the `blocks` field._
 
 ## Implementation
 > _Numbered, file-anchored plan. Signatures, config keys, schema, code blocks._
@@ -183,6 +186,8 @@ Branch: —
 
 ## References
 > _(optional) Links to docs/DESIGN.md sections, references/, prior issues._
+`,
+})
 ```
 
 ---
@@ -190,6 +195,8 @@ Branch: —
 ## Appendix: Milestones
 
 Issues carry an `[X.Y.Z]` title prefix because they belong to a **Release** (the
-git-routing signal). They may also sit under a **milestone** (capability stage), per
-`docs/DESIGN.md` §6 — that is the `Milestone:` line, not the title tag. Keep the milestone
-list in §6; if the version set changes, that is the `Release:` line, not this file.
+git-routing signal, a linked Linear release entity — `docs/agents/issue-tracker.md` §
+Field mapping). They may also sit under a **milestone** (capability stage), per
+`docs/DESIGN.md` §6 — referenced in `## Context`, not a Linear field (§ Field mapping).
+Keep the milestone list in §6; if the version set changes, that is the linked release, not
+this file.
