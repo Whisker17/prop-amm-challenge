@@ -8,6 +8,8 @@ use prop_amm_shared::normalizer;
 use prop_amm_shared::result::BatchResult;
 use prop_amm_sim::runner;
 
+use crate::telemetry::{self, L1Sim};
+
 // Must match crates/cli/src/commands/compile.rs's exported symbol names. tools/bench can't
 // depend on that crate as a library (it's bin-only — `[[bin]]` only, no `[lib]`), so this is
 // the one place the duplication the ticket accepts has to live (docs/DESIGN.md §2.6).
@@ -100,6 +102,18 @@ impl LoadedNative {
             configs,
             None,
         )
+    }
+
+    /// Like `run_batch`, but wraps both AMMs' `after_swap` in pass-through recorders and
+    /// returns each simulation's L1 telemetry alongside the usual edge numbers
+    /// (docs/DESIGN.md §2.7). Kept as a separate method rather than a flag on `run_batch` so
+    /// the non-telemetry path stays exactly what it was — the fastest way to prove the two
+    /// are behaviourally identical is to call two different, independently-readable methods.
+    pub fn run_batch_with_l1(
+        &self,
+        configs: Vec<SimulationConfig>,
+    ) -> anyhow::Result<(BatchResult, Vec<L1Sim>)> {
+        telemetry::run_batch_native_with_l1(self.swap_fn, self.after_swap_fn, configs)
     }
 }
 

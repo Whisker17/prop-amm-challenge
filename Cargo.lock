@@ -363,6 +363,7 @@ dependencies = [
  "prop-amm-executor",
  "prop-amm-shared",
  "prop-amm-sim",
+ "rayon",
  "serde",
  "tempfile",
  "toml",
