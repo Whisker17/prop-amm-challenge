@@ -29,3 +29,17 @@ Fidelity: exact. The CPMM formula is bit-for-bit the same division/rounding as
 See `results/2026-08-20-l1.md` (flow share, edge per unit volume, seeds `0..=999`) and
 `results/2026-08-20-grid.md` (as the `--reference` in the 27-cell fragility matrix against
 the starter).
+
+**Finding — flow share is 0.606, not near 0.5.** docs/DESIGN.md §2.8 frames
+normalizer-as-submission as "the same curve as the opponent" implying a symmetric split, and
+explicitly allows for this: "If it does not [report near 0.5], that is a finding worth a
+comment, not a silent pass." It doesn't, and here's why: this fixture's fee is *fixed* at 30
+bps, while the opponent's fee is *sampled* per simulation from `U[30, 80]` bps (mean ~55) —
+so on average this fixture is meaningfully cheaper than its opponent, and retail/arb flow
+correctly routes to the cheaper venue more often than not. That fee asymmetry dominates the
+opposite-signed liquidity asymmetry (this fixture's reserves are fixed at
+`SimulationConfig::default()`'s `initial_x`/`initial_y`, while the opponent's are scaled by
+`norm_liquidity_mult ~ U[0.4, 2.0]`, averaging *deeper* than this fixture's — which on its own
+would pull flow share *below* 0.5). True 30bps-vs-30bps, liquidity-mult-1.0-vs-1.0 symmetry
+only holds pointwise at one particular sampled config, not in aggregate over the graded
+distribution's own sampling.
