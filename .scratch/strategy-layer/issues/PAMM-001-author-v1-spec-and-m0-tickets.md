@@ -1,7 +1,7 @@
 # [0.1.0] [Docs] Author the v1 spec and open the M0 tickets
 
 Id: PAMM-001
-State: In Progress
+State: In Review
 Status: ready-for-agent
 Release: 0.1.0
 Labels: research
