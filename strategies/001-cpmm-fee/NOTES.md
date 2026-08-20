@@ -58,15 +58,27 @@ budget cap. Full curve (param → screening avg edge) is committed at
 66, then strictly decreasing to 500** — a clean single peak, confirming the protocol
 self-check (§2.8) before this or any other strategy's numbers are trusted.
 
-The committed report's compile-timing figures (mean ~1.1-1.3s across two `results/`-writing
-runs at commit `6916ae5`) run above the sub-second range this same code measured earlier in
-the same session (min 0.523s, mean 0.547s, max 0.694s across 158 warm compiles) and above
-`docs/DESIGN.md` §2.6's 0.11–0.57s estimate. `uptime` at the time showed sustained load
-averages of 18-30 on this machine (a concurrent session was active in another worktree,
-confirmed by its own commits landing mid-measurement) — the fast path's own design (one fixed
-`.build/fast/` directory, only `src/lib.rs` rewritten per point) is unchanged between the two
-measurements; the gap is system contention, not a regression. Both figures are still a
-4-10x improvement over the reference path's unconditional 7-10s/point.
+**On the "&lt; 1s on a warm build directory" acceptance criterion — not cleanly met in this
+measurement environment, reported honestly rather than rounded up.** The committed report
+(`results/2026-08-20-fit-001-cpmm-fee.md`) shows a 15.799s cold start (one-time
+`pinocchio`/`wincode`/`prop-amm-submission-sdk` build the first time `.build/fast/` is used)
+followed by 160 warm compiles: **min=0.472s, mean=1.000s, max=1.311s** —
+`tools/bench/src/commands/fit.rs`'s own verdict logic reports this as **EXCEEDS** (it checks
+the *maximum* warm sample, since the criterion is a per-point claim, not an average). This
+was re-measured twice, including once after confirming via `uptime` that a concurrent
+session's load had cleared (down to load averages of 3-12, from a peak of 18-30 during an
+earlier attempt) — the numbers did not meaningfully improve, so the elevated compile time
+is attributed to this session's execution environment (likely virtualization/tenancy
+overhead `uptime`'s load average doesn't fully capture) rather than to further, uncontrolled
+contention. `docs/DESIGN.md` §2.6's 0.11–0.57s estimate was not reproduced here.
+
+What *is* demonstrated, regardless: the fast path never rebuilds `pinocchio`/`wincode`/
+`prop-amm-submission-sdk` after the first point (`.build/fast/` stays a single directory —
+verified never to grow, see the Acceptance criteria checklist), so every subsequent point
+pays only for relinking `user_program` itself — a 5-15x improvement over the reference
+path's unconditional 7-10s/point (`crates/cli/src/commands/compile.rs`'s per-source-hash
+isolated build), even at this measurement's elevated absolute numbers. The mechanism's
+design is sound; the specific numeric target is what this environment couldn't confirm.
 
 **Winning point: `FEE_BPS = 66`** — well inside the competitor's own `norm_fee_bps ∈ U[30, 80]`
 sampling range (`crates/shared/src/config.rs`), and far from the starter's 500bps, matching
