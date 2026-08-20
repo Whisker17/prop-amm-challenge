@@ -118,6 +118,12 @@ pub fn build_and_load(file: &str, slot: Slot) -> anyhow::Result<LoadedNative> {
 pub fn cleanup(build_dir: Option<&Path>) {
     let Some(dir) = build_dir else { return };
     if let Err(e) = std::fs::remove_dir_all(dir) {
+        // `compare` loads two builds that can share one build dir (candidate == reference,
+        // e.g. a self-comparison sanity check) — the second cleanup call then legitimately
+        // finds it already gone. That's not a failure worth a warning; anything else is.
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return;
+        }
         eprintln!(
             "warning: failed to clean up build dir {}: {e}",
             dir.display()
