@@ -20,7 +20,12 @@ pub struct ReportSection {
     pub body: String,
 }
 
-/// Writes `<dir>/<date>-<stage>.md` and returns its path.
+pub const DEFAULT_REPORT_DIR: &str = "results";
+
+/// Writes `<dir>/<date>-<stage>.md` and returns its path. Refuses to overwrite an existing
+/// report — `results/` snapshots are committed evidence (docs/DESIGN.md §3.3), and a second
+/// same-day run silently clobbering the first would destroy that evidence without anyone
+/// noticing. Move or remove the existing file first if a re-run is really intended.
 pub fn write_report(
     dir: &Path,
     meta: &ReportMeta,
@@ -30,6 +35,14 @@ pub fn write_report(
     fs::create_dir_all(dir)
         .map_err(|e| anyhow::anyhow!("failed to create report dir {}: {e}", dir.display()))?;
     let path = dir.join(format!("{date}-{}.md", meta.stage));
+
+    if path.exists() {
+        anyhow::bail!(
+            "{} already exists; results/ snapshots are committed evidence and are never \
+             overwritten silently — move or remove it before re-running",
+            path.display()
+        );
+    }
 
     let mut out = String::new();
     out.push_str(&format!("# {} — {date}\n\n", meta.stage));
@@ -58,8 +71,11 @@ fn commit_sha() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
+    // `--untracked-files=no`: an untracked scratch file (a build artifact, a not-yet-added
+    // report) shouldn't mark the *code* dirty — only uncommitted changes to tracked files
+    // should, since that's what actually means "this measurement's code differs from HEAD".
     let dirty = Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .ok()
         .map(|o| !o.stdout.is_empty())
@@ -143,5 +159,28 @@ mod tests {
         assert!(contents.contains("Execution path: native"));
         assert!(contents.contains("## A section"));
         assert!(contents.contains("some body text"));
+    }
+
+    #[test]
+    fn write_report_refuses_to_overwrite_an_existing_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = ReportMeta {
+            stage: "dup-stage".to_string(),
+            segment: "observation".to_string(),
+            n_sims: 1,
+            n_steps: 1,
+            execution_path: "native".to_string(),
+        };
+        let sections = [ReportSection {
+            heading: "H".to_string(),
+            body: "B".to_string(),
+        }];
+
+        write_report(tmp.path(), &meta, &sections).unwrap();
+        let err = write_report(tmp.path(), &meta, &sections).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
     }
 }

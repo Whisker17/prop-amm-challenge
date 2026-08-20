@@ -3,6 +3,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use prop_amm_executor::{AfterSwapFn, SwapFn};
+use prop_amm_shared::config::SimulationConfig;
+use prop_amm_shared::normalizer;
+use prop_amm_shared::result::BatchResult;
+use prop_amm_sim::runner;
 
 // Must match crates/cli/src/commands/compile.rs's exported symbol names. tools/bench can't
 // depend on that crate as a library (it's bin-only — `[[bin]]` only, no `[lib]`), so this is
@@ -40,6 +44,8 @@ fn swap_slot1(data: &[u8]) -> u64 {
     call_swap(1, data)
 }
 
+const SWAP_TRAMPOLINES: [SwapFn; 2] = [swap_slot0, swap_slot1];
+
 fn call_after_swap(slot: usize, data: &[u8], storage: &mut [u8]) {
     let ptr = LOADED_AFTER_SWAP[slot].load(Ordering::Relaxed);
     let f: FfiAfterSwapFn = unsafe { std::mem::transmute(ptr) };
@@ -61,24 +67,39 @@ fn after_swap_slot1(data: &[u8], storage: &mut [u8]) {
     call_after_swap(1, data, storage)
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum Slot {
-    Zero,
-    One,
-}
+const AFTER_SWAP_TRAMPOLINES: [AfterSwapFn; 2] = [after_swap_slot0, after_swap_slot1];
 
-impl Slot {
-    fn index(self) -> usize {
-        match self {
-            Slot::Zero => 0,
-            Slot::One => 1,
-        }
-    }
+/// Which of the two loaded-dylib slots a build targets. `#[repr(usize)]` so a slot converts
+/// straight to an array index (`slot as usize`) — no match arm needed at any call site.
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum Slot {
+    Zero = 0,
+    One = 1,
 }
 
 pub struct LoadedNative {
-    pub swap_fn: SwapFn,
-    pub after_swap_fn: Option<AfterSwapFn>,
+    swap_fn: SwapFn,
+    after_swap_fn: Option<AfterSwapFn>,
+    /// The isolated `.build/runs/<hash>` directory this dylib was built in, so the caller
+    /// can clean it up once every process that depends on it (including any `prop-amm run`
+    /// spot-check subprocess reusing the same build-dir cache) is done with it.
+    pub build_dir: Option<PathBuf>,
+}
+
+impl LoadedNative {
+    /// Runs `configs` against this candidate/reference and the fixed normalizer opponent
+    /// (docs/DESIGN.md §2.6, §2.8) — the one call shape every command needs.
+    pub fn run_batch(&self, configs: Vec<SimulationConfig>) -> anyhow::Result<BatchResult> {
+        runner::run_batch_native(
+            self.swap_fn,
+            self.after_swap_fn,
+            normalizer::compute_swap,
+            Some(normalizer::after_swap),
+            configs,
+            None,
+        )
+    }
 }
 
 /// Builds `file` through the reference compile path (`prop-amm build`, native + BPF,
@@ -88,6 +109,20 @@ pub struct LoadedNative {
 pub fn build_and_load(file: &str, slot: Slot) -> anyhow::Result<LoadedNative> {
     let native_path = build_native(file)?;
     load_native(&native_path, slot)
+}
+
+/// Best-effort removal of a build directory returned in `LoadedNative::build_dir`. Never
+/// errors the caller's command — a failed cleanup shouldn't invalidate an otherwise-good
+/// measurement, it's just a warning to stderr (docs/DESIGN.md §3.4: the reference path's
+/// isolated directories should be cleaned after use).
+pub fn cleanup(build_dir: Option<&Path>) {
+    let Some(dir) = build_dir else { return };
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        eprintln!(
+            "warning: failed to clean up build dir {}: {e}",
+            dir.display()
+        );
+    }
 }
 
 fn build_native(file: &str) -> anyhow::Result<PathBuf> {
@@ -117,13 +152,19 @@ fn build_native(file: &str) -> anyhow::Result<PathBuf> {
     anyhow::bail!("`prop-amm build {file}` did not print a `Native: <path>` line:\n{stdout}")
 }
 
+/// `<build_dir>/target/release/lib*.{dylib,so}` -> `<build_dir>` (three levels up). `None`
+/// if the printed path is shallower than expected — cleanup is then skipped, not guessed at.
+fn build_dir_from_native_path(native_path: &Path) -> Option<PathBuf> {
+    native_path.ancestors().nth(3).map(Path::to_path_buf)
+}
+
 fn load_native(native_path: &Path, slot: Slot) -> anyhow::Result<LoadedNative> {
     let lib = Box::new(
         unsafe { libloading::Library::new(native_path) }
             .map_err(|e| anyhow::anyhow!("failed to load {}: {e}", native_path.display()))?,
     );
     let lib = Box::leak(lib);
-    let idx = slot.index();
+    let idx = slot as usize;
 
     let swap_symbol: libloading::Symbol<FfiSwapFn> = unsafe {
         lib.get(NATIVE_SWAP_SYMBOL)
@@ -147,17 +188,9 @@ fn load_native(native_path: &Path, slot: Slot) -> anyhow::Result<LoadedNative> {
         false
     };
 
-    let swap_fn: SwapFn = match slot {
-        Slot::Zero => swap_slot0,
-        Slot::One => swap_slot1,
-    };
-    let after_swap_fn: Option<AfterSwapFn> = has_after_swap.then_some(match slot {
-        Slot::Zero => after_swap_slot0,
-        Slot::One => after_swap_slot1,
-    });
-
     Ok(LoadedNative {
-        swap_fn,
-        after_swap_fn,
+        swap_fn: SWAP_TRAMPOLINES[idx],
+        after_swap_fn: has_after_swap.then_some(AFTER_SWAP_TRAMPOLINES[idx]),
+        build_dir: build_dir_from_native_path(native_path),
     })
 }

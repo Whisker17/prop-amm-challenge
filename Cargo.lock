@@ -71,21 +71,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libloading",
- "prop-amm-executor",
- "prop-amm-shared",
- "prop-amm-sim",
- "serde",
- "tempfile",
- "toml",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -366,6 +351,21 @@ dependencies = [
  "prop-amm-shared",
  "prop-amm-sim",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "prop-amm-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libloading",
+ "prop-amm-executor",
+ "prop-amm-shared",
+ "prop-amm-sim",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

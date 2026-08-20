@@ -43,6 +43,6 @@ train/validation numbers.
 
 ## Parity gate (docs/DESIGN.md §2.6)
 
-Reproduced via `cargo run -p bench -- anchor --file strategies/001-cpmm-fee/lib.rs` — identical
+Reproduced via `cargo run -p prop-amm-bench -- anchor --file strategies/001-cpmm-fee/lib.rs` — identical
 mechanism to the starter, so this should reproduce the same **avg edge 210.50** anchor on the
 `observation` segment. See `results/` for the committed snapshot.

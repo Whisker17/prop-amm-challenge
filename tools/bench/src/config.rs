@@ -1,14 +1,25 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use clap::Args;
 use prop_amm_shared::config::{HyperparameterVariance, SimulationConfig};
 use serde::Deserialize;
+
+/// The checked-in config every command loads by default. `config/README.md`'s per-machine
+/// override (`<name>.local.toml`, gitignored) takes precedence when present.
+pub const DEFAULT_CONFIG_PATH: &str = "config/bench.toml";
+const LOCAL_CONFIG_PATH: &str = "config/bench.local.toml";
 
 fn default_stride() -> u64 {
     1
 }
 
+// `deny_unknown_fields` on both: a typo'd field name (`singel_use`) must fail loading, not
+// silently fall back to a permissive default (`config/README.md`'s fail-fast rule) — that
+// exact typo would otherwise leave `single_use` at its default `false` and make a
+// single-use segment spendable with no `--i-am-spending-the-test-segment` flag at all.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawSegment {
     start: u64,
     count: u64,
@@ -22,6 +33,7 @@ struct RawSegment {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawBenchConfig {
     #[serde(default)]
     segments: HashMap<String, RawSegment>,
@@ -63,6 +75,17 @@ pub struct BenchConfig {
 }
 
 impl BenchConfig {
+    /// Loads `config/bench.local.toml` if it exists, else `config/bench.toml`
+    /// (`config/README.md`'s per-machine-override convention).
+    pub fn load_default() -> anyhow::Result<Self> {
+        let local = Path::new(LOCAL_CONFIG_PATH);
+        if local.exists() {
+            Self::load(local)
+        } else {
+            Self::load(Path::new(DEFAULT_CONFIG_PATH))
+        }
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| {
             anyhow::anyhow!("failed to read bench config {}: {}", path.display(), e)
@@ -124,6 +147,40 @@ impl BenchConfig {
         let mut names: Vec<&str> = self.segments.keys().map(String::as_str).collect();
         names.sort_unstable();
         names.join(", ")
+    }
+}
+
+/// The `--segment`/`--i-am-spending-the-test-segment` pair every segment-taking subcommand
+/// needs. `#[command(flatten)]` this into a command's own `Args` struct so the single-use
+/// guard (docs/DESIGN.md §2.2) is enforced identically everywhere `--segment` exists,
+/// including subcommands WHI-1194/1195 add later — never a per-command reimplementation.
+#[derive(Args, Debug)]
+pub struct SegmentSelector {
+    /// Seed segment to evaluate on (train|validation|test|observation, per config/bench.toml).
+    #[arg(long, default_value = "observation")]
+    pub segment: String,
+    /// Required to select a single-use segment (the test segment).
+    #[arg(long)]
+    pub i_am_spending_the_test_segment: bool,
+}
+
+impl SegmentSelector {
+    /// Resolves `--segment` against `config` and enforces the single-use guard. Returns the
+    /// segment name and the segment itself.
+    pub fn resolve<'s, 'c>(
+        &'s self,
+        config: &'c BenchConfig,
+    ) -> anyhow::Result<(&'s str, &'c Segment)> {
+        let segment = config.segment(&self.segment)?;
+
+        if segment.single_use && !self.i_am_spending_the_test_segment {
+            anyhow::bail!(
+                "segment `{}` is single-use; pass --i-am-spending-the-test-segment to spend it",
+                self.segment
+            );
+        }
+
+        Ok((self.segment.as_str(), segment))
     }
 }
 
@@ -327,5 +384,92 @@ stride = 0
             err.to_string().contains("no segments"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn unknown_field_is_rejected() {
+        let text = r#"
+[segments.a]
+start = 0
+count = 5
+singel_use = true
+"#;
+        assert!(BenchConfig::parse(text).is_err());
+    }
+
+    /// Loads the actual shipped `config/bench.toml` (not a synthetic string) so a wrong
+    /// `start`/`count`/flag in the real file fails `cargo test`, not just a manual run.
+    #[test]
+    fn shipped_config_loads_and_matches_design_doc_segmentation() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cfg = BenchConfig::load(&repo_root.join(DEFAULT_CONFIG_PATH)).unwrap();
+
+        let observation = cfg.segment("observation").unwrap();
+        assert_eq!(observation.start, 0);
+        assert_eq!(observation.count, 1000);
+        assert!(!observation.single_use);
+        assert!(!observation.decision_input);
+
+        let train = cfg.segment("train").unwrap();
+        assert_eq!(train.start, 1_000_000);
+        assert_eq!(train.count, 1000);
+
+        let screening = cfg.segment("screening").unwrap();
+        assert_eq!(screening.start, 1_000_000);
+        assert_eq!(screening.count, 200);
+        assert_eq!(screening.subset_of.as_deref(), Some("train"));
+
+        let validation = cfg.segment("validation").unwrap();
+        assert_eq!(validation.start, 2_000_000);
+        assert_eq!(validation.count, 1000);
+
+        let test = cfg.segment("test").unwrap();
+        assert_eq!(test.start, 3_000_000);
+        assert_eq!(test.count, 1000);
+        assert!(test.single_use);
+    }
+
+    #[test]
+    fn segment_selector_blocks_single_use_without_spend_flag() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let selector = SegmentSelector {
+            segment: "test".to_string(),
+            i_am_spending_the_test_segment: false,
+        };
+        let err = selector.resolve(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("single-use"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn segment_selector_allows_single_use_with_spend_flag() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let selector = SegmentSelector {
+            segment: "test".to_string(),
+            i_am_spending_the_test_segment: true,
+        };
+        assert!(selector.resolve(&cfg).is_ok());
+    }
+
+    #[test]
+    fn segment_selector_allows_non_single_use_without_spend_flag() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let selector = SegmentSelector {
+            segment: "observation".to_string(),
+            i_am_spending_the_test_segment: false,
+        };
+        assert!(selector.resolve(&cfg).is_ok());
+    }
+
+    #[test]
+    fn segment_selector_unknown_segment_fails() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let selector = SegmentSelector {
+            segment: "nope".to_string(),
+            i_am_spending_the_test_segment: false,
+        };
+        assert!(selector.resolve(&cfg).is_err());
     }
 }
