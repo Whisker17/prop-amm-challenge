@@ -87,14 +87,14 @@ soon — anything touching a declared high-risk path defaults to at least High),
   no search; WHI-1194 adds the fast path this number describes), so it can't be
   re-measured. Fix: once WHI-1194 adds the fast path, re-measure and cite via a `results/`
   snapshot per §3.3.
-- **`docs/DESIGN.md` cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
-  `.scratch/` as the tracker of record** (Low, WHI-1192). `docs/DESIGN.md` §6.1, §8 —
-  inconsistent tracker naming across the repo, owned by the separate governance issue
-  WHI-1196 (out of scope here per this issue's own carve-out). No fix in this PR; resolves
-  when WHI-1196 lands.
 
 ---
 
 ## Resolved
 
-_(none yet)_
+- **`docs/DESIGN.md` cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
+  `.scratch/` as the tracker of record** (Low, WHI-1192). `docs/DESIGN.md` §6.1, §8 —
+  inconsistent tracker naming across the repo, owned by the separate governance issue
+  WHI-1196. Resolved by WHI-1196 (`dc973d1`), which rebound the live governance path
+  (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, `docs/agents/issue-tracker.md`, and friends) to
+  Linear naming.
