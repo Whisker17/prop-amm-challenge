@@ -160,7 +160,10 @@ fans out; feature → its release branch.
 If they disagree, or the cross-check exists and either signal is missing,
 **refuse to start**. Do not infer the version from a milestone, and do not fall
 back to `dev`. If `origin/release/v{version}` does not exist, refuse — do not
-create it as a side effect of picking up a ticket.
+create it as a side effect of picking up a ticket. If Linear itself is
+unreachable (not merely a missing field), that's a different failure — proceed
+on the title prefix alone and flag it in the PR body (`docs/GIT_WORKFLOW.md`
+§ Version determination), don't refuse outright.
 
 **Then, once the base is resolved:**
 

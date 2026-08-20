@@ -21,9 +21,10 @@ Reached through the `linear.*` tools exposed via the slim-tools MCP gateway
   pass `includeReleases: true` when the version cross-check matters (§ Release ↔ version
   binding) — it is not in the default response.
 - **Create or update an issue:** `linear.save_issue({...})`. Omit `id` to create; pass it
-  to update. One call sets title, description, state, assignee, labels, priority,
-  `parentId`, `blocks`/`blockedBy`/`relatedTo`, and `addReleases`/`setReleases` — see the
-  field mapping below for which of these replaces which piece of the old metadata block.
+  to update. One call sets title, description (or a targeted `patch` instead of the full
+  text), state, assignee, labels, priority, `parentId`,
+  `blocks`/`blockedBy`/`relatedTo`, and `addReleases`/`setReleases` — see the field mapping
+  below for which of these replaces which piece of the old metadata block.
 - **List / search issues:** `linear.list_issues({project: "...", query: "...", ...})`.
 - **Comment:** `linear.save_comment({issueId, body})`.
 
@@ -38,10 +39,10 @@ docs, not to describe a format you produce.
 | Old `Key:` line | Linear field | Notes |
 | --- | --- | --- |
 | `Id:` | the issue identifier (`WHI-NNNN`) | Assigned by Linear on create. Never hand-allocated. |
-| `State:` | `state` (workflow status) | Team's states are `Backlog` / `Todo` / `In Progress` / `In Review` / `Done` / `Canceled` / `Duplicate`. The resolved-base git workflow below only ever moves an issue through `Todo` → `In Progress` → `In Review` → `Done` (or `Canceled`) — a 1:1 name match with the old lifecycle vocabulary. `Backlog` and `Duplicate` exist as team states but aren't part of that flow. |
+| `State:` | `state` (workflow status) | Team's states are `Backlog` / `Todo` / `In Progress` / `In Review` / `Done` / `Canceled` / `Duplicate`. The resolved-base git workflow below only ever moves an issue through `Todo` → `In Progress` → `In Review` → `Done` (or `Canceled`) — a 1:1 name match with the old lifecycle vocabulary. `Backlog` precedes that flow (`docs/GIT_WORKFLOW.md`'s own state-mapping table pairs it with `Todo` as "not started, no branch"; an issue leaves `Backlog` for `Todo` once linked to a release, § Version axis) and `Duplicate` is a terminal state outside it, same footing as `Canceled`. |
 | `Status:` (triage role) | a **label** | `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` already exist as labels for this team. An issue can carry other labels too — the triage role is just one of them, same as before it was "one value on a line." |
 | `Release:` | the linked **release entity** | `save_issue({addReleases: ["<release id or slug>"]})` or `setReleases`. See § Release ↔ version binding — this is *not* the same thing as the project or a milestone. |
-| `Labels:` (type) | Linear labels | `research`, `chore`, `hotfix` already exist (lowercase, this team). `bug`, `feature`, `upstream-sync` don't exist yet as lowercase labels — create with `linear.create_issue_label({name, team})` the first time one is needed, matching the existing casing. |
+| `Labels:` (type) | Linear labels | See `docs/agents/triage-labels.md` (type labels: `bug`, `feature`, `research`, `chore`, `hotfix`, `upstream-sync`) for which already exist and how to create the rest. |
 | `Milestone:` | **not a Linear field** | `docs/DESIGN.md` §6 owns the M0–M3 milestone concept as documentation. Linear's own per-project milestone object is unused here (`list_milestones` returns empty) — standing it up is out of scope for this rebind. Reference the milestone in the issue body's `## Context` instead. |
 | `Blocked by:` / `Blocks:` | native `blockedBy` / `blocks` relations | Set via `save_issue({blockedBy: [...]})` / `({blocks: [...]})`. Strictly better than the old convention: `get_issue({includeRelations: true})` returns them as real edges, not text to parse. |
 | `Assignee:` | native `assignee` | User id, name, email, or `"me"`. |
@@ -111,9 +112,17 @@ inconsistency "resolves when WHI-1196 lands." This PR is WHI-1196, but resolving
 entry means editing `docs/DEFERRED_ISSUES.md`, which is not a carve-out path — left for
 the same follow-up.
 
-This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file) no
-longer asserts the tracker is in-repo markdown as of this PR; the two files above are
-known, out-of-scope exceptions, not overlooked ones.
+This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file,
+`docs/agents/issue-template.md`, `docs/agents/triage-labels.md`, and
+`.claude/skills/implement/SKILL.md`) no longer asserts the tracker is in-repo markdown as
+of this PR. `.scratch/README.md` and `docs/DEFERRED_ISSUES.md` are known, out-of-scope
+exceptions (above), not overlooked ones. `.claude/skills/setup-matt-pocock-skills/` is a
+different case: its `issue-tracker-{local,github,gitlab}.md` files are option templates
+copied into this very file when `/setup-matt-pocock-skills` runs, not live guidance any
+skill reads today — each now says so explicitly rather than reading as a live claim about
+this repo. `.claude/skills/{to-tickets,ask-matt,code-review}/SKILL.md` mention `.scratch/`
+only as one branch of tracker-conditional guidance ("if local files… if a real tracker…"),
+never asserting it as this repo's tracker — left as-is.
 
 ## Issue lifecycle ↔ Git (mandatory)
 
@@ -145,6 +154,9 @@ linear.get_issue({ id: "WHI-1193", includeReleases: true })
 Nothing enforces these agreeing — Linear validates neither field against the other.
 **Enforcement is the agent's refusal**: a missing prefix, a missing linked release, or a
 disagreement between them means refuse to start and surface it. Never fall back to `dev`.
+Linear being unreachable (MCP/network failure) is a *different* failure from a signal
+that was read and found missing — see `docs/GIT_WORKFLOW.md` § Version determination for
+which one gets a fallback and which one refuses.
 
 Governance issues and `upstream-sync` issues carry no version prefix and no linked
 release — for them the version-scoped row does not apply at all. (WHI-1196 itself is an

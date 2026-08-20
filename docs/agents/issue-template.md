@@ -152,7 +152,7 @@ linear.save_issue({
   state: "Todo",
   labels: ["ready-for-agent", "feature"],
   priority: 3,          // Medium
-  addReleases: ["X.Y.Z"],
+  addReleases: ["<release id or slug for X.Y.Z>"],
   blockedBy: [],        // or the blocking issue ids
   description: `
 ## Objective

@@ -127,6 +127,13 @@ fallback recreates the trunk pollution this rule exists to prevent, and does it
 invisibly. If `origin/release/v{version}` does not exist, refuse and ask — do
 not create it as a side effect of picking up a ticket.
 
+**Tracker unreachable is a different failure than tracker disagrees.** If Linear
+itself can't be reached (MCP/network failure) — the fallback-ladder case this
+section opens with — proceed on the title prefix alone and say in the PR body
+that the cross-check couldn't run, rather than refusing outright: an outage is
+not evidence the prefix is wrong. Refuse only when a signal that *was*
+successfully read is missing, ambiguous, or disagrees with the other.
+
 The issue template asks for the release field; that is a prompt, not a gate —
 trackers generally do not enforce non-empty fields. Enforcement is this refusal.
 
