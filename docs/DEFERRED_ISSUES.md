@@ -59,6 +59,18 @@ soon — anything touching a declared high-risk path defaults to at least High),
   That is a direct commit to a protected branch by construction. Deferred because the
   alternative (an external tracker) is what we deliberately traded away; mitigation is that
   it is part of the mandatory post-merge cleanup sequence, in the same session.
+- **`docs/DESIGN.md`'s bench-timing numbers still lack a `file:line`/measurement citation**
+  (Low, WHI-1192). §2.6 (`0.11–0.57 s` fast-path search, `7–10 s`/`~51 MB` reference path),
+  §7 #10 (`~25 GB` for 500 points), §4.2 (`~40–60 lines` of per-strategy boilerplate) — these
+  describe `tools/bench`'s fast compile path, which does not exist in the repo yet. Deferred
+  because re-measuring them requires the tooling WHI-1194 builds; the starter anchor (§2.1,
+  the one number that *was* independently reproducible against existing upstream code) was
+  verified and cited during this PR's review. Fix: once `tools/bench` lands, re-measure and
+  cite via a `results/` snapshot per §3.3, replacing the inherited estimates.
+- **`docs/DESIGN.md` now cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
+  `.scratch/` as the tracker of record** (Low, WHI-1192 review, tracked by WHI-1196). No fix
+  here — out of scope by this issue's own description (governance carve-out). Noted so the
+  inconsistency isn't silently missed before WHI-1196 lands.
 
 ---
 

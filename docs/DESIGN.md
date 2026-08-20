@@ -97,13 +97,14 @@ means would leave in. Comparing two aggregate `avg_edge` values is not sufficien
 not permitted as the basis for a ranking claim.
 
 **Measured anchor:** the starter program (500 bps CPMM, `programs/starter/src/lib.rs`)
-scores **avg edge 210.50** over seeds `0..=999` at 10,000 steps, native path. This number
-is the parity anchor in §2.6.
+scores **avg edge 210.50** over seeds `0..=999` at 10,000 steps, native path. Reproduced at
+commit `0ada20b` via `cargo run -p prop-amm --release -- run programs/starter/src/lib.rs`
+(total edge `210496.44`). This number is the parity anchor in §2.6.
 
 ### 2.2 Seed segmentation
 
 Seeds are the only source of sampling. `HyperparameterVariance::apply(&base, seed)`
-(`crates/shared/src/config.rs:91`) derives a simulation's entire regime from its seed, and
+(`crates/shared/src/config.rs:93`) derives a simulation's entire regime from its seed, and
 `SimulationConfig.seed` then drives the price path (`config.seed`), the retail stream
 (`seed+1`) and the arbitrageur (`seed+2`) as three independent `Pcg64` streams
 (`crates/sim/src/engine.rs:20-33`). Seeds are `u64`, so independent samples are unlimited
@@ -208,7 +209,7 @@ Two compile paths exist, with different jobs:
   point.
 - **Reference path (reporting).** The upstream CLI, `crates/cli/src/commands/compile.rs`.
   Measured: **7–10 s and ~51 MB per point**, because `ensure_build_dir`
-  (`compile.rs:47`) keys an isolated build directory by source hash, so `pinocchio`,
+  (`compile.rs:36`) keys an isolated build directory by source hash, so `pinocchio`,
   `wincode`, `darling` and `syn` are rebuilt for every parameter point.
 
 The fast path is a **partial re-implementation** of upstream's compile step, which also
@@ -272,10 +273,10 @@ are trusted.
 Ported strategies are implemented **faithfully first**. Only the minimum changes needed to
 make a strategy *run at all* are permitted:
 
-- monotonicity and concavity (`crates/sim/src/curve_checks.rs:24` **panics** mid-simulation
+- monotonicity and concavity (`crates/sim/src/curve_checks.rs:23` **panics** mid-simulation
   on violation — this is a crash, not a low score),
 - the 100k CU limit,
-- safe Rust only (`compile.rs:150` rejects any `unsafe` token),
+- safe Rust only (`compile.rs:229` rejects any `unsafe` token),
 - the `NAME` / `MODEL_USED` / `get_model_used` interface.
 
 Improvements beyond that are **not** folded in. They are opened as an explicit variant
@@ -439,7 +440,7 @@ revisited only once ≥5 strategies share the same non-trivial numeric helpers (
    `1_000_000..=1_000_199`, common random numbers (§2.5).
 4. Re-evaluate the winning point on full train, then validation.
 5. Grid mode: 27-cell fragility matrix. Any cell significantly negative gets an explanation
-   in `NOTES.md` (§2.3, Q2's veto rule).
+   in `NOTES.md` (§2.3's fragility veto).
 6. Parity gate: reproduce the committed point through `prop-amm validate` + `prop-amm run`;
    record in `NOTES.md` (§2.6).
 7. Update `strategies/README.md`.
