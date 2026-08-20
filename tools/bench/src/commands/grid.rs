@@ -4,6 +4,7 @@ use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
 use crate::compile::{self, Slot};
+use crate::config::BenchConfig;
 use crate::grid::{self, GridCell};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::stats::{self, PairedStat};
@@ -12,7 +13,8 @@ const STAGE: &str = "grid";
 
 /// `bench grid` — the 27-cell fragility matrix (docs/DESIGN.md §2.3). Paired by seed against
 /// an operator-chosen reference, exactly like `compare`, but over grid mode's own balanced
-/// factorial of regime corners rather than a sampled segment.
+/// factorial of regime corners (`config/bench.toml`'s `[grid]` table) rather than a sampled
+/// segment.
 #[derive(Args, Debug)]
 pub struct GridArgs {
     /// Path to the candidate's .rs source file.
@@ -38,6 +40,9 @@ pub fn run(args: GridArgs) -> anyhow::Result<()> {
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
     report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), STAGE)?;
 
+    let bench_config = BenchConfig::load_default()?;
+    let grid_config = bench_config.grid()?;
+
     let base = SimulationConfig {
         n_steps: args.steps,
         ..SimulationConfig::default()
@@ -48,17 +53,17 @@ pub fn run(args: GridArgs) -> anyhow::Result<()> {
     println!("Building reference: {}", args.reference);
     let reference = compile::build_and_load(&args.reference, Slot::One)?;
 
-    let cells = grid::cells();
+    let cells = grid::cells(grid_config);
     println!(
         "Running {} cells x {} seeds ({} steps each)...",
         cells.len(),
-        grid::SEEDS_PER_CELL,
+        grid_config.seeds_per_cell,
         args.steps,
     );
 
     let mut results = Vec::with_capacity(cells.len());
     for cell in cells {
-        let configs = cell.configs(&base);
+        let configs = cell.configs(&base, grid_config.seeds_per_cell);
         // Same `configs` reused for both runs (not regenerated) — keeps the per-cell
         // comparison paired, same rationale as `compare.rs`.
         let candidate_result = candidate.run_batch(configs.clone())?;
@@ -88,7 +93,7 @@ pub fn run(args: GridArgs) -> anyhow::Result<()> {
         );
     }
 
-    let body = format_cell_table(&results);
+    let body = format_cell_table(&args.candidate, &args.reference, &results);
     let meta = ReportMeta {
         stage: STAGE.to_string(),
         segment: "grid (not a config/bench.toml segment)".to_string(),
@@ -108,18 +113,10 @@ pub fn run(args: GridArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-impl GridCell {
-    fn label_axes(&self) -> String {
-        format!(
-            "fee={}bps liq={:.1}x sigma={:.4}",
-            self.norm_fee_bps, self.norm_liquidity_mult, self.gbm_sigma
-        )
-    }
-}
-
-fn format_cell_table(results: &[CellResult]) -> String {
-    let mut body = String::from(
-        "Grid mode buys balanced coverage of regime corners a sampled distribution would \
+fn format_cell_table(candidate: &str, reference: &str, results: &[CellResult]) -> String {
+    let mut body = format!(
+        "- Candidate: `{candidate}`\n- Reference: `{reference}`\n\n\
+         Grid mode buys balanced coverage of regime corners a sampled distribution would \
          rarely visit (docs/DESIGN.md §2.3) — this table is a fragility check, not a ranking \
          input.\n\n\
          | cell | fee (bps) | liquidity mult | sigma | n | candidate avg | reference avg | \
@@ -147,28 +144,27 @@ fn format_cell_table(results: &[CellResult]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn stat(n: usize, mean_diff: f64) -> PairedStat {
-        PairedStat {
-            n,
-            mean_diff,
-            std_error: 0.0,
-            t_critical: f64::NAN,
-            ci_low: mean_diff,
-            ci_high: mean_diff,
-        }
-    }
+    use crate::config::GridConfig;
+    use crate::stats::tests::sample_stat;
 
     #[test]
-    fn format_cell_table_includes_every_cell_and_the_not_comparable_axes() {
-        let cell = grid::cells()[0];
+    fn format_cell_table_names_files_and_includes_every_cell() {
+        let grid_config = GridConfig {
+            norm_fee_bps_levels: vec![30, 55, 80],
+            norm_liquidity_mult_levels: vec![0.4, 1.0, 2.0],
+            gbm_sigma_levels: vec![1e-4, 1e-3, 7e-3],
+            seeds_per_cell: 40,
+        };
+        let cell = grid::cells(&grid_config)[0];
         let results = vec![CellResult {
             cell,
             candidate_avg: 1.0,
             reference_avg: 2.0,
-            stat: stat(40, -1.0),
+            stat: sample_stat(40, -1.0),
         }];
-        let body = format_cell_table(&results);
+        let body = format_cell_table("a.rs", "b.rs", &results);
+        assert!(body.contains("Candidate: `a.rs`"));
+        assert!(body.contains("Reference: `b.rs`"));
         assert!(body.contains("fragility check, not a ranking input"));
         assert!(body.contains(&format!("| {} |", cell.index)));
         assert!(body.contains("-1.0000"));

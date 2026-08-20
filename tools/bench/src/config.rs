@@ -32,11 +32,29 @@ struct RawSegment {
     subset_of: Option<String>,
 }
 
+// Grid mode's axis levels and per-cell seed count (docs/DESIGN.md §2.3) are "ours,
+// protocol-level" per §3.1's own bucket list ("seed segments, search budget, **grid
+// levels**, sim counts") — they belong here, not as Rust consts, so a future change to the
+// factorial is a config edit plus a §2 update, not a recompile. `deny_unknown_fields` for
+// the same fail-fast reason as `RawSegment`. The grid's own *seed addressing* (the base
+// offset and the `base + cell*1_000 + i` formula) stays in `grid.rs` — this file's own
+// header comment already carves grid seeds out as "not a segment", and the formula itself
+// is code, not a tunable value.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGridConfig {
+    norm_fee_bps_levels: Vec<u16>,
+    norm_liquidity_mult_levels: Vec<f64>,
+    gbm_sigma_levels: Vec<f64>,
+    seeds_per_cell: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBenchConfig {
     #[serde(default)]
     segments: HashMap<String, RawSegment>,
+    grid: Option<RawGridConfig>,
 }
 
 /// A named, contiguous-stride block of seeds, plus the protocol flags that govern how it
@@ -69,9 +87,20 @@ impl Segment {
     }
 }
 
+/// Grid mode's factorial axes and per-cell seed count (docs/DESIGN.md §2.3), loaded from
+/// `config/bench.toml`'s `[grid]` table.
+#[derive(Debug, Clone)]
+pub struct GridConfig {
+    pub norm_fee_bps_levels: Vec<u16>,
+    pub norm_liquidity_mult_levels: Vec<f64>,
+    pub gbm_sigma_levels: Vec<f64>,
+    pub seeds_per_cell: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
     segments: HashMap<String, Segment>,
+    grid: Option<GridConfig>,
 }
 
 impl BenchConfig {
@@ -145,7 +174,9 @@ impl BenchConfig {
 
         validate_disjoint(&segments)?;
 
-        Ok(Self { segments })
+        let grid = raw.grid.map(|g| validate_grid(&g)).transpose()?;
+
+        Ok(Self { segments, grid })
     }
 
     pub fn segment(&self, name: &str) -> anyhow::Result<&Segment> {
@@ -155,6 +186,15 @@ impl BenchConfig {
                 self.segment_names()
             )
         })
+    }
+
+    /// Grid mode's config, if `config/bench.toml` declares a `[grid]` table. Fails only when
+    /// a caller actually needs it (grid mode itself) — `compare`/`anchor`/`l1` don't, and
+    /// shouldn't have to satisfy a requirement they never touch.
+    pub fn grid(&self) -> anyhow::Result<&GridConfig> {
+        self.grid
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("bench config declares no [grid] table"))
     }
 
     fn segment_names(&self) -> String {
@@ -236,6 +276,28 @@ fn validate_disjoint(segments: &HashMap<String, Segment>) -> anyhow::Result<()> 
     }
 
     Ok(())
+}
+
+fn validate_grid(raw: &RawGridConfig) -> anyhow::Result<GridConfig> {
+    if raw.norm_fee_bps_levels.is_empty() {
+        anyhow::bail!("grid config's norm_fee_bps_levels is empty");
+    }
+    if raw.norm_liquidity_mult_levels.is_empty() {
+        anyhow::bail!("grid config's norm_liquidity_mult_levels is empty");
+    }
+    if raw.gbm_sigma_levels.is_empty() {
+        anyhow::bail!("grid config's gbm_sigma_levels is empty");
+    }
+    if raw.seeds_per_cell == 0 {
+        anyhow::bail!("grid config's seeds_per_cell is 0");
+    }
+
+    Ok(GridConfig {
+        norm_fee_bps_levels: raw.norm_fee_bps_levels.clone(),
+        norm_liquidity_mult_levels: raw.norm_liquidity_mult_levels.clone(),
+        gbm_sigma_levels: raw.gbm_sigma_levels.clone(),
+        seeds_per_cell: raw.seeds_per_cell,
+    })
 }
 
 #[cfg(test)]
@@ -459,6 +521,87 @@ singel_use = true
         assert_eq!(test.start, 3_000_000);
         assert_eq!(test.count, 1000);
         assert!(test.single_use);
+    }
+
+    /// Loads the actual shipped `config/bench.toml`'s `[grid]` table and checks it against
+    /// docs/DESIGN.md §2.3's own axis table, plus that grid mode's seed range (computed from
+    /// the loaded config, not a hardcoded copy of it) stays clear of every declared segment.
+    #[test]
+    fn shipped_config_declares_grid_matching_design_doc_axes() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cfg = BenchConfig::load(&repo_root.join(DEFAULT_CONFIG_PATH)).unwrap();
+        let grid = cfg.grid().unwrap();
+
+        assert_eq!(grid.norm_fee_bps_levels, vec![30, 55, 80]);
+        assert_eq!(grid.norm_liquidity_mult_levels, vec![0.4, 1.0, 2.0]);
+        assert_eq!(grid.gbm_sigma_levels, vec![1e-4, 1e-3, 7e-3]);
+        assert_eq!(grid.seeds_per_cell, 40);
+
+        let n_cells = grid.norm_fee_bps_levels.len()
+            * grid.norm_liquidity_mult_levels.len()
+            * grid.gbm_sigma_levels.len();
+        let grid_seed_base = 4_000_000_u64;
+        let grid_max_seed =
+            grid_seed_base + (n_cells as u64 - 1) * 1_000 + (grid.seeds_per_cell - 1);
+
+        for name in ["observation", "train", "screening", "validation", "test"] {
+            let segment = cfg.segment(name).unwrap();
+            let segment_max_seed = segment.start + (segment.count - 1) * segment.stride;
+            assert!(
+                grid_seed_base > segment_max_seed || segment.start > grid_max_seed,
+                "grid's seed range [{grid_seed_base}, {grid_max_seed}] must not overlap \
+                 segment `{name}`'s [{}, {segment_max_seed}]",
+                segment.start,
+            );
+        }
+    }
+
+    #[test]
+    fn grid_accessor_fails_when_no_grid_table_declared() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let err = cfg.grid().unwrap_err();
+        assert!(
+            err.to_string().contains("no [grid] table"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn grid_table_parses_and_validates() {
+        let text = format!(
+            "{}\n[grid]\nnorm_fee_bps_levels = [30, 55, 80]\nnorm_liquidity_mult_levels = [0.4, 1.0, 2.0]\ngbm_sigma_levels = [0.0001, 0.001, 0.007]\nseeds_per_cell = 40\n",
+            sample_valid()
+        );
+        let cfg = BenchConfig::parse(&text).unwrap();
+        let grid = cfg.grid().unwrap();
+        assert_eq!(grid.norm_fee_bps_levels, vec![30, 55, 80]);
+        assert_eq!(grid.seeds_per_cell, 40);
+    }
+
+    #[test]
+    fn grid_table_rejects_empty_levels() {
+        let text = format!(
+            "{}\n[grid]\nnorm_fee_bps_levels = []\nnorm_liquidity_mult_levels = [1.0]\ngbm_sigma_levels = [0.001]\nseeds_per_cell = 40\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("norm_fee_bps_levels is empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn grid_table_rejects_zero_seeds_per_cell() {
+        let text = format!(
+            "{}\n[grid]\nnorm_fee_bps_levels = [30]\nnorm_liquidity_mult_levels = [1.0]\ngbm_sigma_levels = [0.001]\nseeds_per_cell = 0\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("seeds_per_cell is 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

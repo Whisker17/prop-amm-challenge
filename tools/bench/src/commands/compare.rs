@@ -154,24 +154,13 @@ fn format_regime_slices(slices: &[(regime::Regime, stats::PairedStat)]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::PairedStat;
-
-    fn stat(n: usize, mean_diff: f64) -> PairedStat {
-        PairedStat {
-            n,
-            mean_diff,
-            std_error: 0.0,
-            t_critical: f64::NAN,
-            ci_low: mean_diff,
-            ci_high: mean_diff,
-        }
-    }
+    use crate::stats::tests::sample_stat;
 
     #[test]
     fn format_regime_slices_reports_pooled_mean_and_every_bin() {
         let a = regime::classify_seed(&SimulationConfig::default(), 1);
         let b = regime::classify_seed(&SimulationConfig::default(), 2);
-        let slices = vec![(a, stat(2, 4.0)), (b, stat(2, 2.0))];
+        let slices = vec![(a, sample_stat(2, 4.0)), (b, sample_stat(2, 2.0))];
         let body = format_regime_slices(&slices);
         assert!(body.contains("pooled=3.000000"));
         assert!(body.contains(&a.label()));

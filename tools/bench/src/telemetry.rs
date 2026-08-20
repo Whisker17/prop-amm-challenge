@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 
@@ -36,13 +37,12 @@ thread_local! {
     static COUNTERS: RefCell<[VolumeCounters; N_SLOTS]> = RefCell::new([VolumeCounters::default(); N_SLOTS]);
 }
 
-/// Resets this thread's counters to zero. Call immediately before driving one simulation, so
-/// the read after that simulation reflects exactly it — "counters reset at a known
-/// simulation boundary" (the ticket's own phrasing).
-fn reset_thread_counters() {
-    COUNTERS.with(|c| *c.borrow_mut() = [VolumeCounters::default(); N_SLOTS]);
-}
-
+/// Reads this thread's counters and resets them to zero in the same step, so the next
+/// simulation this thread picks up starts clean — "counters reset at a known simulation
+/// boundary" (the ticket's own phrasing). A thread's counters start at zero regardless (the
+/// `thread_local!` initializer is `VolumeCounters::default()`), so no separate reset-before
+/// call is needed: every simulation's counters are exactly `take_thread_counters()`'s value
+/// since the *previous* call on this thread (or since the thread's first use).
 fn take_thread_counters() -> [VolumeCounters; N_SLOTS] {
     COUNTERS.with(|c| {
         let counters = *c.borrow();
@@ -61,7 +61,13 @@ static REAL_AFTER_SWAP: [AtomicPtr<()>; N_SLOTS] = [
     AtomicPtr::new(std::ptr::null_mut()),
 ];
 
-type FfiAfterSwapFn = AfterSwapFn;
+// `REAL_AFTER_SWAP` is process-global, so two *concurrent* calls to
+// `run_batch_native_with_l1` (e.g. two tests in the same binary, which Rust's default test
+// harness runs on separate threads) would otherwise race: one call's `install()` can
+// overwrite the delegate another call's in-flight rayon workers are still reading. Held for
+// each call's entire install-through-collect duration — internal rayon parallelism inside
+// one call is unaffected, only concurrent *calls* are serialized.
+static CALL_LOCK: Mutex<()> = Mutex::new(());
 
 fn install_real(slot: AmmSlot, real: Option<AfterSwapFn>) {
     let ptr = match real {
@@ -101,7 +107,7 @@ fn record_and_delegate(slot: AmmSlot, data: &[u8], storage: &mut [u8]) {
 
     let ptr = REAL_AFTER_SWAP[slot as usize].load(Ordering::Relaxed);
     if !ptr.is_null() {
-        let real: FfiAfterSwapFn = unsafe { std::mem::transmute(ptr) };
+        let real: AfterSwapFn = unsafe { std::mem::transmute(ptr) };
         real(data, storage);
     }
 }
@@ -160,6 +166,9 @@ pub fn run_batch_native_with_l1(
     submission_after_swap: Option<AfterSwapFn>,
     configs: Vec<SimulationConfig>,
 ) -> anyhow::Result<(BatchResult, Vec<L1Sim>)> {
+    let _guard = CALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     install(submission_after_swap, Some(normalizer::after_swap));
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -170,7 +179,6 @@ pub fn run_batch_native_with_l1(
         configs
             .par_iter()
             .map(|config| -> anyhow::Result<(SimResult, L1Sim)> {
-                reset_thread_counters();
                 let result = engine::run_simulation_native(
                     submission_fn,
                     Some(submission_recorder),
@@ -200,6 +208,40 @@ pub fn run_batch_native_with_l1(
 mod tests {
     use super::*;
     use prop_amm_shared::config::HyperparameterVariance;
+    use prop_amm_shared::instruction::decode_instruction;
+
+    /// A synthetic swap fn whose output depends on `storage` (a trade counter its own
+    /// `after_swap` maintains) — unlike `normalizer::compute_swap`/`after_swap` (a no-op),
+    /// this exercises telemetry's delegate-to-a-*real*-after-swap branch, the one that can
+    /// actually mutate `storage`.
+    fn stateful_swap(data: &[u8]) -> u64 {
+        let (side, input_amount, reserve_x, reserve_y) = decode_instruction(data);
+        if reserve_x == 0 || reserve_y == 0 || data.len() < 33 {
+            return 0;
+        }
+        let trade_count = u64::from_le_bytes(data[25..33].try_into().unwrap());
+        let fee_bps = (30 + (trade_count % 50)) as u128;
+        let (input, rx, ry) = (input_amount as u128, reserve_x as u128, reserve_y as u128);
+        let k = rx * ry;
+        match side {
+            0 => {
+                let net = input * (10_000 - fee_bps) / 10_000;
+                let new_ry = ry + net;
+                rx.saturating_sub(k.div_ceil(new_ry)) as u64
+            }
+            1 => {
+                let net = input * (10_000 - fee_bps) / 10_000;
+                let new_rx = rx + net;
+                ry.saturating_sub(k.div_ceil(new_rx)) as u64
+            }
+            _ => 0,
+        }
+    }
+
+    fn stateful_after_swap(_data: &[u8], storage: &mut [u8]) {
+        let count = u64::from_le_bytes(storage[0..8].try_into().unwrap());
+        storage[0..8].copy_from_slice(&count.wrapping_add(1).to_le_bytes());
+    }
 
     fn tiny_configs(n: u64) -> Vec<SimulationConfig> {
         let base = SimulationConfig {
@@ -247,6 +289,75 @@ mod tests {
             assert_eq!(a.submission_edge, b.submission_edge);
         }
         assert_eq!(l1_sims.len(), with_telemetry.results.len());
+    }
+
+    /// The same acceptance criterion, but with a candidate that actually *has* an
+    /// `after_swap` that mutates `storage` — the branch `submission_after_swap = None`
+    /// above can't reach. This is the one that would break first if the recorder's
+    /// delegate-when-present path ever stopped being a pure pass-through.
+    #[test]
+    fn telemetry_delegates_to_a_stateful_after_swap_bit_identically() {
+        let configs = tiny_configs(6);
+
+        let without_telemetry = prop_amm_sim::runner::run_batch_native(
+            stateful_swap,
+            Some(stateful_after_swap),
+            normalizer::compute_swap,
+            Some(normalizer::after_swap),
+            configs.clone(),
+            None,
+        )
+        .unwrap();
+
+        let (with_telemetry, _l1_sims) =
+            run_batch_native_with_l1(stateful_swap, Some(stateful_after_swap), configs).unwrap();
+
+        assert_eq!(without_telemetry.total_edge, with_telemetry.total_edge);
+        for (a, b) in without_telemetry
+            .results
+            .iter()
+            .zip(with_telemetry.results.iter())
+        {
+            assert_eq!(a.seed, b.seed);
+            assert_eq!(a.submission_edge, b.submission_edge);
+        }
+    }
+
+    /// docs/DESIGN.md §2.8's actual claim — "shows how the router splits flow under perfect
+    /// symmetry" — pointwise, not over the graded distribution: pin `norm_fee_bps` and
+    /// `norm_liquidity_mult` so both AMMs run the identical curve over identical starting
+    /// reserves (other axes stay sampled; they affect both AMMs equally and can't break the
+    /// symmetry). This is the controlled measurement the observation-segment aggregate in
+    /// `results/2026-08-20-l1.md` is not — that run necessarily uses a submission with a
+    /// *fixed* 30bps fee against an opponent *sampled* from `U[30,80]`, which is a different,
+    /// harder comparison (see `strategies/000-normalizer/NOTES.md`'s Finding).
+    #[test]
+    fn matched_curve_and_reserves_produce_flow_share_near_half() {
+        let variance = HyperparameterVariance::default();
+        let base = SimulationConfig {
+            n_steps: 300,
+            ..SimulationConfig::default()
+        };
+        let configs: Vec<SimulationConfig> = (500..600)
+            .map(|seed| {
+                let mut config = variance.apply(&base, seed);
+                config.norm_fee_bps = 30;
+                config.norm_liquidity_mult = 1.0;
+                config
+            })
+            .collect();
+
+        let (_batch, l1_sims) =
+            run_batch_native_with_l1(normalizer::compute_swap, None, configs).unwrap();
+
+        let total_submission_volume: f64 = l1_sims.iter().map(|s| s.submission_volume).sum();
+        let total_normalizer_volume: f64 = l1_sims.iter().map(|s| s.normalizer_volume).sum();
+        let share = flow_share(total_submission_volume, total_normalizer_volume).unwrap();
+
+        assert!(
+            (share - 0.5).abs() < 0.03,
+            "matched curve and reserves should split flow close to 0.5, got {share}"
+        );
     }
 
     #[test]

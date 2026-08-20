@@ -141,11 +141,13 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
         ..SimulationConfig::default()
     };
 
+    // Built once: every file in this run shares the same segment, so the sampled configs
+    // are identical for each — only cloned per file, not recomputed (each
+    // `run_batch_with_l1` call consumes its `Vec<SimulationConfig>`).
+    let configs = segment.sim_configs(&base);
     let mut sections = Vec::with_capacity(args.files.len());
-    let mut total_n_sims = 0usize;
 
     for file in &args.files {
-        let configs = segment.sim_configs(&base);
         println!("Building {file}...");
         let loaded = compile::build_and_load(file, Slot::Zero)?;
 
@@ -155,7 +157,7 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
             configs.len(),
             args.steps,
         );
-        let (batch, l1_sims) = loaded.run_batch_with_l1(configs)?;
+        let (batch, l1_sims) = loaded.run_batch_with_l1(configs.clone())?;
         // `loaded`'s build dir is removed on Drop at the end of this iteration
         // (docs/DESIGN.md §3.4).
 
@@ -169,14 +171,18 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
             )),
         );
 
-        total_n_sims += batch.n_sims();
         sections.push(format_section(file, batch.n_sims(), &agg));
     }
 
+    // `n_sims` is the segment's own size (identical for every file measured above), not a
+    // sum across files — a report covering N files still ran N independent measurements of
+    // the same `segment_name`-sized segment, not one measurement N times as large
+    // (docs/DESIGN.md §3.3's provenance rule: a reported number must state what it actually
+    // measures).
     let meta = ReportMeta {
         stage: STAGE.to_string(),
         segment: segment_name.to_string(),
-        n_sims: total_n_sims,
+        n_sims: configs.len(),
         n_steps: args.steps,
         execution_path: "native".to_string(),
     };
