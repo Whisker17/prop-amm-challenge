@@ -151,9 +151,10 @@ fans out; feature → its release branch.
 
 - **Primary:** the issue-title prefix `[X.Y.Z]` (e.g. `[0.2.0] [Scheduler] …`).
   Tracker-independent, no API call.
-- **Cross-check:** Linear's linked release entity (`docs/agents/issue-tracker.md`
-  § Release ↔ version binding) — a field distinct from the title text, fetched via
-  `get_issue({includeReleases: true})`. Governance and `upstream-sync` issues carry
+- **Cross-check:** Linear's linked release entity (`releases[].version` on the issue,
+  fetched via `get_issue({includeReleases: true})`), as defined in
+  `docs/agents/issue-tracker.md` § Release ↔ version binding — a field genuinely
+  distinct from the title text. Governance and `upstream-sync` issues carry
   neither signal; the row does not apply to them.
 
 If they disagree, or the cross-check exists and either signal is missing,
@@ -322,7 +323,7 @@ not a triage surface. See `docs/agents/issue-tracker.md`.
 ### Triage labels
 
 Canonical role names (`needs-triage`, `needs-info`, `ready-for-agent`,
-`ready-for-human`, `wontfix`) written verbatim into each issue file's `Labels:` line. See
+`ready-for-human`, `wontfix`) attached as real Linear labels on the issue. See
 `docs/agents/triage-labels.md`.
 
 ### Domain docs

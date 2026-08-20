@@ -10,7 +10,7 @@ This replaces an earlier design where the tracker was markdown files committed u
 commit, so it lands in the same PR as the work" — does **not** carry over: Linear and git
 are now two independently-updatable systems that can disagree. § Decisions below records
 that explicitly, with the mitigation. `.scratch/` itself is untouched by this move — see
-§ What happened to `.scratch/`.
+§ What happened to `.scratch/` (and other non-carve-out stale references).
 
 ## Reading and writing issues
 
@@ -38,7 +38,7 @@ docs, not to describe a format you produce.
 | Old `Key:` line | Linear field | Notes |
 | --- | --- | --- |
 | `Id:` | the issue identifier (`WHI-NNNN`) | Assigned by Linear on create. Never hand-allocated. |
-| `State:` | `state` (workflow status) | Team's states are `Backlog` / `Todo` / `In Progress` / `In Review` / `Done` / `Canceled` / `Duplicate` — a 1:1 name match with the old lifecycle vocabulary below. |
+| `State:` | `state` (workflow status) | Team's states are `Backlog` / `Todo` / `In Progress` / `In Review` / `Done` / `Canceled` / `Duplicate`. The resolved-base git workflow below only ever moves an issue through `Todo` → `In Progress` → `In Review` → `Done` (or `Canceled`) — a 1:1 name match with the old lifecycle vocabulary. `Backlog` and `Duplicate` exist as team states but aren't part of that flow. |
 | `Status:` (triage role) | a **label** | `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` already exist as labels for this team. An issue can carry other labels too — the triage role is just one of them, same as before it was "one value on a line." |
 | `Release:` | the linked **release entity** | `save_issue({addReleases: ["<release id or slug>"]})` or `setReleases`. See § Release ↔ version binding — this is *not* the same thing as the project or a milestone. |
 | `Labels:` (type) | Linear labels | `research`, `chore`, `hotfix` already exist (lowercase, this team). `bug`, `feature`, `upstream-sync` don't exist yet as lowercase labels — create with `linear.create_issue_label({name, team})` the first time one is needed, matching the existing casing. |
@@ -60,11 +60,14 @@ here they are, with the reasoning.
 
 **1. Is the in-repo tracker deleted, or kept as a read-only archive?**
 Neither, exactly. `.scratch/` was **never actually populated** — `NEXT_ID` was still `001`,
-no issue file was ever created, `releases/` held only `.gitkeep`. There is no real history
-to lose by deleting it and no real history to preserve by archiving it, so the "two
-authorities" risk the original framing worried about doesn't exist in practice: there is
-nothing in `.scratch/` that could disagree with Linear. It is left in place, untouched,
-and dead — see § What happened to `.scratch/` for why this PR doesn't delete it either.
+no issue file was ever created, `releases/` held only `.gitkeep`. There is no real *issue
+data* to lose by deleting it or to preserve by archiving it. That does **not** mean
+`.scratch/` is harmless as-is: `.scratch/README.md` still asserts "This directory **is**
+the issue tracker for this repo," which is now false and is exactly the kind of second
+authority Decision 1 was framed to avoid — it just isn't a *data* authority, since there's
+no issue content behind the claim. It is left in place, stale text and all, because
+deleting or correcting it is outside this PR's carve-out-only scope — see § What happened
+to `.scratch/` (and other non-carve-out stale references).
 
 **2. What replaces "state change is a commit"?**
 Nothing does — this is accepted explicitly, not papered over. The old tracker's structural
@@ -93,14 +96,24 @@ the cross-check to be real rather than reading the same fact twice. The project
 ("Prop AMM Challenge — strategy layer") is a single fixed value for every issue in this
 repo and could never serve as a version signal.
 
-## What happened to `.scratch/`
+## What happened to `.scratch/` (and other non-carve-out stale references)
 
-Untouched. This PR touches only the governance carve-out file list
+`.scratch/` is untouched. This PR touches only the governance carve-out file list
 (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out), and `.scratch/` is not on that
-list — deleting it here would violate this same issue's own scope constraint ("the diff
-contains carve-out paths only"). Since it holds no real content (see Decision 1), leaving
-it costs nothing today. Physically removing it is a separate, small chore issue for
-whoever picks it up next; nothing in this repo reads it anymore as of this change.
+list — deleting or correcting it here would violate this same issue's own scope
+constraint ("the diff contains carve-out paths only"). Since it holds no real issue data
+(Decision 1), this doesn't block anything today, but its `README.md` is now factually
+wrong and stays that way until a follow-up chore issue removes or corrects it.
+
+The same reasoning covers `docs/DEFERRED_ISSUES.md`, also outside the carve-out: its
+entry for `WHI-1192` still describes the tracker as in-repo and says the naming
+inconsistency "resolves when WHI-1196 lands." This PR is WHI-1196, but resolving that
+entry means editing `docs/DEFERRED_ISSUES.md`, which is not a carve-out path — left for
+the same follow-up.
+
+This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file) no
+longer asserts the tracker is in-repo markdown as of this PR; the two files above are
+known, out-of-scope exceptions, not overlooked ones.
 
 ## Issue lifecycle ↔ Git (mandatory)
 
@@ -140,7 +153,10 @@ example: no `[X.Y.Z]` prefix, no release entity.)
 ## Release records
 
 The version axis needs a home too (`docs/GIT_WORKFLOW.md` § Version axis). One **release**
-per version, on the "Prop-AMM-Challenge" pipeline:
+per version, on the "Prop-AMM-Challenge" **release pipeline** — a separate Linear object
+from the "Prop AMM Challenge — strategy layer" **project** referenced everywhere else in
+this doc; a pipeline holds releases, a project holds issues, and this repo happens to have
+one of each with similar names:
 
 - **Create/update:** `linear.save_release({ name: "0.1.0", version: "0.1.0", pipeline: "Prop-AMM-Challenge", commitSha: "..." })` — omit `id` to create, pass it to update (e.g. to backfill `commitSha` after tagging).
 - **Read:** `linear.get_release({ id: "<release id or slug>", includeReleaseNotes: true })` or `linear.list_releases({ pipeline: "Prop-AMM-Challenge" })`.
@@ -153,11 +169,18 @@ Fields that matter, same intent as the old per-file record:
   the tag object — dereference explicitly: `git rev-parse 'v0.1.0^{commit}'` (a bare
   `git rev-parse v0.1.0` returns the tag object and will never match a branch head).
 - `startDate` / `targetDate` / `completedAt` — the release's own dates.
+- **Submitted / Score** — no dedicated Linear field for either. Record both as free text
+  in the release's `description` (`save_release({id, description: "Submitted: 2026-08-20\nScore: 210.5"})`)
+  the moment a `lib.rs` from that tag is submitted to the challenge UI and a score comes
+  back — this is the whole reason the version axis exists (`docs/GIT_WORKFLOW.md` §
+  Version axis): without it, a leaderboard number can't be tied back to a tree.
 
 A version's linked issues (via `releases[]`) and each issue's title prefix are the same
 fact written twice, same as before — now in two separately-editable fields rather than two
-lines in one file. They must agree; when they don't, the linked release entity wins (it is
-what git routing reads, per § Decisions #3).
+lines in one file. They must agree; when they don't, this is the same failure as § Release
+↔ version binding disagreeing — **refuse and surface it**, don't pick a side. There is no
+"linked release wins" rule: § Decisions #3 says the linked release is the authoritative
+*signal to read*, not that it silently overrides a title prefix that disagrees with it.
 
 ## Wayfinding operations
 
@@ -167,6 +190,10 @@ with map files, child-ticket files, and directory scans — the map/ticket/block
 
 - **Map:** a Linear issue labelled `wayfinder:map`. Its body is the map body from
   `wayfinder/SKILL.md` (`## Destination` / `## Notes` / `## Decisions so far` / etc.).
+  None of the `wayfinder:*` labels exist yet on this team (unlike the triage and type
+  labels — `docs/agents/triage-labels.md`) — create them with
+  `linear.create_issue_label({name, team: "Whisker-Personal"})` the first time a map
+  is charted.
 - **Child ticket:** a Linear issue with `parentId` set to the map's issue id
   (`save_issue({ parentId: "<map issue id>" })`), carrying a `wayfinder:<type>` label
   (`wayfinder:research` / `wayfinder:prototype` / `wayfinder:grilling` / `wayfinder:task`).

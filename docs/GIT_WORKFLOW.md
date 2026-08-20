@@ -199,8 +199,8 @@ git rev-parse "$BASE"
 Tracker: set the issue to **`In Progress`**. Optionally note the worktree path,
 branch name, and **resolved base** on the issue.
 
-The issue file's `Branch:` line records the branch name once you pick it
-(`docs/agents/issue-tracker.md`) — but the base **must** be the latest
+Linear's `gitBranchName` on the issue already suggests a branch name
+(`docs/agents/issue-tracker.md` § Field mapping) — but the base **must** be the latest
 `origin/<resolved-base>`, never a stale tip and never a guessed `dev`.
 
 > ⚠️ **Base trap.** Never assume your tooling's default base. Run the `merge-base` /
