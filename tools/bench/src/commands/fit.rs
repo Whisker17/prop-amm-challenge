@@ -35,32 +35,43 @@ impl CompileTimings {
         self.samples.push(d);
     }
 
-    fn min(&self) -> Option<Duration> {
-        self.samples.iter().min().copied()
-    }
-
-    fn max(&self) -> Option<Duration> {
-        self.samples.iter().max().copied()
-    }
-
-    fn mean(&self) -> Option<Duration> {
-        if self.samples.is_empty() {
-            return None;
+    /// Every sample after the first. If `.build/fast/` was empty before this run, the very
+    /// first `cargo build` there also compiles `pinocchio`/`wincode`/`prop-amm-submission-sdk`
+    /// from scratch — a one-time cost the "< 1s on a warm build directory" criterion doesn't
+    /// describe. Excluding it (rather than folding it into one min/mean/max) is what keeps a
+    /// single cold-start sample from making every subsequent, genuinely warm compile look
+    /// worse than it is.
+    fn warm_samples(&self) -> &[Duration] {
+        match self.samples.len() {
+            0 => &[],
+            _ => &self.samples[1..],
         }
-        Some(self.samples.iter().sum::<Duration>() / self.samples.len() as u32)
     }
 
     fn summary(&self) -> String {
-        match (self.min(), self.mean(), self.max()) {
-            (Some(min), Some(mean), Some(max)) => format!(
-                "n={}, min={:.3}s, mean={:.3}s, max={:.3}s",
-                self.samples.len(),
-                min.as_secs_f64(),
-                mean.as_secs_f64(),
-                max.as_secs_f64(),
-            ),
-            _ => "no compiles recorded".to_string(),
+        let Some(first) = self.samples.first() else {
+            return "no compiles recorded".to_string();
+        };
+        let warm = self.warm_samples();
+        if warm.is_empty() {
+            return format!(
+                "n=1, first={:.3}s (only sample — nothing to compare it against as \
+                 warm-vs-cold)",
+                first.as_secs_f64()
+            );
         }
+        let min = warm.iter().min().unwrap();
+        let max = warm.iter().max().unwrap();
+        let mean = warm.iter().sum::<Duration>() / warm.len() as u32;
+        format!(
+            "first={:.3}s (may include a one-time dependency build if `.build/fast/` started \
+             empty); remaining {} compiles: min={:.3}s, mean={:.3}s, max={:.3}s",
+            first.as_secs_f64(),
+            warm.len(),
+            min.as_secs_f64(),
+            mean.as_secs_f64(),
+            max.as_secs_f64(),
+        )
     }
 }
 
