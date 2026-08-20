@@ -53,7 +53,7 @@ would pull flow share *below* 0.5).
 This is not merely a plausible story: `tools/bench/src/telemetry.rs`'s
 `matched_curve_and_reserves_produce_flow_share_near_half` test pins `norm_fee_bps = 30` and
 `norm_liquidity_mult = 1.0` (matching this fixture's own fixed curve and reserves) and
-verifies flow share *does* land within 0.03 of 0.5 there — docs/DESIGN.md §2.8's "perfect
+verifies flow share *does* land within 0.01 of 0.5 there — docs/DESIGN.md §2.8's "perfect
 symmetry" claim holds exactly where its own preconditions (matched curve, matched reserves)
 hold. The `observation` segment's 0.606 is not evidence against that claim; it measures a
 different, harder comparison (fixed 30 bps vs. a sampled `U[30,80]` opponent) that §2.8 never

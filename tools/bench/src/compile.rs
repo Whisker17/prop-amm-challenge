@@ -262,23 +262,30 @@ mod tests {
     /// The non-invasiveness acceptance criterion's literal wording — "the same **candidate**
     /// over the same **segment**" — rather than the fast, hermetic proxy the default test
     /// suite uses (a synthetic swap fn, `telemetry.rs::telemetry_is_bit_identical_to_no_
-    /// telemetry`). Ignored by default: it shells out to `prop-amm build` for a real ~10s
-    /// compile, which is disproportionate for every `cargo test --workspace` run given the
-    /// property is already covered hermetically. Run explicitly with
-    /// `cargo test -p prop-amm-bench -- --ignored`.
+    /// telemetry`). Ignored by default: it shells out to `prop-amm build` for a real compile
+    /// plus 1000 sims at the segment's full 10,000 steps, ~190s measured — disproportionate
+    /// for every `cargo test --workspace` run given the property is already covered
+    /// hermetically. Run explicitly with `cargo test -p prop-amm-bench --release --
+    /// --ignored`.
     ///
     /// Cargo runs test binaries with the *crate's own* manifest directory as the working
-    /// directory, but `build_and_load` (via upstream's `ensure_build_dir`) creates its
-    /// isolated build package relative to CWD with no `[workspace]` table of its own — from
-    /// `tools/bench/`, that lands *inside* the real workspace, unexcluded, and `cargo build`
-    /// refuses it (documented in `docs/agents/runtime.md`-adjacent memory as the nested-
-    /// worktree cargo issue, same root cause: an isolated build package needs the repo root
-    /// as CWD). So this test relocates the whole process to the repo root first, then uses
-    /// ordinary relative paths exactly like the real `bench` binary would.
+    /// directory. `set_current_dir` below relocates the process to the repo root so this test
+    /// can use ordinary relative paths like the real `bench` binary would — but that alone
+    /// does **not** make this test runnable from every location: `build_and_load` (via
+    /// upstream's `ensure_build_dir`) creates an isolated build package with no `[workspace]`
+    /// table of its own, and if the repo root it lands under is itself nested inside another
+    /// git worktree of the same repo (as `.claude/worktrees/<name>` is — the location
+    /// `AGENTS.md` mandates for issue work), `cargo`'s ancestor search walks past that
+    /// worktree's own `Cargo.toml` and resolves the *primary clone's* workspace instead,
+    /// which then refuses the isolated package as an unexcluded member. This test therefore
+    /// only passes run from a location that is not nested under another checkout of this
+    /// repo (e.g. a detached scratch worktree created with `git worktree add --detach
+    /// /tmp/<name> <sha>`, not `.claude/worktrees/<name>`) — verified passing that way.
     #[test]
-    #[ignore = "compiles the real starter program (~10s); run explicitly to reproduce the \
-                literal non-invasiveness proof against a real candidate over a declared \
-                segment"]
+    #[ignore = "compiles the real starter program and runs 1000 sims, ~190s; only passes \
+                from a location not nested under another worktree of this repo (see the \
+                doc comment above); run explicitly to reproduce the literal \
+                non-invasiveness proof against a real candidate over a declared segment"]
     fn starter_over_observation_segment_is_bit_identical_with_and_without_telemetry() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         std::env::set_current_dir(&repo_root).expect("chdir to repo root");

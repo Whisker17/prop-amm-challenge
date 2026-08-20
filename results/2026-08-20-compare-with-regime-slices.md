@@ -1,9 +1,11 @@
 # compare (with regime slices) — 2026-08-20
 
 > **Filename note (WHI-1195):** this is a real `bench compare` run at commit `cdf54fe`
-> (clean tree — the `bin compare` command's own commit-sha helper reported `+dirty` only
-> because this report was generated from a disposable scratch copy with an unrelated file
-> moved aside; the code itself was unmodified). It is *not* named `2026-08-20-compare.md`
+> (clean tree — the `bench compare` command's own commit-sha helper reported `+dirty` in the
+> generated file because this report was produced from a disposable scratch copy with an
+> unrelated file moved aside; the code itself was unmodified, so the `Commit:` line below has
+> been hand-corrected from the generated `cdf54fe+dirty` to plain `cdf54fe`). It is *not*
+> named `2026-08-20-compare.md`
 > because that slot was already taken by WHI-1193's own compare run, committed before
 > regime slicing existed — `report.rs`'s one-report-per-`(day, stage)` rule (docs/DESIGN.md
 > §3.3: never silently overwrite committed evidence) means a second same-day `compare`
