@@ -126,6 +126,15 @@ pub fn ensure_fast_build_dir(safe_source: &str) -> anyhow::Result<PathBuf> {
     ensure_fast_build_dir_at(Path::new(FAST_BUILD_DIR), safe_source)
 }
 
+/// Whether `.build/fast/target/` already exists. A caller measuring compile time (`bench
+/// fit`'s timing report) should check this **before** the first compile of a run: if it's
+/// already `true`, even that first sample is a genuinely warm compile, not a one-time
+/// dependency build — a fact about the directory's prior state, not something to be guessed
+/// from a sample's position in the sequence.
+pub fn fast_build_dir_is_warm() -> bool {
+    Path::new(FAST_BUILD_DIR).join("target").exists()
+}
+
 fn ensure_fast_build_dir_at(build_dir: &Path, safe_source: &str) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(build_dir.join("src"))?;
 

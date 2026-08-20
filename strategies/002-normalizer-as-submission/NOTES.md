@@ -65,9 +65,10 @@ self-assessment above: the live opponent's fee is resampled `~U[30, 80]` every s
 this only actually matches the opponent's fee in the roughly 1-in-51 sims where the draw
 lands on 30 — the rest of the time it is a fixed-30bps CPMM against a competitor priced
 somewhere in `[30, 80]`). Running the opponent's own formula, at its own default fee, as the
-candidate still nets a positive edge (less than `001-cpmm-fee`'s fitted 399.97, and well below
-the starter's 210.50 anchor at its unfit 500bps) — showing how the order router splits flow
-between two AMMs of the identical *kind*, without either side having a curve-shape advantage.
+candidate still nets a positive edge — well below `001-cpmm-fee`'s fitted 399.97 (roughly
+half), and modestly below the starter's 210.50 anchor at its unfit 500bps (~5% lower) —
+showing how the order router splits flow between two AMMs of the identical *kind*, without
+either side having a curve-shape advantage.
 
 Measured via `cargo run -p prop-amm --release -- run strategies/002-normalizer-as-submission/lib.rs`
 (the CLI's own default segment/step count). `bench anchor`/`bench compare` were not used for

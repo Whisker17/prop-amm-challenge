@@ -75,6 +75,9 @@ fn locate_block(source: &str) -> anyhow::Result<(usize, usize, Vec<&str>)> {
         anyhow::bail!("`{END_MARKER}` must come after `{BEGIN_MARKER}`");
     }
 
+    // Blank lines inside the block are dropped, not preserved — a rewrite emits exactly one
+    // line per declared parameter and nothing else, so a blank line for readability between
+    // parameters would not survive a round trip. No current family's block has one.
     let inner: Vec<&str> = lines[begin + 1..end]
         .iter()
         .copied()

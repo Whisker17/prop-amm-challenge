@@ -259,9 +259,14 @@ the decomposition is wrong without failing. See §8.
 - **starter, as shipped** — 500 bps, avg edge 210.50 on `0..=999`. A fixed reference point
   and the parity anchor. Note that 500 bps is almost certainly *not* the family optimum;
   the competitor charges 30–80 bps.
-- **normalizer-as-submission** — `crates/shared/src/normalizer.rs` run as the candidate,
-  i.e. the same curve as the opponent. A meaningful zero: it shows how the router splits
-  flow under perfect symmetry.
+- **normalizer-as-submission** — `crates/shared/src/normalizer.rs`'s mechanism run as the
+  candidate, at its own default fee. Not per-simulation symmetric with the live opponent —
+  the opponent's fee is resampled every simulation (`norm_fee_bps ~ U[30, 80]`, §2.3), and a
+  submission's `compute_swap` has no channel to observe that draw, only its own reserves and
+  storage. A meaningful zero regardless: it shows how the router splits flow between two AMMs
+  running the identical formula. (WHI-1194 discovered this nuance while implementing it —
+  `strategies/002-normalizer-as-submission/NOTES.md` carries the full fidelity
+  self-assessment.)
 
 `001` doubles as the **self-check of the protocol itself**: a fee family's edge response
 should be single-peaked. If bench reports a multi-modal response or an absurd optimum, that

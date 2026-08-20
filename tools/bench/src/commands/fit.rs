@@ -22,51 +22,78 @@ pub struct FitArgs {
     strategy: String,
 }
 
-/// Per-point compile timings collected across the whole run — the evidence for "the fast
-/// path compiles a parameter point in < 1s on a warm build directory" (WHI-1194's own
-/// acceptance criterion), rather than something left to be eyeballed from cargo's own stderr.
-#[derive(Default)]
+/// The acceptance criterion this module measures against: "compiles a parameter point in
+/// < 1s on a warm build directory" (WHI-1194's own wording). A per-point claim — checked
+/// here as "every warm sample's compile time is under this", not just the mean.
+const WARM_COMPILE_TARGET_SECS: f64 = 1.0;
+
+/// Per-point compile timings collected across the whole run — the evidence for
+/// [`WARM_COMPILE_TARGET_SECS`], rather than something left to be eyeballed from cargo's own
+/// stderr. `cold_start`, checked once via `fast_compile::fast_build_dir_is_warm()` **before**
+/// the first compile of a run, is a fact about `.build/fast/`'s prior state, not a guess from
+/// a sample's position — if the directory was already warm, even the first sample is a fair
+/// warm-compile measurement.
 struct CompileTimings {
     samples: Vec<Duration>,
+    cold_start: bool,
 }
 
 impl CompileTimings {
+    fn new(cold_start: bool) -> Self {
+        Self {
+            samples: Vec::new(),
+            cold_start,
+        }
+    }
+
     fn record(&mut self, d: Duration) {
         self.samples.push(d);
     }
 
-    /// Every sample after the first. If `.build/fast/` was empty before this run, the very
-    /// first `cargo build` there also compiles `pinocchio`/`wincode`/`prop-amm-submission-sdk`
-    /// from scratch — a one-time cost the "< 1s on a warm build directory" criterion doesn't
-    /// describe. Excluding it (rather than folding it into one min/mean/max) is what keeps a
-    /// single cold-start sample from making every subsequent, genuinely warm compile look
-    /// worse than it is.
+    /// Samples that are fair warm-compile measurements: every sample if the directory was
+    /// already warm before this run, otherwise every sample after the first (which paid the
+    /// one-time cost of compiling `pinocchio`/`wincode`/`prop-amm-submission-sdk`).
     fn warm_samples(&self) -> &[Duration] {
-        match self.samples.len() {
-            0 => &[],
-            _ => &self.samples[1..],
+        if self.cold_start && !self.samples.is_empty() {
+            &self.samples[1..]
+        } else {
+            &self.samples
         }
     }
 
     fn summary(&self) -> String {
-        let Some(first) = self.samples.first() else {
-            return "no compiles recorded".to_string();
-        };
         let warm = self.warm_samples();
+        let cold_note = if self.cold_start {
+            match self.samples.first() {
+                Some(first) => format!(
+                    "cold start (one-time dependency build): {:.3}s; ",
+                    first.as_secs_f64()
+                ),
+                None => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
         if warm.is_empty() {
-            return format!(
-                "n=1, first={:.3}s (only sample — nothing to compare it against as \
-                 warm-vs-cold)",
-                first.as_secs_f64()
-            );
+            return format!("{cold_note}no warm samples recorded");
         }
+
         let min = warm.iter().min().unwrap();
         let max = warm.iter().max().unwrap();
         let mean = warm.iter().sum::<Duration>() / warm.len() as u32;
+        let verdict = if max.as_secs_f64() < WARM_COMPILE_TARGET_SECS {
+            format!("MEETS the <{WARM_COMPILE_TARGET_SECS:.0}s target (max warm sample below it)")
+        } else {
+            format!(
+                "EXCEEDS the <{WARM_COMPILE_TARGET_SECS:.0}s target (max warm sample \
+                 {:.3}s) — see NOTES.md for whether this reflects system contention rather \
+                 than the fast path itself",
+                max.as_secs_f64()
+            )
+        };
         format!(
-            "first={:.3}s (may include a one-time dependency build if `.build/fast/` started \
-             empty); remaining {} compiles: min={:.3}s, mean={:.3}s, max={:.3}s",
-            first.as_secs_f64(),
+            "{cold_note}{} warm compiles: min={:.3}s, mean={:.3}s, max={:.3}s — {verdict}",
             warm.len(),
             min.as_secs_f64(),
             mean.as_secs_f64(),
@@ -129,7 +156,7 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let base = SimulationConfig::default();
     let screening_configs = screening.sim_configs(&base);
 
-    let mut timings = CompileTimings::default();
+    let mut timings = CompileTimings::new(!fast_compile::fast_build_dir_is_warm());
     let outcome = search::coarse_grid_then_coordinate_descent(&specs, budget, |values| {
         let rewritten = params::rewrite_params(&source, values)?;
         let safe_source = fast_compile::make_safe_source(&rewritten)?;
@@ -182,9 +209,8 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let compile_timing_section = ReportSection {
         heading: "Fast-path compile timing".to_string(),
         body: format!(
-            "- {}\n- This is the evidence for \"compiles a parameter point in < 1s on a \
-             warm build directory\" — every sample above is a `cargo build` invocation \
-             against the single, reused `.build/fast/` directory.\n",
+            "- {}\n- Every sample is a `cargo build` invocation against the single, reused \
+             `.build/fast/` directory (search phase only).\n",
             timings.summary()
         ),
     };
@@ -198,6 +224,7 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
             .collect::<String>(),
     };
 
+    let mut self_check_section: Option<ReportSection> = None;
     if specs.len() == 1 {
         let points: Vec<(i128, f64)> = outcome
             .history
@@ -255,6 +282,14 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
             );
         }
         println!("Single-peaked self-check: PASS (tolerance {tolerance:.6}).");
+        self_check_section = Some(ReportSection {
+            heading: "Single-peaked self-check".to_string(),
+            body: format!(
+                "PASS (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the `{}`<->edge \
+                 response over the searched range is single-peaked.\n",
+                specs[0].name
+            ),
+        });
     }
 
     // Final point evaluation (docs/DESIGN.md §2.5): full train, then validation.
@@ -315,22 +350,73 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let compile_timing_section = ReportSection {
         heading: "Fast-path compile timing".to_string(),
         body: format!(
-            "- {} (search phase plus the two final train/validation builds)\n- This is the \
-             evidence for \"compiles a parameter point in < 1s on a warm build directory\" \
-             — every sample is a `cargo build` invocation against the single, reused \
-             `.build/fast/` directory.\n",
+            "- {}\n- (search phase plus the two final train/validation builds) Every sample \
+             is a `cargo build` invocation against the single, reused `.build/fast/` \
+             directory.\n",
             timings.summary()
         ),
     };
-    let sections = vec![
-        frozen_space_section,
-        budget_section,
-        compile_timing_section,
-        winning_point_section,
-        curve_section,
-    ];
+    let mut sections = vec![frozen_space_section, budget_section, compile_timing_section];
+    sections.extend(self_check_section);
+    sections.push(winning_point_section);
+    sections.push(curve_section);
     let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
     println!("Report written to {}", path.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_start_excludes_the_first_sample_from_warm_stats() {
+        let mut timings = CompileTimings::new(true);
+        timings.record(Duration::from_secs_f64(10.0));
+        timings.record(Duration::from_secs_f64(0.5));
+        timings.record(Duration::from_secs_f64(0.6));
+
+        assert_eq!(timings.warm_samples().len(), 2);
+        let summary = timings.summary();
+        assert!(summary.contains("cold start"));
+        assert!(summary.contains("MEETS"));
+    }
+
+    #[test]
+    fn a_warm_start_treats_every_sample_as_warm() {
+        let mut timings = CompileTimings::new(false);
+        timings.record(Duration::from_secs_f64(0.5));
+        timings.record(Duration::from_secs_f64(0.6));
+
+        assert_eq!(timings.warm_samples().len(), 2);
+        assert!(!timings.summary().contains("cold start"));
+    }
+
+    #[test]
+    fn a_slow_warm_sample_reports_exceeds_not_meets() {
+        let mut timings = CompileTimings::new(false);
+        timings.record(Duration::from_secs_f64(0.5));
+        timings.record(Duration::from_secs_f64(1.5));
+
+        let summary = timings.summary();
+        assert!(summary.contains("EXCEEDS"), "unexpected summary: {summary}");
+    }
+
+    #[test]
+    fn no_samples_reports_no_warm_samples() {
+        let timings = CompileTimings::new(true);
+        assert_eq!(timings.summary(), "no warm samples recorded");
+    }
+
+    #[test]
+    fn a_single_cold_sample_has_no_warm_samples_to_judge() {
+        let mut timings = CompileTimings::new(true);
+        timings.record(Duration::from_secs_f64(10.0));
+
+        assert!(timings.warm_samples().is_empty());
+        let summary = timings.summary();
+        assert!(summary.contains("cold start"));
+        assert!(summary.contains("no warm samples recorded"));
+    }
 }
