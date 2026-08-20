@@ -60,7 +60,8 @@ pub fn get_model_used() -> &'static str {
 /// 950/1000 fee ratio (`(10_000 - 500) / 10_000 = 950 / 1000`, and scaling a truncating
 /// integer division's numerator and denominator by the same factor never changes its floor,
 /// so the bps rewrite was bit-for-bit equivalent to the starter's own arithmetic for every
-/// input — verified via `bench anchor` before any search ran). The committed value below is
+/// input — verified via `prop-amm run` before any search ran, reproducing the unchanged
+/// 210.50 anchor at `FEE_BPS = 500`). The committed value below is
 /// `bench fit --strategy strategies/001-cpmm-fee`'s winning point; see `NOTES.md` § Fitted
 /// point for the full curve and train/validation numbers.
 pub fn compute_swap(data: &[u8]) -> u64 {

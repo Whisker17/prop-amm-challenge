@@ -11,10 +11,13 @@ use crate::config::{BenchConfig, SegmentSelector};
 use crate::fast_compile;
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 
-/// The 1e-9 relative bound docs/DESIGN.md §2.6 requires between the fast path and the
-/// reference path (both computed here as full-`f64` in-process `BatchResult`s — this bound
+/// The relative bound WHI-1194's acceptance criteria set between the fast path and the
+/// reference path ("fast-path and CLI avg edge agree to `1e-9` relative on the same
+/// segment") — docs/DESIGN.md §2.6 itself only requires the two paths match **per seed**,
+/// without naming a tolerance; `1e-9` is this command's own choice of how tight "match"
+/// means. Both sides are computed here as full-`f64` in-process `BatchResult`s — this bound
 /// is *not* sourced from `prop-amm run`'s stdout, which prints only 2 decimal places; see
-/// this module's doc comment on `run`).
+/// this module's doc comment on `run`.
 const REL_TOL: f64 = 1e-9;
 
 /// `bench parity` — the acceptance gate of docs/DESIGN.md §2.6: a strategy's committed
@@ -84,6 +87,17 @@ pub fn run(args: ParityArgs) -> anyhow::Result<()> {
     // `reference`'s build dir is removed on Drop, whenever this function returns — success,
     // an early `?`, or a `bail!` below (docs/DESIGN.md §3.4). `.build/fast/` is never
     // removed — it is meant to persist and be reused by the next `fit`/`parity` run.
+
+    // `zip` silently truncates to the shorter side, which would hide a batch that came back
+    // short rather than merely misaligned — check equal length explicitly first (mirrors
+    // `stats::paired_stat`'s own guard for the same reason).
+    if fast_batch.results.len() != reference_batch.results.len() {
+        anyhow::bail!(
+            "fast-path/reference-path batches have different lengths: {} vs {}",
+            fast_batch.results.len(),
+            reference_batch.results.len()
+        );
+    }
 
     let mut max_rel_diff = 0.0_f64;
     let mut mismatches = Vec::new();

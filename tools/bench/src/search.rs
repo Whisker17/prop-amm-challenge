@@ -2,6 +2,8 @@
 //! integer parameters so a future 2-4 parameter family reuses this unchanged —
 //! `001-cpmm-fee`'s single `fee_bps` exercises the 1-dimensional case.
 
+use std::collections::HashMap;
+
 use crate::params::ParamSpec;
 
 /// Hard cap on evaluation points per family (docs/DESIGN.md §2.5, §3.4) — not itself a
@@ -14,10 +16,14 @@ pub const MAX_SEARCH_POINTS: usize = 300;
 pub struct SearchOutcome {
     pub best: Vec<i128>,
     pub best_edge: f64,
-    /// Every `(params, edge)` pair actually evaluated, in evaluation order. For a single
-    /// parameter this is exactly the fee<->edge curve docs/DESIGN.md §2.8 requires be
-    /// committed to `results/`.
+    /// Every *distinct* `(params, edge)` pair actually compiled and simulated, in first-seen
+    /// order — a coordinate-descent revisit of an already-measured point is answered from the
+    /// cache (see `coarse_grid_then_coordinate_descent`'s `memo`) and does not add a second
+    /// entry here. For a single parameter this is exactly the fee<->edge curve docs/DESIGN.md
+    /// §2.8 requires be committed to `results/`.
     pub history: Vec<(Vec<i128>, f64)>,
+    /// Count of distinct points actually compiled and simulated — never exceeds `budget`, and
+    /// never double-counts a cached revisit.
     pub points_evaluated: usize,
     /// True if the search stopped because `points_evaluated` reached `budget`, rather than
     /// because coordinate descent converged on its own — "the search refuses to exceed 300
@@ -49,20 +55,36 @@ pub fn coarse_grid_then_coordinate_descent(
 
     let mut history: Vec<(Vec<i128>, f64)> = Vec::new();
     let mut points_evaluated = 0usize;
+    // Coordinate descent revisits points the grid phase (or an earlier descent step) already
+    // measured — e.g. clamping two different step sizes to the same boundary value. A cache
+    // keyed on the exact parameter vector answers those for free: the budget counts *distinct*
+    // points actually compiled and simulated, not evaluation *attempts* (docs/DESIGN.md §2.5's
+    // "hard cap 300 evaluation points" — re-asking a fast-path build for a value it already
+    // measured is not a new evaluation).
+    let mut memo: HashMap<Vec<i128>, f64> = HashMap::new();
 
     // `None` once the budget is spent (not an error — running out of budget is an expected
     // stopping condition, not a failed evaluation). A genuine `eval` error still propagates.
     let mut try_eval = |point: &[i128]| -> anyhow::Result<Option<f64>> {
+        // A revisit is not a new curve sample either — it's already in `history` from the
+        // first time this exact point was measured.
+        if let Some(&edge) = memo.get(point) {
+            return Ok(Some(edge));
+        }
         if points_evaluated >= budget {
             return Ok(None);
         }
         let edge = eval(point)?;
         points_evaluated += 1;
+        memo.insert(point.to_vec(), edge);
         history.push((point.to_vec(), edge));
         Ok(Some(edge))
     };
 
-    let grid_budget = (budget / 2).max(1).min(budget);
+    // Half the budget locates the region (coarse grid), half refines it (coordinate descent)
+    // — an even split with no data yet to weight it by; §2.5 fixes the *total* budget but
+    // leaves how a family spends it inside that total to the implementation.
+    let grid_budget = (budget / 2).max(1);
     let grid = coarse_grid(specs, grid_budget);
 
     let mut best_point: Option<Vec<i128>> = None;
@@ -87,6 +109,10 @@ pub fn coarse_grid_then_coordinate_descent(
     })?;
 
     if !budget_exhausted {
+        // A quarter of each dimension's range: coarse enough that the first couple of
+        // step-halvings still cross the grid's own spacing (so descent explores past its
+        // immediate grid neighbors, not just between them), but small enough that a
+        // reasonably-behaved family converges well inside the remaining budget.
         let mut step: Vec<i128> = specs.iter().map(|s| ((s.max - s.min) / 4).max(1)).collect();
 
         'cycles: loop {
@@ -229,6 +255,7 @@ mod tests {
             min,
             max,
             current: min,
+            indent: String::new(),
         }
     }
 
@@ -303,6 +330,36 @@ mod tests {
     #[test]
     fn linspace_handles_a_degenerate_range() {
         assert_eq!(linspace_int(5, 5, 10), vec![5]);
+    }
+
+    #[test]
+    fn revisiting_an_already_measured_point_does_not_re_invoke_eval_or_spend_budget() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // Grid points [0, 3, 7, 10] then descent from 3: the very next step (±2 from the new
+        // best 5) lands back on 7 and 3, both already measured by the grid phase. Without
+        // memoization those two revisits would consume 2 more of the 8-point budget on top of
+        // the 3 genuinely new descent evaluations, for 9 total — over budget. With it, the
+        // search converges to the true peak (x=5) using only 7 distinct evaluations.
+        let specs = vec![spec("x", 0, 10)];
+        let calls = Rc::new(RefCell::new(0usize));
+        let calls_inner = Rc::clone(&calls);
+        let outcome = coarse_grid_then_coordinate_descent(&specs, 8, move |p| {
+            *calls_inner.borrow_mut() += 1;
+            Ok(-((p[0] - 5).pow(2)) as f64)
+        })
+        .unwrap();
+
+        assert_eq!(outcome.best, vec![5]);
+        assert_eq!(outcome.best_edge, 0.0);
+        assert_eq!(outcome.points_evaluated, 7);
+        assert!(!outcome.budget_exhausted);
+        assert_eq!(
+            *calls.borrow(),
+            7,
+            "a cached revisit must not re-invoke eval"
+        );
     }
 
     #[test]

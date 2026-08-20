@@ -12,10 +12,15 @@
 //! comment declaring the frozen search space (docs/DESIGN.md §2.4's "declared in `NOTES.md`
 //! and frozen before any search runs" — this is that same space, machine-readable next to
 //! the value it bounds rather than duplicated into a second config file). The committed file
-//! is valid Rust either way: `search::coarse_grid_then_coordinate_descent` rewrites only the
-//! literal after `=` on each line, everything else — including the range comment — is
-//! preserved verbatim, so the frozen space a search actually ran within is legible in every
-//! rewritten scratch copy, not just the final commit.
+//! is valid Rust either way: a rewrite regenerates each parameter line from its parsed name,
+//! type and bounds with the new value substituted, preserving the original line's leading
+//! indentation — so the frozen space a search actually ran within is legible in every
+//! rewritten scratch copy, not just the final commit. A `pub` modifier or attribute on a
+//! parameter's `const` line is rejected at parse time rather than silently dropped by the
+//! regeneration (no current family needs either); a composite type (e.g. an array) may render
+//! with different token spacing than hand-written, since no formatting pass runs over the
+//! regenerated line — every current family uses a plain primitive integer type, for which
+//! this doesn't arise.
 
 const BEGIN_MARKER: &str = "// === PARAMS BEGIN ===";
 const END_MARKER: &str = "// === PARAMS END ===";
@@ -33,6 +38,8 @@ pub struct ParamSpec {
     /// itself (which explores the whole `[min, max]` range), but a natural sanity anchor
     /// (e.g. "does re-evaluating the committed point reproduce its own claimed edge").
     pub current: i128,
+    /// The original line's leading whitespace, preserved verbatim on rewrite.
+    pub indent: String,
 }
 
 /// Locates the single `PARAMS BEGIN`/`PARAMS END` pair and returns each line's byte range
@@ -82,6 +89,8 @@ fn locate_block(source: &str) -> anyhow::Result<(usize, usize, Vec<&str>)> {
 /// from the raw text instead — cheaper and more transparent than smuggling it through a
 /// doc-comment attribute.
 fn parse_param_line(line: &str) -> anyhow::Result<ParamSpec> {
+    let indent = line[..line.len() - line.trim_start().len()].to_string();
+
     let (decl, range_text) = line.split_once(RANGE_COMMENT).ok_or_else(|| {
         anyhow::anyhow!("PARAMS line missing `{RANGE_COMMENT}` comment: `{line}`")
     })?;
@@ -90,6 +99,21 @@ fn parse_param_line(line: &str) -> anyhow::Result<ParamSpec> {
         .map_err(|e| anyhow::anyhow!("failed to parse PARAMS const `{}`: {e}", decl.trim()))?;
 
     let name = item.ident.to_string();
+    // A rewrite regenerates this line from name/type/value alone (see this module's doc
+    // comment) — a `pub` modifier or attribute would be silently dropped rather than
+    // preserved, so it's rejected here instead. No current family needs either.
+    if !matches!(item.vis, syn::Visibility::Inherited) {
+        anyhow::bail!(
+            "PARAMS const `{name}` has a visibility modifier, which `rewrite_params` does not \
+             preserve — remove it"
+        );
+    }
+    if !item.attrs.is_empty() {
+        anyhow::bail!(
+            "PARAMS const `{name}` has an attribute, which `rewrite_params` does not preserve \
+             — remove it"
+        );
+    }
     let ty = quote_type(&item.ty);
     let current = literal_i128(&item.expr)
         .ok_or_else(|| anyhow::anyhow!("PARAMS const `{name}` is not an integer literal"))?;
@@ -115,6 +139,7 @@ fn parse_param_line(line: &str) -> anyhow::Result<ParamSpec> {
         min,
         max,
         current,
+        indent,
     })
 }
 
@@ -148,9 +173,12 @@ pub fn parse_params_block(source: &str) -> anyhow::Result<Vec<ParamSpec>> {
 }
 
 /// Rewrites `source`'s PARAMS block, substituting `values[i]` (in declaration order) for
-/// each parameter's current literal — everything else, including the range comments and
-/// everything outside the block, is byte-identical to `source`. `values.len()` must equal
-/// the number of parameters declared in the block.
+/// each parameter's current literal. Everything outside the block is byte-identical to
+/// `source`; each rewritten line inside it is regenerated from the parsed name, type, bounds
+/// and new value with the original line's leading indentation restored — not a byte-for-byte
+/// copy of the original line with only the literal swapped (see this module's doc comment for
+/// what that means for a `pub`/attributed const, which is rejected at parse time instead).
+/// `values.len()` must equal the number of parameters declared in the block.
 pub fn rewrite_params(source: &str, values: &[i128]) -> anyhow::Result<String> {
     let (begin, end, inner) = locate_block(source)?;
     let specs: Vec<ParamSpec> = inner
@@ -184,8 +212,8 @@ pub fn rewrite_params(source: &str, values: &[i128]) -> anyhow::Result<String> {
     }
     for (spec, value) in specs.iter().zip(values) {
         out.push_str(&format!(
-            "const {}: {} = {value}; {RANGE_COMMENT} {}..={}\n",
-            spec.name, spec.ty, spec.min, spec.max
+            "{}const {}: {} = {value}; {RANGE_COMMENT} {}..={}\n",
+            spec.indent, spec.name, spec.ty, spec.min, spec.max
         ));
     }
     for line in &lines[end..] {
@@ -241,6 +269,39 @@ mod tests {
         assert_eq!(specs[0].current, 30);
         assert_eq!(specs[0].min, 1);
         assert_eq!(specs[0].max, 500);
+    }
+
+    #[test]
+    fn rewrite_preserves_leading_indentation() {
+        let source = "// === PARAMS BEGIN ===\n    const A: u128 = 1; // range: 0..=10\n// === PARAMS END ===\n";
+        let specs = parse_params_block(source).unwrap();
+        assert_eq!(specs[0].indent, "    ");
+
+        let rewritten = rewrite_params(source, &[5]).unwrap();
+        assert!(rewritten.contains("\n    const A: u128 = 5; // range: 0..=10\n"));
+    }
+
+    #[test]
+    fn pub_const_is_rejected() {
+        let source =
+            "// === PARAMS BEGIN ===\npub const A: u128 = 1; // range: 0..=10\n// === PARAMS END ===\n";
+        let err = parse_params_block(source).unwrap_err();
+        assert!(
+            err.to_string().contains("visibility modifier"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn attributed_const_is_rejected() {
+        // Each PARAMS line is parsed independently (one line = one param declaration), so
+        // the attribute must be on the same line as the `const` it's rejected together with.
+        let source = "// === PARAMS BEGIN ===\n#[allow(dead_code)] const A: u128 = 1; // range: 0..=10\n// === PARAMS END ===\n";
+        let err = parse_params_block(source).unwrap_err();
+        assert!(
+            err.to_string().contains("attribute"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
