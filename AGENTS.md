@@ -29,12 +29,13 @@ placeholders. Agents must not assume a module exists until its issue lands. -->
 
 **Landed:** the upstream challenge skeleton (simulator, executor, CLI, starter +
 normalizer programs) as of `upstream/main`, plus this template bootstrap — governance
-docs, `.claude/skills/`, the local-markdown issue tracker under `.scratch/`, agent-role
-dispatch, and the `pre-push` guard.
+docs, `.claude/skills/`, the Linear issue tracker (team `Whisker-Personal`, project
+"Prop AMM Challenge — strategy layer"), agent-role dispatch, and the `pre-push` guard.
+`docs/DESIGN.md` §1–§5, §7, and §8 are written (verified on `main`/`dev`, not stale).
 
-**Not written yet:** `docs/DESIGN.md` §1–§3 and §5–§8 — the PRD for *our* pricing
-strategy. §4.1/§4.2 only mirror code that already exists. Produce the rest via
-`/grill-me` + `/to-spec`; do not pick up a strategy issue while the spec is empty.
+**Not written yet:** `docs/DESIGN.md` §6.2 only — the *frozen strategy list* M1 iterates
+over is an owner input that has not been supplied yet, tracked as WHI-1197. Do not pick up
+an M1 issue until that list is frozen; M0 (bench, strategies layout) is unblocked.
 
 **Verification baseline (measured, not assumed):** `cargo test --workspace` is green.
 `cargo clippy -- -D warnings` and `cargo fmt --check` **fail on inherited upstream code** —
@@ -150,9 +151,10 @@ fans out; feature → its release branch.
 
 - **Primary:** the issue-title prefix `[X.Y.Z]` (e.g. `[0.2.0] [Scheduler] …`).
   Tracker-independent, no API call.
-- **Cross-check:** the tracker's release binding (`docs/agents/issue-tracker.md`
-  § Release ↔ version binding). A tracker with no release entity drops the
-  cross-check; the prefix then stands alone.
+- **Cross-check:** Linear's linked release entity (`docs/agents/issue-tracker.md`
+  § Release ↔ version binding) — a field distinct from the title text, fetched via
+  `get_issue({includeReleases: true})`. Governance and `upstream-sync` issues carry
+  neither signal; the row does not apply to them.
 
 If they disagree, or the cross-check exists and either signal is missing,
 **refuse to start**. Do not infer the version from a milestone, and do not fall
@@ -162,14 +164,14 @@ create it as a side effect of picking up a ticket.
 **Then, once the base is resolved:**
 
 1. `git fetch` + create the worktree from the **resolved** base
-   (`fix/pamm-NNN-topic` or `feat/pamm-NNN-topic`).
+   (`fix/whi-NNNN-topic` or `feat/whi-NNNN-topic`, or Linear's own `gitBranchName`).
    Verify immediately — `git merge-base HEAD origin/<resolved-base>` must equal
    `git rev-parse origin/<resolved-base>` — whatever tooling created the worktree.
    *(Runtime aside: Claude Code's `EnterWorktree` defaults to `origin/main`, which
    is right for hotfix and wrong for everything else. The check is what settles
    it.)*
 2. Implement only that issue; tracker state → **`In Progress`**.
-3. `gh pr create --base <resolved-base>` (title/body include `PAMM-NNN`
+3. `gh pr create --base <resolved-base>` (title/body include `WHI-NNNN`
    **and the resolved base plus the signals it was derived from**); tracker →
    **`In Review`**. Any review finding you intentionally leave unfixed goes in
    `docs/DEFERRED_ISSUES.md` as part of this PR — see that file for the format.
@@ -219,7 +221,7 @@ first push of a freshly cut `release/v*`.
 1. **Squash-merge + drop the remote branch:** `gh pr merge <N> --squash --delete-branch`.
 2. **Remove the worktree:** `git worktree remove <worktree-path>` then
    `git worktree prune`.
-3. **Delete the local branch:** `git branch -D fix/pamm-NNN-topic`
+3. **Delete the local branch:** `git branch -D fix/whi-NNNN-topic`
    (this fails while the worktree still holds the branch — do step 2 first).
 4. **Fast-forward the resolved base:** `git fetch origin --prune` then
    `git merge --ff-only origin/<resolved-base>` (must fast-forward — if it would
@@ -310,10 +312,11 @@ is just markdown. The load-bearing ones:
 
 ### Issue tracker
 
-Issues and specs live as **markdown files in `.scratch/`**, committed to this repo —
-there is no external tracker to reach and no API to fall back to. Issue ids are
-`PAMM-NNN`, allocated from `.scratch/NEXT_ID`. Moving the tracker is not optional: the
-`Status:` line moves in lockstep with the PR, in the same commit range. Upstream PRs are
+Issues and specs live in **Linear** (team `Whisker-Personal`, project "Prop AMM
+Challenge — strategy layer"), reached through the `linear.*` MCP tools. Issue ids are
+`WHI-NNNN`, assigned by Linear. Linear state and the git diff are separate systems that
+can drift — flip the Linear state as the literal next action at each git milestone
+(`docs/agents/issue-tracker.md` § Decisions, #2), don't batch it. Upstream PRs are
 not a triage surface. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
