@@ -31,6 +31,28 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
+- **`bench`'s parity checks are bounded to 2-decimal-place agreement with `prop-amm run`, not
+  the "1e-9 relative" / "exactly" the WHI-1193 acceptance criteria state** (Low, WHI-1193).
+  `crates/cli/src/output.rs:31-32` only ever prints edge at 2dp — there is no higher-precision
+  output to cross-check bench's own full-precision numbers against, and editing that
+  upstream-owned file is out of bounds. `tools/bench/src/commands/anchor.rs::edges_agree`
+  rounds both sides to 2dp before comparing, and says so in its own doc comment and in the
+  committed `results/*.md` report text. Accepted because both bench's aggregate-mode and
+  per-seed paths call the exact same `HyperparameterVariance::apply`/`run_batch_native`
+  functions `prop-amm run` calls internally with identical seed derivation (docs/DESIGN.md
+  §2.2, §4.3), so full-precision agreement is structurally guaranteed by shared code, not
+  merely hoped for — but that guarantee is by code inspection, not by a runtime assertion at
+  1e-9. Fix: none available without either editing `crates/cli/src/output.rs` (upstream) or
+  bench importing `prop_amm_sim`/`prop_amm_shared` types to reconstruct the CLI's own
+  in-process value directly instead of parsing its stdout — worth reconsidering if a future
+  strategy's ranking ever turns on a margin finer than a cent.
+- **Root `Cargo.toml` now carries a one-line diff against upstream** (Low, WHI-1193).
+  `Cargo.toml::[workspace].members` gained `"tools/bench"`. Accepted per the issue's own
+  instruction: `tools/bench`'s own dependencies (`serde`, `toml`) are pinned inside
+  `tools/bench/Cargo.toml` rather than added to `[workspace.dependencies]`, so this member-list
+  line is the only upstream-owned-file cost of the whole measurement layer. Fix: none needed
+  unless a future upstream sync itself touches the `members` list, in which case re-add this
+  line during that merge.
 - **`cargo clippy -- -D warnings` fails on inherited upstream code** (Low, template
   bootstrap). `crates/shared/src/instruction.rs:8` (`empty line after doc comment`) and
   `crates/shared/src/normalizer.rs:36,41` (`manually reimplementing div_ceil`, twice) —

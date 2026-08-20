@@ -5,6 +5,7 @@ members = [
     "crates/executor",
     "crates/sim",
     "crates/cli",
+    "tools/bench",
 ]
 # Programs are BPF-only, built via `cargo build-sbf`
 exclude = [
