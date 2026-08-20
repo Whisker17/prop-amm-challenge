@@ -1,0 +1,36 @@
+# Seed segments for tools/bench (docs/DESIGN.md §2.2). Ours, protocol-level — a PR that
+# changes this also updates §2 (docs/DESIGN.md §3.1). Grid-mode seeds are WHI-1195's own
+# addressing scheme, not a segment, and are not declared here.
+#
+# Each segment's seeds are `start, start+stride, ..., start+(count-1)*stride`. Every pair of
+# segments must be disjoint except where one declares `subset_of` the other — checked at
+# load time, not just asserted here.
+
+[segments.observation]
+start = 0
+count = 1000
+# Never a decision input (docs/DESIGN.md §2.2): reporting only, so a leaderboard-comparable
+# number is always visible without ever feeding a ranking choice.
+decision_input = false
+
+[segments.train]
+start = 1000000
+count = 1000
+decision_input = true
+
+[segments.screening]
+start = 1000000
+count = 200
+subset_of = "train"
+decision_input = true
+
+[segments.validation]
+start = 2000000
+count = 1000
+decision_input = true
+
+[segments.test]
+start = 3000000
+count = 1000
+single_use = true
+decision_input = true

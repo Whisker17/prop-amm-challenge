@@ -1,0 +1,23 @@
+[package]
+name = "bench"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+[dependencies]
+prop-amm-shared = { workspace = true }
+prop-amm-executor = { workspace = true }
+prop-amm-sim = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+libloading = { workspace = true }
+# Pinned here, not in [workspace.dependencies] — see AGENTS.md: every extra line in an
+# upstream-owned Cargo.toml is renegotiated at the next upstream sync.
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

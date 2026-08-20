@@ -31,6 +31,13 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
+- **Root `Cargo.toml` now carries a one-line diff against upstream** (Low, WHI-1193).
+  `Cargo.toml::[workspace].members` gained `"tools/bench"`. Accepted per the issue's own
+  instruction: `tools/bench`'s own dependencies (`serde`, `toml`) are pinned inside
+  `tools/bench/Cargo.toml` rather than added to `[workspace.dependencies]`, so this member-list
+  line is the only upstream-owned-file cost of the whole measurement layer. Fix: none needed
+  unless a future upstream sync itself touches the `members` list, in which case re-add this
+  line during that merge.
 - **`cargo clippy -- -D warnings` fails on inherited upstream code** (Low, template
   bootstrap). `crates/shared/src/instruction.rs:8` (`empty line after doc comment`) and
   `crates/shared/src/normalizer.rs:36,41` (`manually reimplementing div_ceil`, twice) —

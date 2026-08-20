@@ -7,10 +7,10 @@ Two different things live here, and only one of them is "config" in the usual se
 Shell-sourced by `scripts/agent-dispatch.sh`; explained in `docs/agents/runtime.md`. It is
 the **single edit point** when a model generation turns over. Checked in, no secrets.
 
-## 2. Runtime parameters (none yet)
+## 2. Runtime parameters
 
 Non-secret parameters of *our* code — sweep ranges, search grids, strategy tunables — go
-here as checked-in TOML when the first one exists.
+here as checked-in TOML.
 
 - **Secrets** would go in `.env` (never committed). This repo has none today: the simulator
   is local and deterministic and nothing calls a network service.
@@ -23,7 +23,10 @@ here as checked-in TOML when the first one exists.
 - Per-machine overrides use an untracked `<name>.local.toml` copy (gitignored), so checking
   out a release tag never clobbers local settings.
 
-No loader code ships yet — write it when the first config file lands.
+**`bench.toml`** (WHI-1193) is the first one: `tools/bench`'s seed segments
+(`docs/DESIGN.md` §2.2), loaded and validated by `tools/bench/src/config.rs`
+(`BenchConfig::load`) — segments must be pairwise disjoint at load time except where one
+declares `subset_of` the other.
 
 ## What does *not* belong here
 
