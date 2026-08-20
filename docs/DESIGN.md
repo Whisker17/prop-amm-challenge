@@ -205,8 +205,14 @@ number is no longer an honest estimate.
 Two compile paths exist, with different jobs:
 
 - **Fast path (search).** `tools/bench` maintains a single reused build directory with a
-  shared `target/`, rewriting only `src/lib.rs` per point. Estimated: **0.11–0.57 s** per
-  point (pending re-measure once `tools/bench` exists — `docs/DEFERRED_ISSUES.md`).
+  shared `target/`, rewriting only `src/lib.rs` per point. Re-measured (WHI-1194,
+  `strategies/001-cpmm-fee/NOTES.md`, `results/2026-08-20-fit-001-cpmm-fee.md`): the original
+  **0.11–0.57 s** estimate was not reproduced — 160 warm compiles measured min=0.472s,
+  mean=1.000s, max=1.311s in the measuring session's execution environment, attributed to
+  that environment (re-measuring under confirmed-lower system load did not change the
+  result) rather than to the fast path's design, which never rebuilds `pinocchio`/`wincode`/
+  `prop-amm-submission-sdk` after the directory's first use — only `user_program` itself
+  relinks per point. Either figure is a large improvement over the reference path below.
 - **Reference path (reporting).** The upstream CLI, `crates/cli/src/commands/compile.rs`.
   Measured: **7–10 s and ~51 MB per point**, because `ensure_build_dir`
   (`compile.rs:36`) keys an isolated build directory by source hash, so `pinocchio`,
@@ -259,14 +265,9 @@ the decomposition is wrong without failing. See §8.
 - **starter, as shipped** — 500 bps, avg edge 210.50 on `0..=999`. A fixed reference point
   and the parity anchor. Note that 500 bps is almost certainly *not* the family optimum;
   the competitor charges 30–80 bps.
-- **normalizer-as-submission** — `crates/shared/src/normalizer.rs`'s mechanism run as the
-  candidate, at its own default fee. Not per-simulation symmetric with the live opponent —
-  the opponent's fee is resampled every simulation (`norm_fee_bps ~ U[30, 80]`, §2.3), and a
-  submission's `compute_swap` has no channel to observe that draw, only its own reserves and
-  storage. A meaningful zero regardless: it shows how the router splits flow between two AMMs
-  running the identical formula. (WHI-1194 discovered this nuance while implementing it —
-  `strategies/002-normalizer-as-submission/NOTES.md` carries the full fidelity
-  self-assessment.)
+- **normalizer-as-submission** — `crates/shared/src/normalizer.rs` run as the candidate,
+  i.e. the same curve as the opponent. A meaningful zero: it shows how the router splits
+  flow under perfect symmetry.
 
 `001` doubles as the **self-check of the protocol itself**: a fee family's edge response
 should be single-peaked. If bench reports a multi-modal response or an absurd optimum, that
