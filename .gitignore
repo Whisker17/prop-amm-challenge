@@ -2,3 +2,11 @@
 **/target
 .DS_Store
 .build/
+
+# Secrets — never committed (see AGENTS.md § Runtime configuration)
+.env
+
+# Per-machine config overrides (see config/README.md)
+config/*.local.toml
+
+# NOTE: .scratch/ is NOT ignored — it is the issue tracker (docs/agents/issue-tracker.md)
