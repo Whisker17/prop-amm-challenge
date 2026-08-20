@@ -49,12 +49,24 @@ list* for M1's ported strategies, and `001` is the M0 baseline that measures all
 
 Run via `cargo run -p prop-amm-bench -- fit --strategy strategies/001-cpmm-fee`
 (`config/bench.toml`'s `[search]` budget, 300 points; screening segment
-`1_000_000..=1_000_199`). Coarse grid (150 evenly-spaced points across `1..=500`) then coordinate descent converged
-after **167 of 300** evaluation points total — the search never approached its budget cap. Full curve
-(param → screening avg edge) is committed at `results/2026-08-20-fit-001-cpmm-fee.md`; it is
-**strictly increasing from `FEE_BPS = 1` to 66, then strictly decreasing to 500** — a clean
-single peak, confirming the protocol self-check (§2.8) before this or any other strategy's
-numbers are trusted.
+`1_000_000..=1_000_199`). Coarse grid (150 evenly-spaced points across `1..=500`) then
+coordinate descent converged after **159 of 300** *distinct* evaluation points — the search
+memoizes a revisit of an already-measured point (`tools/bench/src/search.rs`), so this counts
+points actually compiled and simulated, not evaluation attempts — and never approached its
+budget cap. Full curve (param → screening avg edge) is committed at
+`results/2026-08-20-fit-001-cpmm-fee.md`; it is **strictly increasing from `FEE_BPS = 1` to
+66, then strictly decreasing to 500** — a clean single peak, confirming the protocol
+self-check (§2.8) before this or any other strategy's numbers are trusted.
+
+The committed report's compile-timing figures (mean ~1.1-1.3s across two `results/`-writing
+runs at commit `6916ae5`) run above the sub-second range this same code measured earlier in
+the same session (min 0.523s, mean 0.547s, max 0.694s across 158 warm compiles) and above
+`docs/DESIGN.md` §2.6's 0.11–0.57s estimate. `uptime` at the time showed sustained load
+averages of 18-30 on this machine (a concurrent session was active in another worktree,
+confirmed by its own commits landing mid-measurement) — the fast path's own design (one fixed
+`.build/fast/` directory, only `src/lib.rs` rewritten per point) is unchanged between the two
+measurements; the gap is system contention, not a regression. Both figures are still a
+4-10x improvement over the reference path's unconditional 7-10s/point.
 
 **Winning point: `FEE_BPS = 66`** — well inside the competitor's own `norm_fee_bps ∈ U[30, 80]`
 sampling range (`crates/shared/src/config.rs`), and far from the starter's 500bps, matching
