@@ -107,7 +107,7 @@ Seeds are the only source of sampling. `HyperparameterVariance::apply(&base, see
 (`crates/shared/src/config.rs:93`) derives a simulation's entire regime from its seed, and
 `SimulationConfig.seed` then drives the price path (`config.seed`), the retail stream
 (`seed+1`) and the arbitrageur (`seed+2`) as three independent `Pcg64` streams
-(`crates/sim/src/engine.rs:20-33`). Seeds are `u64`, so independent samples are unlimited
+(`crates/sim/src/engine.rs:16-34`). Seeds are `u64`, so independent samples are unlimited
 and cost only compute.
 
 | Segment | Seeds | Used for | Reuse |
@@ -205,8 +205,8 @@ number is no longer an honest estimate.
 Two compile paths exist, with different jobs:
 
 - **Fast path (search).** `tools/bench` maintains a single reused build directory with a
-  shared `target/`, rewriting only `src/lib.rs` per point. Measured: **0.11–0.57 s** per
-  point.
+  shared `target/`, rewriting only `src/lib.rs` per point. Estimated: **0.11–0.57 s** per
+  point (pending re-measure once `tools/bench` exists — `docs/DEFERRED_ISSUES.md`).
 - **Reference path (reporting).** The upstream CLI, `crates/cli/src/commands/compile.rs`.
   Measured: **7–10 s and ~51 MB per point**, because `ensure_build_dir`
   (`compile.rs:36`) keys an isolated build directory by source hash, so `pinocchio`,
@@ -276,7 +276,7 @@ make a strategy *run at all* are permitted:
 - monotonicity and concavity (`crates/sim/src/curve_checks.rs:23` **panics** mid-simulation
   on violation — this is a crash, not a low score),
 - the 100k CU limit,
-- safe Rust only (`compile.rs:229` rejects any `unsafe` token),
+- safe Rust only (`compile.rs:141` rejects any `unsafe` token, detected at `compile.rs:229`),
 - the `NAME` / `MODEL_USED` / `get_model_used` interface.
 
 Improvements beyond that are **not** folded in. They are opened as an explicit variant
