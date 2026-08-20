@@ -1,6 +1,8 @@
-# Seed segments for tools/bench (docs/DESIGN.md §2.2). Ours, protocol-level — a PR that
-# changes this also updates §2 (docs/DESIGN.md §3.1). Grid-mode seeds are WHI-1195's own
-# addressing scheme, not a segment, and are not declared here.
+# Seed segments and grid mode's axes for tools/bench (docs/DESIGN.md §2.2, §2.3). Ours,
+# protocol-level — a PR that changes this also updates §2 (docs/DESIGN.md §3.1). Grid mode's
+# own *seed addressing* (the base offset and the `base + cell*1_000 + i` formula) is WHI-1195's
+# own scheme, not a segment, and is not declared here — only its axis levels and per-cell
+# seed count are, since those are the "grid levels"/"sim counts" §3.1 puts in this file.
 #
 # Each segment's seeds are `start, start+stride, ..., start+(count-1)*stride`. Every pair of
 # segments must be disjoint except where one declares `subset_of` the other — checked at
@@ -41,3 +43,12 @@ decision_input = true
 # budget, never raise it past the cap.
 [search]
 max_points = 300
+
+# Grid mode's factorial (docs/DESIGN.md §2.3): endpoints + a representative midpoint of each
+# of `HyperparameterVariance::default()`'s own sampling ranges. 27 cells (the cartesian
+# product of the three levels lists below) x seeds_per_cell.
+[grid]
+norm_fee_bps_levels = [30, 55, 80]
+norm_liquidity_mult_levels = [0.4, 1.0, 2.0]
+gbm_sigma_levels = [0.0001, 0.001, 0.007]
+seeds_per_cell = 40

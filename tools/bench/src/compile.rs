@@ -8,6 +8,8 @@ use prop_amm_shared::normalizer;
 use prop_amm_shared::result::BatchResult;
 use prop_amm_sim::runner;
 
+use crate::telemetry::{self, L1Sim};
+
 // Must match crates/cli/src/commands/compile.rs's exported symbol names. tools/bench can't
 // depend on that crate as a library (it's bin-only — `[[bin]]` only, no `[lib]`), so this is
 // the one place the duplication the ticket accepts has to live (docs/DESIGN.md §2.6).
@@ -100,6 +102,18 @@ impl LoadedNative {
             configs,
             None,
         )
+    }
+
+    /// Like `run_batch`, but wraps both AMMs' `after_swap` in pass-through recorders and
+    /// returns each simulation's L1 telemetry alongside the usual edge numbers
+    /// (docs/DESIGN.md §2.7). Kept as a separate method rather than a flag on `run_batch` so
+    /// the non-telemetry path stays exactly what it was — the fastest way to prove the two
+    /// are behaviourally identical is to call two different, independently-readable methods.
+    pub fn run_batch_with_l1(
+        &self,
+        configs: Vec<SimulationConfig>,
+    ) -> anyhow::Result<(BatchResult, Vec<L1Sim>)> {
+        telemetry::run_batch_native_with_l1(self.swap_fn, self.after_swap_fn, configs)
     }
 }
 
@@ -243,5 +257,64 @@ mod tests {
     fn build_dir_from_native_path_rejects_a_shallow_path() {
         let native = Path::new("libuser_program.dylib");
         assert_eq!(build_dir_from_native_path(native), None);
+    }
+
+    /// The non-invasiveness acceptance criterion's literal wording — "the same **candidate**
+    /// over the same **segment**" — rather than the fast, hermetic proxy the default test
+    /// suite uses (a synthetic swap fn, `telemetry.rs::telemetry_is_bit_identical_to_no_
+    /// telemetry`). Ignored by default: it shells out to `prop-amm build` for a real compile
+    /// plus 1000 sims at the segment's full 10,000 steps, ~190s measured — disproportionate
+    /// for every `cargo test --workspace` run given the property is already covered
+    /// hermetically. Run explicitly with `cargo test -p prop-amm-bench --release --
+    /// --ignored`.
+    ///
+    /// Cargo runs test binaries with the *crate's own* manifest directory as the working
+    /// directory. `set_current_dir` below relocates the process to the repo root so this test
+    /// can use ordinary relative paths like the real `bench` binary would — but that alone
+    /// does **not** make this test runnable from every location: `build_and_load` (via
+    /// upstream's `ensure_build_dir`) creates an isolated build package with no `[workspace]`
+    /// table of its own, and if the repo root it lands under is itself nested inside another
+    /// git worktree of the same repo (as `.claude/worktrees/<name>` is — the location
+    /// `AGENTS.md` mandates for issue work), `cargo`'s ancestor search walks past that
+    /// worktree's own `Cargo.toml` and resolves the *primary clone's* workspace instead,
+    /// which then refuses the isolated package as an unexcluded member. This test therefore
+    /// only passes run from a location that is not nested under another checkout of this
+    /// repo (e.g. a detached scratch worktree created with `git worktree add --detach
+    /// /tmp/<name> <sha>`, not `.claude/worktrees/<name>`) — verified passing that way.
+    #[test]
+    #[ignore = "compiles the real starter program and runs 1000 sims, ~190s; only passes \
+                from a location not nested under another worktree of this repo (see the \
+                doc comment above); run explicitly to reproduce the literal \
+                non-invasiveness proof against a real candidate over a declared segment"]
+    fn starter_over_observation_segment_is_bit_identical_with_and_without_telemetry() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::env::set_current_dir(&repo_root).expect("chdir to repo root");
+
+        let bench_config = crate::config::BenchConfig::load_default().expect("load bench config");
+        let segment = bench_config
+            .segment("observation")
+            .expect("observation segment is declared");
+        let base = SimulationConfig::default();
+        let configs = segment.sim_configs(&base);
+
+        let loaded = build_and_load("programs/starter/src/lib.rs", Slot::Zero)
+            .expect("build the real starter program");
+
+        let without_telemetry = loaded
+            .run_batch(configs.clone())
+            .expect("run_batch (no telemetry)");
+        let (with_telemetry, _l1_sims) = loaded
+            .run_batch_with_l1(configs)
+            .expect("run_batch_with_l1 (telemetry on)");
+
+        assert_eq!(without_telemetry.total_edge, with_telemetry.total_edge);
+        for (a, b) in without_telemetry
+            .results
+            .iter()
+            .zip(with_telemetry.results.iter())
+        {
+            assert_eq!(a.seed, b.seed);
+            assert_eq!(a.submission_edge, b.submission_edge);
+        }
     }
 }

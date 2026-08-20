@@ -267,7 +267,16 @@ the decomposition is wrong without failing. See §8.
   the competitor charges 30–80 bps.
 - **normalizer-as-submission** — `crates/shared/src/normalizer.rs` run as the candidate,
   i.e. the same curve as the opponent. A meaningful zero: it shows how the router splits
-  flow under perfect symmetry.
+  flow under perfect symmetry. "Perfect symmetry" is pointwise — matched fee **and** matched
+  initial reserves — not "vs. the opponent's sampled per-simulation regime": a submission has
+  no way to read the opponent's actual `norm_fee_bps`/`norm_liquidity_mult` for that
+  simulation, so a fixed-parameter submission (`strategies/000-normalizer/lib.rs`, WHI-1195)
+  is symmetric only against the opponent's *default* point, not its distribution. Verified
+  both ways: `tools/bench/src/telemetry.rs`'s
+  `matched_curve_and_reserves_produce_flow_share_near_half` pins both axes and confirms flow
+  share lands within 0.01 of 0.5; `strategies/000-normalizer/NOTES.md`'s Finding records the
+  ungated `observation`-segment measurement (0.606) and why the difference is expected, not a
+  bug.
 
 `001` doubles as the **self-check of the protocol itself**: a fee family's edge response
 should be single-peaked. If bench reports a multi-modal response or an absurd optimum, that

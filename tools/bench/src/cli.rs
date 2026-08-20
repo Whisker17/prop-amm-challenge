@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{anchor, compare, fit, parity};
+use crate::commands::{anchor, compare, fit, grid, l1, parity};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Prop AMM Challenge measurement layer")]
@@ -9,8 +9,8 @@ struct Cli {
     command: Commands,
 }
 
-// Adding a new subcommand (`grid`, ...) means adding a variant here plus a new
-// `commands/<name>.rs` — no existing subcommand's file needs to change.
+// Adding a new subcommand means adding a variant here plus a new `commands/<name>.rs` — no
+// existing subcommand's file needs to change.
 #[derive(Subcommand)]
 enum Commands {
     /// Paired-by-seed comparison of a candidate against a reference.
@@ -22,6 +22,10 @@ enum Commands {
     /// Reproduce a strategy's committed point through `prop-amm validate`/`run` and diff
     /// against the fast path.
     Parity(parity::ParityArgs),
+    /// The 27-cell fragility matrix over grid mode's own regime corners.
+    Grid(grid::GridArgs),
+    /// L1 observability: flow share and edge per unit volume for one candidate.
+    L1(l1::L1Args),
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -31,5 +35,7 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Anchor(args) => anchor::run(args),
         Commands::Fit(args) => fit::run(args),
         Commands::Parity(args) => parity::run(args),
+        Commands::Grid(args) => grid::run(args),
+        Commands::L1(args) => l1::run(args),
     }
 }

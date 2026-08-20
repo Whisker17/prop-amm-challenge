@@ -1,6 +1,8 @@
 pub mod anchor;
 pub mod compare;
 pub mod fit;
+pub mod grid;
+pub mod l1;
 pub mod parity;
 
 use std::process::Command;

@@ -365,6 +365,7 @@ dependencies = [
  "prop-amm-shared",
  "prop-amm-sim",
  "quote",
+ "rayon",
  "serde",
  "syn 2.0.114",
  "tempfile",

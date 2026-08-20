@@ -14,6 +14,10 @@ prop-amm-sim = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 libloading = { workspace = true }
+# Needed by telemetry.rs's own per-config loop (engine::run_simulation_native doesn't offer
+# a batch hook to reset/read thread-locals at a known simulation boundary — docs/DESIGN.md
+# §2.7 — so telemetry drives its own rayon pool instead of runner::run_batch_native's).
+rayon = { workspace = true }
 # Pinned here, not in [workspace.dependencies] — see AGENTS.md: every extra line in an
 # upstream-owned Cargo.toml is renegotiated at the next upstream sync.
 serde = { version = "1.0", features = ["derive"] }
