@@ -75,12 +75,17 @@ soon — anything touching a declared high-risk path defaults to at least High),
   contract (a distinct prefix for temporary cuts, or pushing only after the PR exists); the
   workflow mitigates it with prose only ("open the PR immediately after the push",
   § Releasing to `main`). Low likelihood in a single-operator repo.
-- **The `Done` state flip cannot ride its own PR** (Low, template bootstrap).
-  `docs/agents/issue-tracker.md` § Issue lifecycle ↔ Git — the tracker is in-repo, so
-  `State: Done` has to be committed onto the resolved base *after* the merge, outside any PR.
-  That is a direct commit to a protected branch by construction. Deferred because the
-  alternative (an external tracker) is what we deliberately traded away; mitigation is that
-  it is part of the mandatory post-merge cleanup sequence, in the same session.
+- **`docs/agents/issue-tracker.md` § "What happened to `.scratch/`" still describes
+  `.scratch/` and the WHI-1192/"`Done` state flip" `docs/DEFERRED_ISSUES.md` entries as
+  present-tense open problems** (Low, WHI-1199). `docs/agents/issue-tracker.md:101-138` —
+  this PR (WHI-1199) deleted `.scratch/` and moved both of that section's cited entries to
+  *Resolved*, but the section itself, and the file's top-of-file forward-reference to it,
+  still read as if none of that happened. Left unfixed here because
+  `docs/agents/issue-tracker.md` is a governance carve-out path
+  (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and this PR's diff is
+  non-carve-out only — touching it here would mix scopes, which WHI-1199's own acceptance
+  criteria forbid. Fix: WHI-1200 (governance-scoped, carve-out paths only) updates that
+  section to past tense.
 - **`tools/bench`'s fast-path timing (`0.11–0.57 s`/point) has no measurement to cite**
   (Low, WHI-1192). `docs/DESIGN.md` §2.6 — the number describes `tools/bench`'s search
   fast path, which does not exist in the repo yet (WHI-1193 stands up `tools/bench` with
@@ -97,4 +102,12 @@ soon — anything touching a declared high-risk path defaults to at least High),
   inconsistent tracker naming across the repo, owned by the separate governance issue
   WHI-1196. Resolved by WHI-1196 (`dc973d1`), which rebound the live governance path
   (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, `docs/agents/issue-tracker.md`, and friends) to
-  Linear naming.
+  Linear naming. Entry moved here by WHI-1199.
+- **The `Done` state flip cannot ride its own PR** (Low, template bootstrap).
+  `docs/agents/issue-tracker.md` § Issue lifecycle ↔ Git — this was deferred on the
+  premise that the tracker is in-repo, so `State: Done` has to be committed onto the
+  resolved base *after* the merge (a direct commit to a protected branch by construction),
+  and that the alternative (an external tracker) was what we deliberately traded away.
+  Resolved by WHI-1196 (`dc973d1`): the tracker *is* the external system this entry
+  assumed we'd traded away, so `State: Done` is now a `linear.save_issue` call, not a git
+  commit — the entry's own premise no longer holds. Entry moved here by WHI-1199.
