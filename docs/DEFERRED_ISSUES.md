@@ -75,17 +75,18 @@ soon — anything touching a declared high-risk path defaults to at least High),
   contract (a distinct prefix for temporary cuts, or pushing only after the PR exists); the
   workflow mitigates it with prose only ("open the PR immediately after the push",
   § Releasing to `main`). Low likelihood in a single-operator repo.
-- **`docs/agents/issue-tracker.md` § "What happened to `.scratch/`" still describes
-  `.scratch/` and the WHI-1192/"`Done` state flip" `docs/DEFERRED_ISSUES.md` entries as
-  present-tense open problems** (Low, WHI-1199). `docs/agents/issue-tracker.md:101-138` —
-  this PR (WHI-1199) deleted `.scratch/` and moved both of that section's cited entries to
-  *Resolved*, but the section itself, and the file's top-of-file forward-reference to it,
-  still read as if none of that happened. Left unfixed here because
+- **`docs/agents/issue-tracker.md` still describes `.scratch/` and the WHI-1192/"`Done`
+  state flip" `docs/DEFERRED_ISSUES.md` entries as present-tense open problems**
+  (Low, WHI-1199). `docs/agents/issue-tracker.md:9-13` (top-of-file forward-reference),
+  `:63-71` (§ Decisions, Decision 1 — "It is left in place, stale text and all"), and
+  `:101-138` (§ "What happened to `.scratch/`") — this PR (WHI-1199) deleted `.scratch/`
+  and moved both `docs/DEFERRED_ISSUES.md` entries those sections cite to *Resolved*, but
+  all three sites still read as if none of that happened. Left unfixed here because
   `docs/agents/issue-tracker.md` is a governance carve-out path
   (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and this PR's diff is
   non-carve-out only — touching it here would mix scopes, which WHI-1199's own acceptance
-  criteria forbid. Fix: WHI-1200 (governance-scoped, carve-out paths only) updates that
-  section to past tense.
+  criteria forbid. Fix: WHI-1200 (governance-scoped, carve-out paths only) updates all
+  three sites to past tense.
 - **`tools/bench`'s fast-path timing (`0.11–0.57 s`/point) has no measurement to cite**
   (Low, WHI-1192). `docs/DESIGN.md` §2.6 — the number describes `tools/bench`'s search
   fast path, which does not exist in the repo yet (WHI-1193 stands up `tools/bench` with
@@ -106,8 +107,11 @@ soon — anything touching a declared high-risk path defaults to at least High),
 - **The `Done` state flip cannot ride its own PR** (Low, template bootstrap).
   `docs/agents/issue-tracker.md` § Issue lifecycle ↔ Git — this was deferred on the
   premise that the tracker is in-repo, so `State: Done` has to be committed onto the
-  resolved base *after* the merge (a direct commit to a protected branch by construction),
-  and that the alternative (an external tracker) was what we deliberately traded away.
-  Resolved by WHI-1196 (`dc973d1`): the tracker *is* the external system this entry
-  assumed we'd traded away, so `State: Done` is now a `linear.save_issue` call, not a git
-  commit — the entry's own premise no longer holds. Entry moved here by WHI-1199.
+  resolved base *after* the merge, a direct commit to a protected branch by construction.
+  Resolved by WHI-1196 (`dc973d1`): the tracker is now Linear, so `State: Done` is a
+  `linear.save_issue` call, not a git commit — the protected-branch-commit defect this
+  entry named is gone. This closes only that narrow defect, not the broader trade-off it
+  sat next to: `docs/agents/issue-tracker.md` § Decisions #2 records, as its own
+  already-accepted debt, that Linear and git are now separate systems with no shared
+  commit boundary and can drift — real and ongoing, mitigated by operational discipline
+  only, not eliminated by this entry's closure. Entry moved here by WHI-1199.
