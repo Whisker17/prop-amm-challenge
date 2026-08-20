@@ -34,3 +34,10 @@ start = 3000000
 count = 1000
 single_use = true
 decision_input = true
+
+# Search protocol (docs/DESIGN.md §2.5, §3.1): the evaluation-point budget spent fitting a
+# family's free parameters. Validated at load time to never exceed the protocol's own hard
+# cap of 300 (tools/bench/src/search.rs::MAX_SEARCH_POINTS) — this section can lower the
+# budget, never raise it past the cap.
+[search]
+max_points = 300

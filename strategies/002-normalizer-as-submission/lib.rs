@@ -1,14 +1,11 @@
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
 use prop_amm_submission_sdk::{set_return_data_bytes, set_return_data_u64};
 
-const NAME: &str = "001 CPMM Fee";
-// Preserved unchanged from `programs/starter/src/lib.rs`: NAME and some comments differ
-// (see NOTES.md § Provenance), but the compute_swap mechanism itself is untouched, so the
-// field describing which model produced that mechanism hasn't changed either.
-const MODEL_USED: &str = "GPT-5.3-Codex";
-// === PARAMS BEGIN ===
-const FEE_BPS: u128 = 500; // range: 1..=500
-// === PARAMS END ===
+const NAME: &str = "002 Normalizer As Submission";
+const MODEL_USED: &str = "Claude Sonnet 5";
+// No PARAMS block: this strategy has no free parameter (docs/DESIGN.md §2.8) — it is a
+// faithful port of the fixed opponent curve, not a family to search.
+const FEE_BPS: u128 = 30;
 const STORAGE_SIZE: usize = 1024;
 
 #[derive(wincode::SchemaRead)]
@@ -54,13 +51,17 @@ pub fn get_model_used() -> &'static str {
     MODEL_USED
 }
 
-/// Constant-product AMM with a single free parameter: the fee, in basis points out of
-/// 10,000 (the same convention `crates/shared/src/normalizer.rs` uses). This is the 0-line
-/// (docs/DESIGN.md §2.8) — `FEE_BPS = 500` is exactly the starter's own 950/1000 fee ratio
-/// (`(10_000 - 500) / 10_000 = 950 / 1000`, and scaling a truncating integer division's
-/// numerator and denominator by the same factor never changes its floor, so this rewrite is
-/// bit-for-bit equivalent to the pre-WHI-1194 arithmetic for every input) — fitted by
-/// `bench fit --strategy strategies/001-cpmm-fee` per `NOTES.md` § Fitted point.
+/// The symmetric zero (docs/DESIGN.md §2.8): the *same* curve as the normalizer opponent
+/// (`crates/shared/src/normalizer.rs::compute_swap`), reimplemented here against the
+/// submission ABI rather than called directly — a submission always receives
+/// `wincode`-decoded instruction data (see `ComputeSwapInstruction` above), unlike the
+/// normalizer's own internal call path, which the simulator invokes with a distinct raw
+/// little-endian byte layout (`crates/shared/src/normalizer.rs`'s own doc comment). The
+/// arithmetic — fixed 30bps fee, ceiling-division constant product — is otherwise identical:
+/// `net = input_amount * (10_000 - FEE_BPS) / 10_000`, `output = reserve - ceil(k / new_reserve)`.
+/// This is what makes it a *meaningful* zero, per §2.8: running the opponent's own mechanism
+/// as the candidate shows how the router splits flow under perfect symmetry, rather than
+/// measuring some other, unrelated curve against itself.
 pub fn compute_swap(data: &[u8]) -> u64 {
     let decoded: ComputeSwapInstruction = match wincode::deserialize(data) {
         Ok(decoded) => decoded,

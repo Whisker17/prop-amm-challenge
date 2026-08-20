@@ -9,4 +9,5 @@ Sits outside `crates/` so no candidate is ever mistaken for upstream code.
 
 | Id | Name | Source form | Status | Current numbers |
 | --- | --- | --- | --- | --- |
-| 001-cpmm-fee | 001 CPMM Fee | inherited (starter, unmodified mechanism) | unfit — structure only (WHI-1193); fit is WHI-1194 | avg edge 210.50, seeds `0..=999`, 10,000 steps, native (= starter anchor, `docs/DESIGN.md` §2.1) |
+| 001-cpmm-fee | 001 CPMM Fee | inherited (starter, unmodified mechanism) | fitted (WHI-1194) — the 0-line | see `strategies/001-cpmm-fee/NOTES.md` § Fitted point |
+| 002-normalizer-as-submission | 002 Normalizer As Submission | ported (faithful reimplementation of `crates/shared/src/normalizer.rs`) | measured (WHI-1194) — no free parameter | see `strategies/002-normalizer-as-submission/NOTES.md` § Measured numbers |
