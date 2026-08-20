@@ -59,6 +59,17 @@ soon — anything touching a declared high-risk path defaults to at least High),
   That is a direct commit to a protected branch by construction. Deferred because the
   alternative (an external tracker) is what we deliberately traded away; mitigation is that
   it is part of the mandatory post-merge cleanup sequence, in the same session.
+- **`tools/bench`'s fast-path timing (`0.11–0.57 s`/point) has no measurement to cite**
+  (Low, WHI-1192). `docs/DESIGN.md` §2.6 — the number describes `tools/bench`'s search
+  fast path, which does not exist in the repo yet (WHI-1193 stands up `tools/bench` with
+  no search; WHI-1194 adds the fast path this number describes), so it can't be
+  re-measured. Fix: once WHI-1194 adds the fast path, re-measure and cite via a `results/`
+  snapshot per §3.3.
+- **`docs/DESIGN.md` cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
+  `.scratch/` as the tracker of record** (Low, WHI-1192). `docs/DESIGN.md` §6.1, §8 —
+  inconsistent tracker naming across the repo, owned by the separate governance issue
+  WHI-1196 (out of scope here per this issue's own carve-out). No fix in this PR; resolves
+  when WHI-1196 lands.
 
 ---
 
