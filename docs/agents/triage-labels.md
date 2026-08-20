@@ -26,7 +26,10 @@ far along* it is. Neither implies the other: a `ready-for-human` issue can sit i
 
 Type labels are a third, orthogonal axis, also Linear labels: `bug`, `feature`,
 `research`, `chore`, `hotfix`, `upstream-sync`. `research`, `chore`, and `hotfix` already
-exist (lowercase) on this team; create `bug`, `feature`, and `upstream-sync` with
+exist lowercase on this team, matching this convention exactly. `Bug` and `Feature` also
+exist, but **capitalized** — generic workspace defaults, not created for this lowercase
+convention — so don't reuse them; create lowercase `bug` and `feature` (and
+`upstream-sync`, which doesn't exist in any casing yet) with
 `linear.create_issue_label({ name, team: "Whisker-Personal" })` the first time one is
 needed.
 

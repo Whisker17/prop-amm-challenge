@@ -112,7 +112,9 @@ undetected for days — `mantle-stocks-arbitrage-bots`, WHI-1097). Tracker
 reachability is a fallback ladder — do not hard-bind a git operation to MCP.
 
 1. **Primary: the issue-title prefix `[X.Y.Z]`** (e.g. `[0.2.0] [Scheduler] …`).
-   Tracker-independent, always visible, no API call.
+   Doesn't depend on any release entity being linked, and is usually already in hand —
+   from the ticket text whoever handed you the issue pasted, or the branch/PR name — so it
+   rarely needs its own `get_issue` call even though the title itself lives in Linear now.
 2. **Cross-check: Linear's linked release entity** (`releases[].version` on the issue,
    fetched via `get_issue({includeReleases: true})`), as defined in
    `docs/agents/issue-tracker.md` § Release ↔ version binding. This is a genuinely

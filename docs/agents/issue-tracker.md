@@ -78,9 +78,10 @@ failure. Linear and git are now two separate systems with no shared commit bound
 can drift. The mitigation is operational discipline, not a technical fix:
 - Flip the Linear `state` as the **literal next action** at each git milestone — worktree
   created → `In Progress` *before* the first commit; PR opened → `In Review` immediately;
-  PR merged → `Done` as the *first* step of post-merge cleanup — rather than batching
-  updates at the end of a session. This minimizes the window where the two can disagree,
-  it does not close it.
+  PR merged → `Done` as soon as post-merge cleanup reaches that step (`AGENTS.md` §
+  Post-merge cleanup / `docs/GIT_WORKFLOW.md` — the last step, after fan-out, not the
+  first) — rather than batching every update to the end of a session. This minimizes the
+  window where the two can disagree, it does not close it.
 - Every commit message and PR title carries the `WHI-NNNN` id (already required by
   `docs/GIT_WORKFLOW.md`), so a human auditing after the fact can always reconcile Linear
   state against git history by searching for the id — the two systems are separate, but
@@ -106,11 +107,20 @@ constraint ("the diff contains carve-out paths only"). Since it holds no real is
 (Decision 1), this doesn't block anything today, but its `README.md` is now factually
 wrong and stays that way until a follow-up chore issue removes or corrects it.
 
-The same reasoning covers `docs/DEFERRED_ISSUES.md`, also outside the carve-out: its
-entry for `WHI-1192` still describes the tracker as in-repo and says the naming
-inconsistency "resolves when WHI-1196 lands." This PR is WHI-1196, but resolving that
-entry means editing `docs/DEFERRED_ISSUES.md`, which is not a carve-out path — left for
-the same follow-up.
+The same reasoning covers `docs/DEFERRED_ISSUES.md`, also outside the carve-out, which
+carries **two** now-affected entries: the `WHI-1192` entry still describes the tracker as
+in-repo and says the naming inconsistency "resolves when WHI-1196 lands" (this PR is
+WHI-1196); the "`Done` state flip cannot ride its own PR" entry's whole deferral reason —
+"the alternative (an external tracker) is what we deliberately traded away" — is now
+inverted, since an external tracker is exactly what this PR adopts. Resolving either means
+editing `docs/DEFERRED_ISSUES.md`, which is not a carve-out path — left for the same
+follow-up.
+
+**Why this isn't recorded in `docs/DEFERRED_ISSUES.md` per the usual rule.** `AGENTS.md` §
+Git workflow says a review finding left unfixed goes there *in this PR*. That rule
+presumes the PR can touch that file; this one can't without breaking its own carve-out-only
+constraint. Recording it here instead — the tracker-specific home for exactly this
+situation — is the compensating move, not a skipped step.
 
 This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file,
 `docs/agents/issue-template.md`, `docs/agents/triage-labels.md`, and
@@ -120,9 +130,12 @@ exceptions (above), not overlooked ones. `.claude/skills/setup-matt-pocock-skill
 different case: its `issue-tracker-{local,github,gitlab}.md` files are option templates
 copied into this very file when `/setup-matt-pocock-skills` runs, not live guidance any
 skill reads today — each now says so explicitly rather than reading as a live claim about
-this repo. `.claude/skills/{to-tickets,ask-matt,code-review}/SKILL.md` mention `.scratch/`
-only as one branch of tracker-conditional guidance ("if local files… if a real tracker…"),
-never asserting it as this repo's tracker — left as-is.
+this repo. Its `SKILL.md` (e.g. "Local markdown — issues live as files under
+`.scratch/<feature>/` in this repo") is the same kind of template prose describing what
+picking that option means, not a claim about which option is picked today. Separately,
+`.claude/skills/{to-tickets,ask-matt,code-review}/SKILL.md` mention `.scratch/` only as
+one branch of tracker-conditional guidance ("if local files… if a real tracker…"), never
+asserting it as this repo's tracker — both left as-is.
 
 ## Issue lifecycle ↔ Git (mandatory)
 
@@ -202,8 +215,8 @@ with map files, child-ticket files, and directory scans — the map/ticket/block
 
 - **Map:** a Linear issue labelled `wayfinder:map`. Its body is the map body from
   `wayfinder/SKILL.md` (`## Destination` / `## Notes` / `## Decisions so far` / etc.).
-  None of the `wayfinder:*` labels exist yet on this team (unlike the triage and type
-  labels — `docs/agents/triage-labels.md`) — create them with
+  None of the `wayfinder:*` labels exist yet on this team (unlike the five triage labels,
+  all of which already exist — `docs/agents/triage-labels.md`) — create them with
   `linear.create_issue_label({name, team: "Whisker-Personal"})` the first time a map
   is charted.
 - **Child ticket:** a Linear issue with `parentId` set to the map's issue id

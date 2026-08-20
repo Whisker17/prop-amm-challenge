@@ -150,7 +150,8 @@ fans out; feature → its release branch.
 **Version for the third row — two signals, fail closed:**
 
 - **Primary:** the issue-title prefix `[X.Y.Z]` (e.g. `[0.2.0] [Scheduler] …`).
-  Tracker-independent, no API call.
+  Doesn't depend on any release entity being linked, and is usually already in hand from
+  the ticket text or branch/PR name rather than needing its own `get_issue` call.
 - **Cross-check:** Linear's linked release entity (`releases[].version` on the issue,
   fetched via `get_issue({includeReleases: true})`), as defined in
   `docs/agents/issue-tracker.md` § Release ↔ version binding — a field genuinely
