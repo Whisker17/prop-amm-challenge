@@ -333,12 +333,17 @@ mod tests {
     /// harder comparison (see `strategies/000-normalizer/NOTES.md`'s Finding).
     #[test]
     fn matched_curve_and_reserves_produce_flow_share_near_half() {
+        // An ad-hoc block, deliberately outside every declared config/bench.toml segment
+        // (observation 0..=999, train/screening/validation 1_000_000+, test 3_000_000+) and
+        // grid mode's own 4_000_000+ block, so it can't be mistaken for spending one of them.
+        const AD_HOC_SEED_BASE: u64 = 900_000_000;
+
         let variance = HyperparameterVariance::default();
         let base = SimulationConfig {
             n_steps: 300,
             ..SimulationConfig::default()
         };
-        let configs: Vec<SimulationConfig> = (500..600)
+        let configs: Vec<SimulationConfig> = (AD_HOC_SEED_BASE..AD_HOC_SEED_BASE + 100)
             .map(|seed| {
                 let mut config = variance.apply(&base, seed);
                 config.norm_fee_bps = 30;
@@ -354,8 +359,12 @@ mod tests {
         let total_normalizer_volume: f64 = l1_sims.iter().map(|s| s.normalizer_volume).sum();
         let share = flow_share(total_submission_volume, total_normalizer_volume).unwrap();
 
+        // Measured 0.4999769... on this exact seed block — a loose 0.03 tolerance would let
+        // a real regression (e.g. a broken side-mapping in `record_and_delegate`) through
+        // undetected. 0.01 stays comfortably clear of run-to-run RNG noise while actually
+        // being able to fail.
         assert!(
-            (share - 0.5).abs() < 0.03,
+            (share - 0.5).abs() < 0.01,
             "matched curve and reserves should split flow close to 0.5, got {share}"
         );
     }

@@ -540,7 +540,9 @@ singel_use = true
         let n_cells = grid.norm_fee_bps_levels.len()
             * grid.norm_liquidity_mult_levels.len()
             * grid.gbm_sigma_levels.len();
-        let grid_seed_base = 4_000_000_u64;
+        // Imported, not re-typed: a `grid.rs` change to the seed base must fail this test
+        // too, not just silently widen (or shrink) the range it's checking.
+        let grid_seed_base = crate::grid::GRID_SEED_BASE;
         let grid_max_seed =
             grid_seed_base + (n_cells as u64 - 1) * 1_000 + (grid.seeds_per_cell - 1);
 
