@@ -167,8 +167,20 @@ fn build_native(file: &str) -> anyhow::Result<PathBuf> {
 
 /// `<build_dir>/target/release/lib*.{dylib,so}` -> `<build_dir>` (three levels up). `None`
 /// if the printed path is shallower than expected — cleanup is then skipped, not guessed at.
+/// Validates the derived directory is actually shaped like `.build/runs/<hash>`
+/// (`crates/cli/src/commands/compile.rs`'s own `BUILD_RUNS_DIR`) before returning it as
+/// something `cleanup` is allowed to `remove_dir_all` — a `None` here means cleanup is
+/// skipped rather than deleting a directory whose shape wasn't actually confirmed.
 fn build_dir_from_native_path(native_path: &Path) -> Option<PathBuf> {
-    native_path.ancestors().nth(3).map(Path::to_path_buf)
+    let build_dir = native_path.ancestors().nth(3)?;
+    let runs = build_dir.parent()?;
+    let build_root = runs.parent()?;
+    if runs.file_name()? != std::ffi::OsStr::new("runs")
+        || build_root.file_name()? != std::ffi::OsStr::new(".build")
+    {
+        return None;
+    }
+    Some(build_dir.to_path_buf())
 }
 
 fn load_native(native_path: &Path, slot: Slot) -> anyhow::Result<LoadedNative> {
@@ -206,4 +218,30 @@ fn load_native(native_path: &Path, slot: Slot) -> anyhow::Result<LoadedNative> {
         after_swap_fn: has_after_swap.then_some(AFTER_SWAP_TRAMPOLINES[idx]),
         build_dir: build_dir_from_native_path(native_path),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_dir_from_native_path_accepts_the_expected_shape() {
+        let native = Path::new(".build/runs/abc123/target/release/libuser_program.dylib");
+        assert_eq!(
+            build_dir_from_native_path(native),
+            Some(PathBuf::from(".build/runs/abc123"))
+        );
+    }
+
+    #[test]
+    fn build_dir_from_native_path_rejects_an_unexpected_shape() {
+        let native = Path::new("/tmp/some/other/place/target/release/libuser_program.dylib");
+        assert_eq!(build_dir_from_native_path(native), None);
+    }
+
+    #[test]
+    fn build_dir_from_native_path_rejects_a_shallow_path() {
+        let native = Path::new("libuser_program.dylib");
+        assert_eq!(build_dir_from_native_path(native), None);
+    }
 }

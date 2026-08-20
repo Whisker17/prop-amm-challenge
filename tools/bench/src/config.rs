@@ -109,6 +109,20 @@ impl BenchConfig {
             if seg.stride == 0 {
                 anyhow::bail!("segment `{name}` has stride = 0");
             }
+            // Fail at load time if this segment's own `seeds()` would overflow u64 —
+            // better than a silent wraparound the first time someone actually runs it.
+            (seg.count - 1)
+                .checked_mul(seg.stride)
+                .and_then(|max_offset| seg.start.checked_add(max_offset))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "segment `{name}` overflows u64 seed arithmetic \
+                         (start {} + (count {} - 1) * stride {})",
+                        seg.start,
+                        seg.count,
+                        seg.stride
+                    )
+                })?;
             if let Some(parent) = &seg.subset_of {
                 if !raw.segments.contains_key(parent) {
                     anyhow::bail!(
@@ -354,6 +368,24 @@ stride = 0
         let err = BenchConfig::parse(text).unwrap_err();
         assert!(
             err.to_string().contains("stride = 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn seed_arithmetic_overflow_fails_at_load() {
+        // TOML integers are i64-range, so u64::MAX itself isn't a valid literal — use
+        // i64::MAX for both start and stride instead, which is representable but still
+        // overflows u64 seed arithmetic once count*stride is added on top.
+        let text = r#"
+[segments.a]
+start = 9223372036854775807
+count = 3
+stride = 9223372036854775807
+"#;
+        let err = BenchConfig::parse(text).unwrap_err();
+        assert!(
+            err.to_string().contains("overflows u64 seed arithmetic"),
             "unexpected error: {err}"
         );
     }

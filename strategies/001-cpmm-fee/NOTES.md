@@ -6,6 +6,11 @@ Source form: **inherited, not ported.** This is a copy of `programs/starter/src/
 challenge's own shipped starter, a constant-product AMM (`x*y=k`) with a flat fee. No external
 material, no fidelity risk: the mechanism is already exactly what upstream ships and simulates.
 
+What actually differs from the starter: `NAME` (identifies this strategy in the registry),
+the `after_swap` no-op arm's comment, and an added doc comment on `compute_swap`. The
+`compute_swap` mechanism itself — and `MODEL_USED`, describing who produced that mechanism —
+is untouched.
+
 ## Mechanism
 
 Constant-product swap with a single free parameter, the fee, expressed as

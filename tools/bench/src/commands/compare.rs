@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use clap::Args;
-use prop_amm_shared::config::SimulationConfig;
+use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
 use crate::commands::note_if_not_decision_input;
 use crate::compile::{self, Slot};
@@ -22,8 +22,10 @@ pub struct CompareArgs {
     reference: String,
     #[command(flatten)]
     segment_selector: SegmentSelector,
-    /// Steps per simulation.
-    #[arg(long, default_value_t = 10_000)]
+    /// Steps per simulation. Defaults to the challenge's own baseline
+    /// (`prop_amm_shared::config::BASELINE_STEPS`), not a locally-hardcoded copy of it, so an
+    /// upstream sync that moves the baseline changes this default too.
+    #[arg(long, default_value_t = BASELINE_STEPS)]
     steps: u32,
 }
 

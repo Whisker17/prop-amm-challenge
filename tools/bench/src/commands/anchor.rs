@@ -69,9 +69,15 @@ pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
     );
 
     println!("Cross-checking aggregate against `prop-amm run`...");
+    let segment_count_u32 = u32::try_from(segment.count).map_err(|_| {
+        anyhow::anyhow!(
+            "segment `{segment_name}` has count {} which doesn't fit in the CLI's --simulations u32",
+            segment.count
+        )
+    })?;
     let cli_aggregate = run_prop_amm(
         &args.file,
-        segment.count as u32,
+        segment_count_u32,
         base.n_steps,
         segment.start,
         segment.stride,
