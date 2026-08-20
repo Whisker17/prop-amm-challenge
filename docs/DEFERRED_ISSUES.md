@@ -105,6 +105,16 @@ soon — anything touching a declared high-risk path defaults to at least High),
   trampoline" would need its own abstraction over that difference, for a net gain of maybe a
   dozen lines. Fix: revisit if a third call site needs the same shape — two duplicates is a
   pattern worth naming, three is worth extracting.
+- **A committed `compare` report with a regime-slice table needed a non-standard filename**
+  (Low, WHI-1195). `results/2026-08-20-compare-with-regime-slices.md` — `report.rs`'s
+  one-report-per-`(day, stage)` rule means today's `2026-08-20-compare.md` slot was already
+  spent by WHI-1193's own compare run, committed before regime slicing existed; regenerating
+  it would either silently clobber that evidence (`report.rs` itself refuses this) or require
+  deleting it first (destroying committed evidence, also against §3.3). Deferred: no code
+  change, since this is `report.rs`'s existing, intentional protection working as designed —
+  just an unusual filename for one report. Fix: none needed; `2026-08-20-compare.md` stays
+  WHI-1193's, and any future same-day rerun of `compare` needs its own distinctly-named file
+  the same way.
 - **`commands/l1.rs` bakes `strategies/000-normalizer/lib.rs` into generic measurement
   infrastructure's `--file` default** (Low, WHI-1195). `tools/bench/src/commands/l1.rs::
   DEFAULT_NORMALIZER_AS_SUBMISSION` — a specific strategy id is now a default in a command
