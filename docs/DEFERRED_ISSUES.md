@@ -75,26 +75,43 @@ soon — anything touching a declared high-risk path defaults to at least High),
   contract (a distinct prefix for temporary cuts, or pushing only after the PR exists); the
   workflow mitigates it with prose only ("open the PR immediately after the push",
   § Releasing to `main`). Low likelihood in a single-operator repo.
-- **The `Done` state flip cannot ride its own PR** (Low, template bootstrap).
-  `docs/agents/issue-tracker.md` § Issue lifecycle ↔ Git — the tracker is in-repo, so
-  `State: Done` has to be committed onto the resolved base *after* the merge, outside any PR.
-  That is a direct commit to a protected branch by construction. Deferred because the
-  alternative (an external tracker) is what we deliberately traded away; mitigation is that
-  it is part of the mandatory post-merge cleanup sequence, in the same session.
+- **`docs/agents/issue-tracker.md` still describes `.scratch/` and the WHI-1192/"`Done`
+  state flip" `docs/DEFERRED_ISSUES.md` entries as present-tense open problems**
+  (Low, WHI-1199). `docs/agents/issue-tracker.md:9-13` (top-of-file forward-reference),
+  `:63-71` (§ Decisions, Decision 1 — "It is left in place, stale text and all"), and
+  `:101-138` (§ "What happened to `.scratch/`") — this PR (WHI-1199) deleted `.scratch/`
+  and moved both `docs/DEFERRED_ISSUES.md` entries those sections cite to *Resolved*, but
+  all three sites still read as if none of that happened. Left unfixed here because
+  `docs/agents/issue-tracker.md` is a governance carve-out path
+  (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and this PR's diff is
+  non-carve-out only — touching it here would mix scopes, which WHI-1199's own acceptance
+  criteria forbid. Fix: WHI-1200 (governance-scoped, carve-out paths only) updates all
+  three sites to past tense.
 - **`tools/bench`'s fast-path timing (`0.11–0.57 s`/point) has no measurement to cite**
   (Low, WHI-1192). `docs/DESIGN.md` §2.6 — the number describes `tools/bench`'s search
   fast path, which does not exist in the repo yet (WHI-1193 stands up `tools/bench` with
   no search; WHI-1194 adds the fast path this number describes), so it can't be
   re-measured. Fix: once WHI-1194 adds the fast path, re-measure and cite via a `results/`
   snapshot per §3.3.
-- **`docs/DESIGN.md` cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
-  `.scratch/` as the tracker of record** (Low, WHI-1192). `docs/DESIGN.md` §6.1, §8 —
-  inconsistent tracker naming across the repo, owned by the separate governance issue
-  WHI-1196 (out of scope here per this issue's own carve-out). No fix in this PR; resolves
-  when WHI-1196 lands.
 
 ---
 
 ## Resolved
 
-_(none yet)_
+- **`docs/DESIGN.md` cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
+  `.scratch/` as the tracker of record** (Low, WHI-1192). `docs/DESIGN.md` §6.1, §8 —
+  inconsistent tracker naming across the repo, owned by the separate governance issue
+  WHI-1196. Resolved by WHI-1196 (`dc973d1`), which rebound the live governance path
+  (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, `docs/agents/issue-tracker.md`, and friends) to
+  Linear naming. Entry moved here by WHI-1199.
+- **The `Done` state flip cannot ride its own PR** (Low, template bootstrap).
+  `docs/agents/issue-tracker.md` § Issue lifecycle ↔ Git — this was deferred on the
+  premise that the tracker is in-repo, so `State: Done` has to be committed onto the
+  resolved base *after* the merge, a direct commit to a protected branch by construction.
+  Resolved by WHI-1196 (`dc973d1`): the tracker is now Linear, so `State: Done` is a
+  `linear.save_issue` call, not a git commit — the protected-branch-commit defect this
+  entry named is gone. This closes only that narrow defect, not the broader trade-off it
+  sat next to: `docs/agents/issue-tracker.md` § Decisions #2 records, as its own
+  already-accepted debt, that Linear and git are now separate systems with no shared
+  commit boundary and can drift — real and ongoing, mitigated by operational discipline
+  only, not eliminated by this entry's closure. Entry moved here by WHI-1199.
