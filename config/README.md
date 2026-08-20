@@ -26,7 +26,11 @@ here as checked-in TOML.
 **`bench.toml`** (WHI-1193) is the first one: `tools/bench`'s seed segments
 (`docs/DESIGN.md` §2.2), loaded and validated by `tools/bench/src/config.rs`
 (`BenchConfig::load`) — segments must be pairwise disjoint at load time except where one
-declares `subset_of` the other.
+declares `subset_of` the other. It also carries grid mode's factorial (`docs/DESIGN.md`
+§2.3, WHI-1195): the `[grid]` table's axis levels and per-cell seed count, validated
+non-empty/non-zero via `BenchConfig::grid`. Grid mode's own seed *addressing* (the base
+offset and the per-cell formula) stays in `tools/bench/src/grid.rs` — it's code, not a
+tunable value, and `bench.toml`'s own header comment carves it out from the segment rules.
 
 ## What does *not* belong here
 

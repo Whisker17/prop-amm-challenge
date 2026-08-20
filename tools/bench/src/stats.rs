@@ -92,13 +92,28 @@ pub fn paired_stat(candidate: &[SimResult], reference: &[SimResult]) -> anyhow::
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn sim(seed: u64, edge: f64) -> SimResult {
         SimResult {
             seed,
             submission_edge: edge,
+        }
+    }
+
+    /// A `PairedStat` with a caller-chosen `n`/`mean_diff` and a degenerate (point) interval
+    /// — for tests elsewhere in `tools/bench` that need a `PairedStat` to format or aggregate
+    /// without recomputing one from raw `SimResult`s. Shared here rather than each of
+    /// `commands/grid.rs` and `commands/compare.rs` redeclaring the same literal.
+    pub(crate) fn sample_stat(n: usize, mean_diff: f64) -> PairedStat {
+        PairedStat {
+            n,
+            mean_diff,
+            std_error: 0.0,
+            t_critical: f64::NAN,
+            ci_low: mean_diff,
+            ci_high: mean_diff,
         }
     }
 

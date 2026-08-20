@@ -9,4 +9,5 @@ Sits outside `crates/` so no candidate is ever mistaken for upstream code.
 
 | Id | Name | Source form | Status | Current numbers |
 | --- | --- | --- | --- | --- |
+| 000-normalizer | 000 Normalizer (as submission) | inherited (`crates/shared/src/normalizer.rs`, unmodified mechanism) | **baseline, not a ranked candidate** — docs/DESIGN.md §2.8's protocol self-check; no frozen space, no fitting (WHI-1195) | see `results/2026-08-20-l1.md`, `results/2026-08-20-grid.md` |
 | 001-cpmm-fee | 001 CPMM Fee | inherited (starter, unmodified mechanism) | unfit — structure only (WHI-1193); fit is WHI-1194 | avg edge 210.50, seeds `0..=999`, 10,000 steps, native (= starter anchor, `docs/DESIGN.md` §2.1) |

@@ -1,5 +1,7 @@
 pub mod anchor;
 pub mod compare;
+pub mod grid;
+pub mod l1;
 
 use crate::config::Segment;
 

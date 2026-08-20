@@ -93,6 +93,40 @@ soon — anything touching a declared high-risk path defaults to at least High),
   no search; WHI-1194 adds the fast path this number describes), so it can't be
   re-measured. Fix: once WHI-1194 adds the fast path, re-measure and cite via a `results/`
   snapshot per §3.3.
+- **`telemetry.rs`'s recorder-dispatch mechanism duplicates `compile.rs`'s `Slot`/
+  `LOADED_AFTER_SWAP` shape** (Low, WHI-1195). `tools/bench/src/telemetry.rs::AmmSlot` /
+  `REAL_AFTER_SWAP` / `record_and_delegate` reproduce `compile.rs`'s `Slot` /
+  `LOADED_AFTER_SWAP` / `call_after_swap` mechanism (static `AtomicPtr` array + a
+  `#[repr(usize)]` enum + transmute-and-call) nearly line for line. Deferred because the two
+  serve genuinely different jobs despite the shared shape: `compile.rs`'s dispatches between
+  two *candidate identities* (`compare`'s two build slots), while `telemetry.rs`'s dispatches
+  submission-vs-normalizer and additionally has to fall back to a no-op when no real
+  `after_swap` was installed — a case `compile.rs` doesn't have. A shared generic wrapper
+  around "install a `fn`-pointer behind an `AtomicPtr`, dispatch through a transmuting
+  trampoline" would need its own abstraction over that difference, for a net gain of maybe a
+  dozen lines. Fix: revisit if a third call site needs the same shape — two duplicates is a
+  pattern worth naming, three is worth extracting.
+- **A committed `compare` report with a regime-slice table needed a non-standard filename**
+  (Low, WHI-1195). `results/2026-08-20-compare-with-regime-slices.md` — `report.rs`'s
+  one-report-per-`(day, stage)` rule means today's `2026-08-20-compare.md` slot was already
+  spent by WHI-1193's own compare run, committed before regime slicing existed; regenerating
+  it would either silently clobber that evidence (`report.rs` itself refuses this) or require
+  deleting it first (destroying committed evidence, also against §3.3). Deferred: no code
+  change, since this is `report.rs`'s existing, intentional protection working as designed —
+  just an unusual filename for one report. Fix: none needed; `2026-08-20-compare.md` stays
+  WHI-1193's, and any future same-day rerun of `compare` needs its own distinctly-named file
+  the same way.
+- **`commands/l1.rs` bakes `strategies/000-normalizer/lib.rs` into generic measurement
+  infrastructure's `--file` default** (Low, WHI-1195). `tools/bench/src/commands/l1.rs::
+  DEFAULT_NORMALIZER_AS_SUBMISSION` — a specific strategy id is now a default in a command
+  that should otherwise work on any submission file. Deferred (not really disputed, just not
+  changed): `commands/anchor.rs::DEFAULT_FILE` already hardcodes `programs/starter/src/lib.rs`
+  the same way, and the report-collision constraint (`report.rs` allows one report per
+  `(day, stage)`; the ticket wants "a `results/` snapshot covering the starter and the
+  normalizer reference" as one artifact) is what forces `l1` to default to a *list* rather
+  than a single required path. Fix: if a third baseline ever needs the same treatment,
+  consider moving the default file list into `config/bench.toml` instead of a second hardcoded
+  constant.
 
 ---
 
