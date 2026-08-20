@@ -81,10 +81,11 @@ pub enum Slot {
 pub struct LoadedNative {
     swap_fn: SwapFn,
     after_swap_fn: Option<AfterSwapFn>,
-    /// The isolated `.build/runs/<hash>` directory this dylib was built in, so the caller
-    /// can clean it up once every process that depends on it (including any `prop-amm run`
-    /// spot-check subprocess reusing the same build-dir cache) is done with it.
-    pub build_dir: Option<PathBuf>,
+    /// The isolated `.build/runs/<hash>` directory this dylib was built in. Removed on
+    /// `Drop` (see below) so it's cleaned up on *every* exit path — success, an early `?`,
+    /// or a `bail!` — not just the happy path a manual cleanup call after the last use would
+    /// miss.
+    build_dir: Option<PathBuf>,
 }
 
 impl LoadedNative {
@@ -102,6 +103,12 @@ impl LoadedNative {
     }
 }
 
+impl Drop for LoadedNative {
+    fn drop(&mut self) {
+        cleanup(self.build_dir.as_deref());
+    }
+}
+
 /// Builds `file` through the reference compile path (`prop-amm build`, native + BPF,
 /// deliberately 7-10s — docs/DESIGN.md §2.6) and loads the resulting native dylib into the
 /// given slot. The dylib is leaked so its symbols stay valid for the process lifetime,
@@ -115,7 +122,7 @@ pub fn build_and_load(file: &str, slot: Slot) -> anyhow::Result<LoadedNative> {
 /// errors the caller's command — a failed cleanup shouldn't invalidate an otherwise-good
 /// measurement, it's just a warning to stderr (docs/DESIGN.md §3.4: the reference path's
 /// isolated directories should be cleaned after use).
-pub fn cleanup(build_dir: Option<&Path>) {
+fn cleanup(build_dir: Option<&Path>) {
     let Some(dir) = build_dir else { return };
     if let Err(e) = std::fs::remove_dir_all(dir) {
         // `compare` loads two builds that can share one build dir (candidate == reference,

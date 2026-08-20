@@ -9,6 +9,8 @@ use crate::config::{BenchConfig, SegmentSelector};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::stats;
 
+const STAGE: &str = "compare";
+
 /// `bench compare` — the headline paired-by-seed comparison (docs/DESIGN.md §2.1, §2.6).
 #[derive(Args, Debug)]
 pub struct CompareArgs {
@@ -26,6 +28,9 @@ pub struct CompareArgs {
 }
 
 pub fn run(args: CompareArgs) -> anyhow::Result<()> {
+    // Fail fast, before any compiling/simulating, if today's report slot is already taken.
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), STAGE)?;
+
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;
     note_if_not_decision_input(segment_name, segment);
@@ -52,8 +57,8 @@ pub fn run(args: CompareArgs) -> anyhow::Result<()> {
     let candidate_result = candidate.run_batch(configs.clone())?;
     let reference_result = reference.run_batch(configs)?;
 
-    compile::cleanup(candidate.build_dir.as_deref());
-    compile::cleanup(reference.build_dir.as_deref());
+    // `candidate`/`reference`'s build dirs are removed on Drop, whenever this function
+    // returns — success, an early `?`, or a `bail!` below (docs/DESIGN.md §3.4).
 
     let stat = stats::paired_stat(&candidate_result.results, &reference_result.results)?;
 
@@ -79,7 +84,7 @@ pub fn run(args: CompareArgs) -> anyhow::Result<()> {
     );
 
     let meta = ReportMeta {
-        stage: "compare".to_string(),
+        stage: STAGE.to_string(),
         segment: segment_name.to_string(),
         n_sims: stat.n,
         n_steps: args.steps,

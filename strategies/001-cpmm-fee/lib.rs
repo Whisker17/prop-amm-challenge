@@ -2,9 +2,9 @@ use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramRe
 use prop_amm_submission_sdk::{set_return_data_bytes, set_return_data_u64};
 
 const NAME: &str = "001 CPMM Fee";
-// Preserved unchanged from `programs/starter/src/lib.rs` — this file is an unmodified copy
-// (see NOTES.md § Provenance), so the field describing which model produced the mechanism
-// hasn't changed either.
+// Preserved unchanged from `programs/starter/src/lib.rs`: NAME and some comments differ
+// (see NOTES.md § Provenance), but the compute_swap mechanism itself is untouched, so the
+// field describing which model produced that mechanism hasn't changed either.
 const MODEL_USED: &str = "GPT-5.3-Codex";
 const FEE_NUMERATOR: u128 = 950;
 const FEE_DENOMINATOR: u128 = 1000;

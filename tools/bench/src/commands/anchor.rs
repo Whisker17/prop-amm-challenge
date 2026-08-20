@@ -11,6 +11,7 @@ use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 
 const DEFAULT_FILE: &str = "programs/starter/src/lib.rs";
 const SAMPLE_SEEDS: usize = 20;
+const STAGE: &str = "anchor";
 
 /// `bench anchor` — cross-checks bench's own numbers against a real, separately-invoked
 /// `prop-amm run`, both in aggregate and per seed (docs/DESIGN.md §2.6's parity gate). This
@@ -41,6 +42,9 @@ struct SeedCheck {
 }
 
 pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
+    // Fail fast, before any compiling/simulating, if today's report slot is already taken.
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), STAGE)?;
+
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;
     note_if_not_decision_input(segment_name, segment);
@@ -109,7 +113,8 @@ pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
         });
     }
 
-    compile::cleanup(loaded.build_dir.as_deref());
+    // `loaded`'s build dir is removed on Drop, whenever this function returns — success,
+    // an early `?`, or a `bail!` below (docs/DESIGN.md §3.4).
 
     let mismatches: Vec<&SeedCheck> = checks.iter().filter(|c| !c.matches).collect();
     if !mismatches.is_empty() {
@@ -131,7 +136,7 @@ pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
     );
 
     let meta = ReportMeta {
-        stage: "anchor".to_string(),
+        stage: STAGE.to_string(),
         segment: segment_name.to_string(),
         n_sims: batch.n_sims(),
         n_steps: base.n_steps,

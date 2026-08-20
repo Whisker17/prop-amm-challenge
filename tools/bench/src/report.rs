@@ -22,6 +22,29 @@ pub struct ReportSection {
 
 pub const DEFAULT_REPORT_DIR: &str = "results";
 
+fn expected_path(dir: &Path, stage: &str) -> PathBuf {
+    dir.join(format!("{}-{stage}.md", today()))
+}
+
+fn refuse_if_exists(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "{} already exists; results/ snapshots are committed evidence and are never \
+             overwritten silently — move or remove it before re-running",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Fails fast if `<dir>/<today>-<stage>.md` already exists. Call this **before** doing any
+/// expensive measurement work (a `compare`/`anchor` run is minutes of compiling and
+/// simulating) — `write_report`'s own check at the end would otherwise only discover the
+/// conflict after all of that work was thrown away.
+pub fn ensure_report_slot_free(dir: &Path, stage: &str) -> anyhow::Result<()> {
+    refuse_if_exists(&expected_path(dir, stage))
+}
+
 /// Writes `<dir>/<date>-<stage>.md` and returns its path. Refuses to overwrite an existing
 /// report — `results/` snapshots are committed evidence (docs/DESIGN.md §3.3), and a second
 /// same-day run silently clobbering the first would destroy that evidence without anyone
@@ -31,18 +54,11 @@ pub fn write_report(
     meta: &ReportMeta,
     sections: &[ReportSection],
 ) -> anyhow::Result<PathBuf> {
-    let date = today();
     fs::create_dir_all(dir)
         .map_err(|e| anyhow::anyhow!("failed to create report dir {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{date}-{}.md", meta.stage));
-
-    if path.exists() {
-        anyhow::bail!(
-            "{} already exists; results/ snapshots are committed evidence and are never \
-             overwritten silently — move or remove it before re-running",
-            path.display()
-        );
-    }
+    let path = expected_path(dir, &meta.stage);
+    refuse_if_exists(&path)?;
+    let date = today();
 
     let mut out = String::new();
     out.push_str(&format!("# {} — {date}\n\n", meta.stage));
@@ -178,6 +194,27 @@ mod tests {
 
         write_report(tmp.path(), &meta, &sections).unwrap();
         let err = write_report(tmp.path(), &meta, &sections).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensure_report_slot_free_catches_a_conflict_before_any_expensive_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(ensure_report_slot_free(tmp.path(), "preflight-stage").is_ok());
+
+        let meta = ReportMeta {
+            stage: "preflight-stage".to_string(),
+            segment: "observation".to_string(),
+            n_sims: 1,
+            n_steps: 1,
+            execution_path: "native".to_string(),
+        };
+        write_report(tmp.path(), &meta, &[]).unwrap();
+
+        let err = ensure_report_slot_free(tmp.path(), "preflight-stage").unwrap_err();
         assert!(
             err.to_string().contains("already exists"),
             "unexpected error: {err}"
