@@ -50,7 +50,10 @@ pub fn run(args: CompareArgs) -> anyhow::Result<()> {
         );
     }
 
-    let base = SimulationConfig { n_steps: args.steps, ..SimulationConfig::default() };
+    let base = SimulationConfig {
+        n_steps: args.steps,
+        ..SimulationConfig::default()
+    };
     let configs = segment.sim_configs(&base);
 
     println!("Building candidate: {}", args.candidate);
@@ -114,7 +117,10 @@ pub fn run(args: CompareArgs) -> anyhow::Result<()> {
         n_steps: args.steps,
         execution_path: "native".to_string(),
     };
-    let sections = vec![ReportSection { heading: "Paired comparison".to_string(), body }];
+    let sections = vec![ReportSection {
+        heading: "Paired comparison".to_string(),
+        body,
+    }];
     let path = report::write_report(Path::new(REPORT_DIR), &meta, &sections)?;
     println!("Report written to {}", path.display());
 

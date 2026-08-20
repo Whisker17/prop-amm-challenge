@@ -44,7 +44,8 @@ pub fn write_report(
         out.push_str(&format!("## {}\n\n{}\n\n", section.heading, section.body));
     }
 
-    fs::write(&path, out).map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+    fs::write(&path, out)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -127,7 +128,10 @@ mod tests {
         let path = write_report(tmp.path(), &meta, &sections).unwrap();
 
         let file_name = path.file_name().unwrap().to_str().unwrap();
-        assert!(file_name.ends_with("-unit-test-stage.md"), "got {file_name}");
+        assert!(
+            file_name.ends_with("-unit-test-stage.md"),
+            "got {file_name}"
+        );
         let date_part = &file_name[..10];
         assert_eq!(date_part.len(), 10);
         assert!(date_part.chars().nth(4) == Some('-') && date_part.chars().nth(7) == Some('-'));

@@ -64,7 +64,11 @@ pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
         None,
     )?;
 
-    println!("Avg edge: {:.2}  Total edge: {:.2}", batch.avg_edge(), batch.total_edge);
+    println!(
+        "Avg edge: {:.2}  Total edge: {:.2}",
+        batch.avg_edge(),
+        batch.total_edge
+    );
 
     let mut body = format!(
         "- Aggregate: avg edge {:.2}, total edge {:.2}, n={}\n\n\
@@ -106,7 +110,9 @@ pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
             mismatches
         );
     }
-    println!("Per-seed agreement: {SAMPLE_SEEDS}/{SAMPLE_SEEDS} sampled seeds match `prop-amm run`.");
+    println!(
+        "Per-seed agreement: {SAMPLE_SEEDS}/{SAMPLE_SEEDS} sampled seeds match `prop-amm run`."
+    );
 
     let meta = ReportMeta {
         stage: "anchor".to_string(),
@@ -115,7 +121,10 @@ pub fn run(args: AnchorArgs) -> anyhow::Result<()> {
         n_steps: base.n_steps,
         execution_path: "native".to_string(),
     };
-    let sections = vec![ReportSection { heading: "Starter anchor".to_string(), body }];
+    let sections = vec![ReportSection {
+        heading: "Starter anchor".to_string(),
+        body,
+    }];
     let path = report::write_report(Path::new(REPORT_DIR), &meta, &sections)?;
     println!("Report written to {}", path.display());
 

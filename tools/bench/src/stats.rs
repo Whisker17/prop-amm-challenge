@@ -72,8 +72,7 @@ pub fn paired_stat(candidate: &[SimResult], reference: &[SimResult]) -> anyhow::
     let mean_diff = diffs.iter().sum::<f64>() / n as f64;
 
     let (std_error, df) = if n >= 2 {
-        let variance =
-            diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / (n - 1) as f64;
+        let variance = diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / (n - 1) as f64;
         (variance.sqrt() / (n as f64).sqrt(), n - 1)
     } else {
         (0.0, 0)
@@ -97,7 +96,10 @@ mod tests {
     use super::*;
 
     fn sim(seed: u64, edge: f64) -> SimResult {
-        SimResult { seed, submission_edge: edge }
+        SimResult {
+            seed,
+            submission_edge: edge,
+        }
     }
 
     #[test]
@@ -129,7 +131,10 @@ mod tests {
         let candidate = vec![sim(1, 1.0)];
         let reference = vec![sim(2, 1.0)];
         let err = paired_stat(&candidate, &reference).unwrap_err();
-        assert!(err.to_string().contains("unpaired"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("unpaired"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -137,7 +142,10 @@ mod tests {
         let candidate = vec![sim(1, 1.0), sim(2, 1.0)];
         let reference = vec![sim(1, 1.0)];
         let err = paired_stat(&candidate, &reference).unwrap_err();
-        assert!(err.to_string().contains("equal-length"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("equal-length"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

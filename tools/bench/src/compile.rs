@@ -17,10 +17,14 @@ type FfiAfterSwapFn = unsafe extern "C" fn(*const u8, usize, *mut u8, usize);
 // loaded dylib's entry point can't carry any captured context. `compare` needs a candidate
 // and a reference loaded at once, so there are two fixed slots (not one, as
 // `crates/cli/src/commands/run.rs` uses) with two distinct trampolines each.
-static LOADED_SWAP: [AtomicPtr<()>; 2] =
-    [AtomicPtr::new(std::ptr::null_mut()), AtomicPtr::new(std::ptr::null_mut())];
-static LOADED_AFTER_SWAP: [AtomicPtr<()>; 2] =
-    [AtomicPtr::new(std::ptr::null_mut()), AtomicPtr::new(std::ptr::null_mut())];
+static LOADED_SWAP: [AtomicPtr<()>; 2] = [
+    AtomicPtr::new(std::ptr::null_mut()),
+    AtomicPtr::new(std::ptr::null_mut()),
+];
+static LOADED_AFTER_SWAP: [AtomicPtr<()>; 2] = [
+    AtomicPtr::new(std::ptr::null_mut()),
+    AtomicPtr::new(std::ptr::null_mut()),
+];
 
 fn call_swap(slot: usize, data: &[u8]) -> u64 {
     let ptr = LOADED_SWAP[slot].load(Ordering::Relaxed);
@@ -39,7 +43,14 @@ fn swap_slot1(data: &[u8]) -> u64 {
 fn call_after_swap(slot: usize, data: &[u8], storage: &mut [u8]) {
     let ptr = LOADED_AFTER_SWAP[slot].load(Ordering::Relaxed);
     let f: FfiAfterSwapFn = unsafe { std::mem::transmute(ptr) };
-    unsafe { f(data.as_ptr(), data.len(), storage.as_mut_ptr(), storage.len()) }
+    unsafe {
+        f(
+            data.as_ptr(),
+            data.len(),
+            storage.as_mut_ptr(),
+            storage.len(),
+        )
+    }
 }
 
 fn after_swap_slot0(data: &[u8], storage: &mut [u8]) {
@@ -115,9 +126,15 @@ fn load_native(native_path: &Path, slot: Slot) -> anyhow::Result<LoadedNative> {
     let idx = slot.index();
 
     let swap_symbol: libloading::Symbol<FfiSwapFn> = unsafe {
-        lib.get(NATIVE_SWAP_SYMBOL).or_else(|_| lib.get(b"compute_swap_ffi"))
+        lib.get(NATIVE_SWAP_SYMBOL)
+            .or_else(|_| lib.get(b"compute_swap_ffi"))
     }
-    .map_err(|e| anyhow::anyhow!("missing native swap symbol in {}: {e}", native_path.display()))?;
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "missing native swap symbol in {}: {e}",
+            native_path.display()
+        )
+    })?;
     LOADED_SWAP[idx].store(*swap_symbol as *mut (), Ordering::Relaxed);
 
     let has_after_swap = if let Ok(after_symbol) = unsafe {
@@ -139,5 +156,8 @@ fn load_native(native_path: &Path, slot: Slot) -> anyhow::Result<LoadedNative> {
         Slot::One => after_swap_slot1,
     });
 
-    Ok(LoadedNative { swap_fn, after_swap_fn })
+    Ok(LoadedNative {
+        swap_fn,
+        after_swap_fn,
+    })
 }

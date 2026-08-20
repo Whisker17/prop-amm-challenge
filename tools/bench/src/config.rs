@@ -41,14 +41,19 @@ pub struct Segment {
 
 impl Segment {
     pub fn seeds(&self) -> Vec<u64> {
-        (0..self.count).map(|i| self.start + i * self.stride).collect()
+        (0..self.count)
+            .map(|i| self.start + i * self.stride)
+            .collect()
     }
 
     /// Distribution mode (docs/DESIGN.md §2.3): each seed's full regime via
     /// `HyperparameterVariance::apply`, over `base` with the caller's step count.
     pub fn sim_configs(&self, base: &SimulationConfig) -> Vec<SimulationConfig> {
         let variance = HyperparameterVariance::default();
-        self.seeds().into_iter().map(|seed| variance.apply(base, seed)).collect()
+        self.seeds()
+            .into_iter()
+            .map(|seed| variance.apply(base, seed))
+            .collect()
     }
 }
 
@@ -59,14 +64,15 @@ pub struct BenchConfig {
 
 impl BenchConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("failed to read bench config {}: {}", path.display(), e))?;
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            anyhow::anyhow!("failed to read bench config {}: {}", path.display(), e)
+        })?;
         Self::parse(&text)
     }
 
     pub fn parse(text: &str) -> anyhow::Result<Self> {
-        let raw: RawBenchConfig =
-            toml::from_str(text).map_err(|e| anyhow::anyhow!("failed to parse bench config: {e}"))?;
+        let raw: RawBenchConfig = toml::from_str(text)
+            .map_err(|e| anyhow::anyhow!("failed to parse bench config: {e}"))?;
 
         if raw.segments.is_empty() {
             anyhow::bail!("bench config declares no segments");
@@ -107,7 +113,10 @@ impl BenchConfig {
 
     pub fn segment(&self, name: &str) -> anyhow::Result<&Segment> {
         self.segments.get(name).ok_or_else(|| {
-            anyhow::anyhow!("unknown segment `{name}`; known segments: {}", self.segment_names())
+            anyhow::anyhow!(
+                "unknown segment `{name}`; known segments: {}",
+                self.segment_names()
+            )
         })
     }
 
@@ -192,7 +201,10 @@ decision_input = true
     #[test]
     fn loads_valid_config() {
         let cfg = BenchConfig::parse(sample_valid()).unwrap();
-        assert_eq!(cfg.segment("observation").unwrap().seeds(), (0..10).collect::<Vec<_>>());
+        assert_eq!(
+            cfg.segment("observation").unwrap().seeds(),
+            (0..10).collect::<Vec<_>>()
+        );
         assert!(cfg.segment("test").unwrap().single_use);
         assert!(!cfg.segment("observation").unwrap().single_use);
         assert!(!cfg.segment("observation").unwrap().decision_input);
@@ -202,7 +214,10 @@ decision_input = true
     #[test]
     fn screening_is_exempt_as_declared_subset_of_train() {
         let cfg = BenchConfig::parse(sample_valid()).unwrap();
-        assert_eq!(cfg.segment("screening").unwrap().seeds(), vec![1000, 1001, 1002]);
+        assert_eq!(
+            cfg.segment("screening").unwrap().seeds(),
+            vec![1000, 1001, 1002]
+        );
     }
 
     #[test]
@@ -217,7 +232,10 @@ start = 5
 count = 10
 "#;
         let err = BenchConfig::parse(text).unwrap_err();
-        assert!(err.to_string().contains("overlap"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("overlap"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -233,7 +251,10 @@ count = 5
 subset_of = "train"
 "#;
         let err = BenchConfig::parse(text).unwrap_err();
-        assert!(err.to_string().contains("not actually a subset"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("not actually a subset"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -245,7 +266,10 @@ count = 5
 subset_of = "train"
 "#;
         let err = BenchConfig::parse(text).unwrap_err();
-        assert!(err.to_string().contains("not a declared segment"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("not a declared segment"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -256,7 +280,10 @@ start = 0
 count = 0
 "#;
         let err = BenchConfig::parse(text).unwrap_err();
-        assert!(err.to_string().contains("count = 0"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("count = 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -268,7 +295,10 @@ count = 5
 stride = 0
 "#;
         let err = BenchConfig::parse(text).unwrap_err();
-        assert!(err.to_string().contains("stride = 0"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("stride = 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -293,6 +323,9 @@ stride = 0
     #[test]
     fn empty_config_fails() {
         let err = BenchConfig::parse("").unwrap_err();
-        assert!(err.to_string().contains("no segments"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("no segments"),
+            "unexpected error: {err}"
+        );
     }
 }
