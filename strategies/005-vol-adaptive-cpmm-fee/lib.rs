@@ -49,15 +49,16 @@ const MODEL_USED: &str = "Claude Opus 4.8";
 // ---- estimator / fixed-point tunables --------------------------------------
 const P_SCALE: u128 = 1_000_000_000; // price fixed-point: p_fp = ry*P_SCALE/rx
 const MOVE_BPS_CAP: u128 = 250; // cap the per-step relative move BEFORE squaring
-// Derived, not an independent parameter (docs/DESIGN.md §2.4 amendment): by
-// construction this is MOVE_BPS_CAP^2, the cap on one squared per-step move.
+                                // Derived, not an independent parameter (docs/DESIGN.md §2.4 amendment): by
+                                // construction this is MOVE_BPS_CAP^2, the cap on one squared per-step move.
 const R2_CAP: u128 = MOVE_BPS_CAP * MOVE_BPS_CAP;
 
 // ---- vol -> fee mapping (bps) -----------------------------------------------
 // === PARAMS BEGIN ===
-const FEE_LO: u128 = 20; // range: 5..=66
-const A_NUM: u128 = 7; // range: 0..=25
-const B_DEN: u128 = 160; // range: 40..=2000
+const FEE_LO: u128 = 5; // range: 5..=66
+const A_NUM: u128 = 13; // range: 0..=25
+const B_DEN: u128 = 1265; // range: 40..=2000
+
 // === PARAMS END ===
 const FEE_HI: u128 = 130; // fee ceiling (rarely binding) — frozen, not searched
 const A_DEN: u128 = 10; // linear term denominator — frozen, not searched
@@ -119,7 +120,14 @@ pub fn get_model_used() -> &'static str {
 #[inline]
 fn rd_u64(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes([
-        b[o], b[o + 1], b[o + 2], b[o + 3], b[o + 4], b[o + 5], b[o + 6], b[o + 7],
+        b[o],
+        b[o + 1],
+        b[o + 2],
+        b[o + 3],
+        b[o + 4],
+        b[o + 5],
+        b[o + 6],
+        b[o + 7],
     ])
 }
 
@@ -131,8 +139,22 @@ fn rd8(b: &[u8], o: usize) -> u128 {
 #[inline]
 fn rd16(b: &[u8], o: usize) -> u128 {
     u128::from_le_bytes([
-        b[o], b[o + 1], b[o + 2], b[o + 3], b[o + 4], b[o + 5], b[o + 6], b[o + 7],
-        b[o + 8], b[o + 9], b[o + 10], b[o + 11], b[o + 12], b[o + 13], b[o + 14], b[o + 15],
+        b[o],
+        b[o + 1],
+        b[o + 2],
+        b[o + 3],
+        b[o + 4],
+        b[o + 5],
+        b[o + 6],
+        b[o + 7],
+        b[o + 8],
+        b[o + 9],
+        b[o + 10],
+        b[o + 11],
+        b[o + 12],
+        b[o + 13],
+        b[o + 14],
+        b[o + 15],
     ])
 }
 
