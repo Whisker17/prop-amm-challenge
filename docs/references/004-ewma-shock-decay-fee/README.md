@@ -44,9 +44,12 @@ Confirmed from `v2-solana-lib.rs` (the actual submission, most direct source):
   `SHOCK_THRESHOLD_1E9` (0.5%), otherwise decrements it by 1.
 
 `v2-ethereum-Strategy.sol` (also labelled "v2", independently, on the EVM side) adds on top
-of the same EWMA-vol core: a **momentum EWMA** (buy/sell pressure, faster-decaying α=0.20)
-that adds a symmetric surcharge when sustained directional flow is detected, and an
-**inventory-skew** term that shifts bid/ask fees apart based on reserve ratio. Whether the
+of a **similar but not identical** EWMA-vol core — its own vol EWMA uses `ALPHA = 0.15`
+(`:18`), not the Rust base's `0.20` — a **momentum EWMA** (buy/sell pressure, α=0.20,
+`:32`, faster-decaying *relative to the Solidity file's own 0.15 vol alpha*, not relative
+to the Rust base) that adds a symmetric surcharge when sustained directional flow is
+detected, and an **inventory-skew** term that shifts bid/ask fees apart based on reserve
+ratio. Whether the
 porting issue treats this as within-scope for "004" or as a `004b` variant (§2.9) is a call
 for that issue — the two "v2"s are not identical despite the shared label.
 

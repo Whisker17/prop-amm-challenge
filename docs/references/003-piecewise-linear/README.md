@@ -43,8 +43,13 @@ Confirmed from source (`state.rs`, `math/piecewise.rs`):
 
 - **`NUM_PRICE_POINTS = 7`, `NUM_SEGMENTS = 6`** per side of the book (`PiecewiseBookSide`)
   — a 6-segment piecewise-linear price curve per side, not a single linear range.
-- **Liquidity per segment is uniform**: `liquidity_per_price_unit = quantity / (upper -
-  lower)` within each segment (matches the user-supplied description).
+- **Liquidity per segment is uniform** — the Rust source's own name for this is
+  `calculate_k(quantity, lower_price, upper_price)` (`math/mod.rs:30`), not the
+  `liquidity_per_price_unit` name used in the user-supplied description; that name is
+  the blog's own Python toy model's identifier
+  (`blog-benedict-dev-prop-amm.md`'s `BookSide.liquidity_per_price_unit`), which computes
+  the same `quantity / (upper - lower)` quantity under a different name. The mechanism is
+  the same; only the Rust identifier differs from what was described.
 - **Exact-in / exact-out** swap amounts are computed via a closed form per segment
   (`math/piecewise.rs`, `math/sqrt.rs` — integer sqrt helpers back a square-root term in
   the per-segment fill calculation).
@@ -61,7 +66,7 @@ Confirmed from source (`state.rs`, `math/piecewise.rs`):
 | --- | --- | --- |
 | `NUM_PRICE_POINTS` / `NUM_SEGMENTS` | `7` / `6`, compile-time constants | `state.rs:18,21` |
 | `SCALE` | `1_000_000_000` (fixed-point scale) | `state.rs:15` |
-| per-segment liquidity | derived (`quantity / (upper - lower)`), not a free parameter | `math/piecewise.rs` |
+| per-segment liquidity | derived (`quantity / (upper - lower)`), not a free parameter | `math/mod.rs:30` (`calculate_k`) |
 
 The 7 price points themselves (per side) are the actual state the oracle writes and the
 curve is shaped by — not a fixed parameter set. The porting issue's frozen search space

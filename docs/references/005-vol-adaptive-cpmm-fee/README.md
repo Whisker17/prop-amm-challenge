@@ -63,7 +63,7 @@ unusually well self-documented:
 | `FEE_LO` | `20` bps | fee floor (LVR floor — lower leaks value to the arbitrageur) |
 | `FEE_HI` | `130` bps | fee ceiling (rarely binding, per the source's own comment) |
 | `A_NUM` / `A_DEN` | `7` / `10` | linear term coefficient, `0.7 * sigma_hat` |
-| `B_DEN` | `160` | quadratic term divisor, `sigma_hat^2 / 160` |
+| `B_DEN` | `160` | quadratic term divisor, `sigma_hat^2 / 160` — the constant is `160`; the source's own inline comment at `EdgeMax_CumVar.rs:51` says `/ 200`, which is stale against its own `const B_DEN: u128 = 160`. This table follows the constant (the value actually used at runtime), not the comment. |
 | `COLD_FEE` | `55` bps | default fee before the estimator warms up |
 | `WARMUP_STEPS` | `16` | per-step samples required before trusting `sigma_hat` |
 | `MOVE_BPS_CAP` | `250` bps | cap on a single per-step relative move before squaring |
