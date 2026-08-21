@@ -595,7 +595,7 @@ wrong in the same direction as its own tests.
 ### 6.2 The frozen strategy list
 
 Frozen 2026-08-21 (WHI-1197). This is the complete list M1 iterates over — per §2.10,
-nothing is added to v1 after this point, save the single post-freeze exception recorded
+nothing is added to v1 after this point, apart from the post-freeze exception recorded
 below (`007`). Each entry's original material is filed under `docs/references/<id>-<slug>/`,
 one directory per strategy (a directory rather than a single file, since several entries
 are multi-file source trees); each directory carries its own `README.md` with the four
@@ -639,8 +639,8 @@ rather than reopened as v0.2.0 work.
 freeze's purpose was still served at the time: the test segment (§2.2) was unspent, and
 going from four surviving candidates to five is a small increase in selection bias, not a
 list that keeps growing. It is admissible under the freeze as a **port** rather than an
-original design (§1.3, §2.9) — this is the deliberate, single, recorded exception §2.10
-describes, not a general reopening. It **supersedes** the v0.2.0 earmark above:
+original design (§1.3, §2.9) — this is the deliberate, recorded exception §2.10 describes,
+not a general reopening. It **supersedes** the v0.2.0 earmark above:
 "virtual-reserve amplification at a real spread, i.e. `001` plus a concentration knob" is
 exactly DODO PMM collapsed to `R = ONE`, so that idea is absorbed into `007` rather than
 left open as a separate future v0.2.0 issue.
