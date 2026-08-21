@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use prop_amm_executor::{AfterSwapFn, SwapFn};
 use prop_amm_shared::config::SimulationConfig;
@@ -219,10 +219,63 @@ fn ensure_fast_build_dir_at(build_dir: &Path, safe_source: &str) -> anyhow::Resu
     };
     if should_write_source {
         std::fs::write(&source_path, source_bytes)?;
+        // WHI-1213: cargo's freshness check is mtime-based, and two writes to this same
+        // path close enough together can land in the same filesystem mtime tick — cargo
+        // then treats the second write as unchanged and silently relinks the *previous*
+        // source's already-built dylib instead of rebuilding (observed as a flaky test:
+        // rewriting `src/lib.rs` twice back-to-back scored a deliberately-panicking point
+        // as `Valid` because the compile step reused the prior point's artifact). `bench
+        // fit`'s own search loop dodges this in practice since real compiles are ~0.3-1s
+        // apart, but nothing guarantees that, so force it structurally instead: every write
+        // gets a stamped mtime strictly after the previous one this process has stamped,
+        // regardless of the OS clock's real granularity.
+        force_monotonic_mtime(&source_path)?;
     }
 
     Ok(build_dir.to_path_buf())
 }
+
+/// Monotonically increasing nanosecond clock for [`force_monotonic_mtime`], scoped to this
+/// process.
+static LAST_FORCED_MTIME_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Sets `path`'s mtime to a value strictly greater than every mtime this function has ever
+/// stamped — including under concurrent callers — so cargo's fingerprint check can never
+/// mistake a genuine content change for "no change" (see the call site's comment for the
+/// failure mode this closes).
+fn force_monotonic_mtime(path: &Path) -> anyhow::Result<()> {
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // First bump the counter to at least real time, so it never drifts arbitrarily far
+    // behind wall-clock — but this alone only guarantees the counter moves *forward*, not
+    // that two concurrent callers can never compute the *same* target: both could read the
+    // same pre-bump value and independently derive an identical `old.max(now) + 1`. The
+    // `fetch_add` below is what actually guarantees uniqueness: it is a single atomic
+    // read-and-increment, so no two callers, however they interleave, can ever observe the
+    // same "previous" value from it.
+    LAST_FORCED_MTIME_NANOS.fetch_max(now_nanos, Ordering::SeqCst);
+    let target_nanos = LAST_FORCED_MTIME_NANOS.fetch_add(1, Ordering::SeqCst) + 1;
+
+    let target = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(target_nanos);
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.set_modified(target)?;
+    Ok(())
+}
+
+/// Serializes any **test** that drives a candidate through this module's shared
+/// `.build/fast/` directory and its loaded-function-pointer statics
+/// (`LOADED_SWAP`/`LOADED_AFTER_SWAP`) end-to-end — that whole path is a deliberate single
+/// slot (real `bench fit`/`bench parity` usage is single-threaded at every call site that
+/// touches it), so two `#[test]` fns racing through it under `cargo test`'s default
+/// parallelism could load and run each other's compiled dylib instead of their own
+/// (WHI-1213). Lives here, not in whichever test module happens to use it first: any test,
+/// in this file or another, that calls [`compile_and_load_fast`]/[`ensure_fast_build_dir`]
+/// and then does anything with the result (not just the compile step alone — the race is on
+/// the *whole* compile-then-use cycle) must hold this for that entire span.
+#[cfg(test)]
+pub(crate) static FAST_BUILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Builds `.build/fast` and loads the resulting dylib. `source` must already be the *safe*
 /// submission source (`make_safe_source`) — this function does not re-check safety.
@@ -583,6 +636,62 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("src/lib.rs")).unwrap(),
             "const A: u128 = 2;"
+        );
+    }
+
+    #[test]
+    fn ensure_fast_build_dir_stamps_a_strictly_increasing_mtime_on_each_source_rewrite() {
+        // WHI-1213: reproduces the exact scenario that made a deliberately-panicking point
+        // score `Valid` — rewriting `src/lib.rs` twice back-to-back must never leave the
+        // second write's mtime equal to (or older than) the first's, or cargo's freshness
+        // check can silently relink the *first* write's already-built dylib.
+        let tmp = tempfile::tempdir().unwrap();
+        ensure_fast_build_dir_at(tmp.path(), "const A: u128 = 1;").unwrap();
+        let first_mtime = std::fs::metadata(tmp.path().join("src/lib.rs"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        ensure_fast_build_dir_at(tmp.path(), "const A: u128 = 2;").unwrap();
+        let second_mtime = std::fs::metadata(tmp.path().join("src/lib.rs"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(
+            second_mtime > first_mtime,
+            "expected a strictly later mtime on the second write, got first={first_mtime:?} \
+             second={second_mtime:?}"
+        );
+    }
+
+    #[test]
+    fn force_monotonic_mtime_never_issues_the_same_target_to_concurrent_callers() {
+        // Reproduces the round-3 review's exact counter-example: two callers reading the
+        // same `now` before either applies its own bump must still end up with two
+        // *distinct* targets — the failure mode the earlier `fetch_max`-only version had.
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path_a = tmp.path().join("a.rs");
+        let path_b = tmp.path().join("b.rs");
+        std::fs::write(&path_a, "a").unwrap();
+        std::fs::write(&path_b, "b").unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let (barrier_a, barrier_b) = (Arc::clone(&barrier), Arc::clone(&barrier));
+        let handle = thread::spawn(move || {
+            barrier_a.wait();
+            force_monotonic_mtime(&path_a).unwrap();
+            std::fs::metadata(&path_a).unwrap().modified().unwrap()
+        });
+        barrier_b.wait();
+        force_monotonic_mtime(&path_b).unwrap();
+        let mtime_b = std::fs::metadata(&path_b).unwrap().modified().unwrap();
+        let mtime_a = handle.join().unwrap();
+
+        assert_ne!(
+            mtime_a, mtime_b,
+            "two concurrent callers must never be issued the same mtime target"
         );
     }
 

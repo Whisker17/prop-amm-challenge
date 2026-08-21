@@ -676,10 +676,18 @@ mod tests {
     /// process-global static (`LOADED_SWAP`/`LOADED_AFTER_SWAP`, one slot total — see that
     /// module's own doc comment), so two separate `#[test]` functions calling it would race
     /// under `cargo test`'s default parallel execution; running both loads sequentially in
-    /// one function sidesteps that entirely.
+    /// one function sidesteps that entirely — but only against *itself*. It must also hold
+    /// `fast_compile::FAST_BUILD_TEST_LOCK` (WHI-1213) for its whole body: `commands/fit.rs`
+    /// drives its own candidates through this exact shared path in its tests too, and
+    /// without a common lock the two test files' `#[test]` fns can still race each other
+    /// even though each is internally sequential.
     #[test]
     fn run_fuzz_end_to_end_against_a_real_candidate_and_a_known_broken_fixture() {
         use std::path::Path;
+
+        let _guard = crate::fast_compile::FAST_BUILD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let grid_config = sample_grid_config();
