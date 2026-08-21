@@ -102,11 +102,16 @@ const MIN_GAP_BPS: u128 = NUM_SEGMENTS;
 // {0.1..200} at ITS OWN fixed default state (reserve_x=100, reserve_y=10000) and requires
 // STRICTLY increasing output across every pair, with no tolerance for a flat/exhausted
 // plateau (unlike `crates/sim/src/curve_checks.rs`'s runtime check, which explicitly
-// tolerates a flat tail beyond book exhaustion — cross-cutting finding #6). At `DELTA_PCT`'s
-// bare reading (a fraction of the live reserve, up to its own frozen max of 10%), the book
-// exhausts at <=10 tokens at the default state — inside that 200-token probe range — for
-// EVERY value in `DELTA_PCT`'s frozen range, so `validate` would fail regardless of what the
-// search picks.
+// tolerates a flat tail beyond book exhaustion — cross-cutting finding #6). The sell side's
+// `total_qty` is base-denominated and probed in base units (input_x), so at `DELTA_PCT`'s
+// own frozen max (10%) it always exhausts at <=10 tokens at the default state — inside that
+// 200-token probe range for EVERY value in `DELTA_PCT`'s frozen range, so `validate`'s sell
+// side would fail without something past the flat cap regardless of what the search picks.
+// (The buy side's exhaustion point is in QUOTE units — roughly `total_qty * avg_price` — so
+// whether it falls inside the 200-quote-token probe depends on `S0_BPS`/`W_BPS` too; the
+// residual tail below is applied symmetrically to both sides as one uniform mechanism rather
+// than conditionally, since it is cheap, harmless when never reached, and the buy side does
+// reach it in other regimes, e.g. `validate.rs`'s own randomized-reserve probe.)
 //
 // An earlier version of this port "fixed" this by multiplying the whole book depth by 10x —
 // technically satisfies `validate`, but catastrophic in the real 10,000-step simulation
@@ -245,6 +250,12 @@ fn build_ask_ladder(rx: u128, ry: u128) -> Option<Ladder> {
 /// `reserve_x * spot ~= reserve_y` by definition of spot.
 fn build_bid_ladder(rx: u128, ry: u128) -> Option<Ladder> {
     let spot = spot_price(rx, ry);
+    // Unlike `build_ask_ladder` (which only ever ADDS bps to spot, so it can never underflow
+    // regardless of magnitude), this side SUBTRACTS bps from `BPS_DENOM` below — a plain `-`
+    // that panics on underflow. These two clamps keep that subtraction in range; they are
+    // unreachable under the *currently* frozen ranges (max `outer_bps` is 1000, far under
+    // `BPS_DENOM`=10000) but are load-bearing defense-in-depth, not speculative — the ask
+    // side genuinely needs no counterpart because its own arithmetic has no underflow to guard.
     let outer_bps = effective_outer_bps().min(BPS_DENOM - 1);
     let half_spread_bps = S0_BPS.min(outer_bps.saturating_sub(1));
     let p_low = spot.saturating_mul(BPS_DENOM - outer_bps) / BPS_DENOM;

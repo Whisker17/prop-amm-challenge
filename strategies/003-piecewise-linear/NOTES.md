@@ -149,9 +149,16 @@ sizes `{0.1..200}` tokens at **its own fixed default state** (`reserve_x=100,
 reserve_y=10000`) and requires **strictly** increasing output across every pair — with *no*
 tolerance for a flat/exhausted plateau, unlike `crates/sim/src/curve_checks.rs`'s runtime
 check (which explicitly tolerates a flat tail beyond exhaustion, cross-cutting finding #6).
-At the corrected depth (`DELTA_PCT` 1-10%, see below) the primary book exhausts well inside
-that 200-token probe range for every value in the frozen range, so `validate` would fail
-without something past the flat cap.
+The sell side's `total_qty` is base-denominated and probed in base units, so at the corrected
+depth (`DELTA_PCT` 1-10%, see below) it exhausts at <=10 tokens at the default state — well
+inside that 200-token probe range for every value in the frozen range — so `validate`'s sell
+side would fail without something past the flat cap regardless of what the search picks. The
+buy side's exhaustion point is quote-denominated (roughly `total_qty * avg_price`), so whether
+it falls inside the 200-quote-token probe depends on `S0_BPS`/`W_BPS` too — at the committed
+point it does not (full cost of the whole book is ~316 quote tokens, past the probe's own
+max) — but the residual tail is applied symmetrically to both sides as one uniform mechanism
+rather than conditionally, since it is cheap, harmless when never reached, and the buy side
+does reach it in other regimes (e.g. `validate.rs`'s own randomized-reserve probe).
 
 The residual continues at a price `RESIDUAL_PRICE_MULT` (1000x) worse than the primary
 ladder's own boundary price — always strictly worse, so the extended curve stays concave
@@ -206,12 +213,15 @@ isn't a screening-segment fluke. This is not a search failure or a boundary arti
 holds uniformly across the whole declared space, every point in the committed evaluated
 curve.
 
-**Root cause, confirmed by direct diagnosis, not guessed:** `bench l1` on the (then 50%
-depth) committed point showed aggregate edge per unit volume of **-0.489** — the pool loses
-roughly half the value of every unit of volume that trades against it — while retail flow
-share was only 12.7%, meaning the loss is concentrated in the *few* trades that do execute
-against this pool, which is the signature of adverse selection (arbitrage), not systematic
-retail mispricing. The mechanism: this harness gives `compute_swap` no access to a trusted
+**Root cause, confirmed by direct diagnosis, not guessed:** `bench l1 --segment train` at
+`DELTA_PCT=50` (the amendment's own midpoint, `results/2026-08-21-l1-003-piecewise-linear-
+delta50-train.md`) shows aggregate edge per unit volume of **-0.42** — the pool loses nearly
+half the value of every unit of volume that trades against it — while aggregate flow share
+(pooled volume — this pool's share of ALL executed volume, retail and arbitrage combined,
+`tools/bench/src/telemetry.rs`'s own metric) was only **14.5%**, meaning the loss is
+concentrated in the *few* trades that do execute against this pool, which is the signature of
+adverse selection (arbitrage), not systematic mispricing spread across most of its flow. The
+mechanism: this harness gives `compute_swap` no access to a trusted
 external price oracle — the honest substitute (this port's own re-anchor policy, above) is
 the pool's own reserve ratio, corrected only when a trade actually executes. A finite book
 whose *entire* declared depth sits within a narrow, fixed few-hundred-bps band around that

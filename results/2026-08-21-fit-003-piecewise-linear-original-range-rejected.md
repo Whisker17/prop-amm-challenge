@@ -1,5 +1,11 @@
 # fit-003-piecewise-linear — 2026-08-21
 
+**REJECTED RANGE — not the committed search.** This report re-runs the porting issue's own
+original `DELTA_PCT 25..=100` review-amendment range as committed evidence for
+`strategies/003-piecewise-linear/NOTES.md`'s § DELTA_PCT range correction: every point in
+this space is catastrophic. The strategy actually shipped searches the corrected
+`DELTA_PCT 1..=10` range instead — see `results/2026-08-21-fit-003-piecewise-linear.md`.
+
 - Commit: `6a8dfbe+dirty`
 - Segment: `screening`
 - Simulations: 200
