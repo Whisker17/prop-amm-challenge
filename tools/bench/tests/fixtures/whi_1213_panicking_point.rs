@@ -73,10 +73,13 @@ pub fn compute_swap(data: &[u8]) -> u64 {
     let reserve_out = if side == 0 { reserve_y } else { reserve_x };
 
     if MODE == 1 {
-        return reserve_out.saturating_sub(input_amount).min(reserve_out) as u64;
+        return reserve_out.saturating_sub(input_amount) as u64;
     }
 
     let k = reserve_x * reserve_y;
+    // Not a §3.1-citeable tunable — this fixture has no fitted parameter, only the frozen
+    // `MODE` switch above; any fee that keeps this branch concave/monotonic works equally
+    // well as the "safe" side of the fixture.
     const FEE_BPS: u128 = 100;
     match side {
         0 => {

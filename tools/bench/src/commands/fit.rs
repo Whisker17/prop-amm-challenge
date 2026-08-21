@@ -156,6 +156,13 @@ fn compile_timed(
 /// any other cause inside `run_batch` is indistinguishable from a shape-check one and is
 /// reported the same way — `curve_checks.rs` is the only known panic site reachable from
 /// submission code today.
+///
+/// `set_hook`/`take_hook` are process-global, not scoped to this call's thread — under
+/// `cargo test`'s default parallel execution an unrelated test panicking in this exact
+/// window would also lose its backtrace. Accepted, not fixed: stable `std` has no
+/// thread-scoped panic hook, and `bench fit` itself is single-threaded at this call site
+/// (the rayon workers `run_batch` spawns are all inside this one call), so the real CLI
+/// path never actually hits the shared-process case this could affect.
 fn run_batch_catching_panics(
     loaded: &fast_compile::LoadedFast,
     configs: Vec<SimulationConfig>,
@@ -197,6 +204,33 @@ fn describe_outcome(outcome: &search::PointOutcome) -> String {
     }
 }
 
+/// Same as [`describe_outcome`], but for the `validation` re-evaluation, which is skipped
+/// entirely (rather than run and found invalid) once `train` has already panicked.
+fn describe_optional_outcome(outcome: Option<&search::PointOutcome>) -> String {
+    match outcome {
+        Some(outcome) => describe_outcome(outcome),
+        None => "SKIPPED (winner already invalid on `train`)".to_string(),
+    }
+}
+
+/// The `results/` snapshot's "Invalid points" section (docs/DESIGN.md §2.5/WHI-1213): every
+/// panicked point, by parameter vector and panic message — or an explicit "none" body, so
+/// an empty search-time panic history is a stated fact in the report rather than a missing
+/// heading a reader might mistake for "this run never checked".
+fn invalid_points_section(invalid: &[(Vec<i128>, String)]) -> ReportSection {
+    ReportSection {
+        heading: "Invalid points".to_string(),
+        body: if invalid.is_empty() {
+            "None — every evaluated point produced a valid edge.\n".to_string()
+        } else {
+            invalid
+                .iter()
+                .map(|(point, reason)| format!("- {point:?} -> INVALID: {reason}\n"))
+                .collect::<String>()
+        },
+    }
+}
+
 /// The single-peak self-check's verdict (docs/DESIGN.md §2.8, WHI-1213). `Inconclusive` is
 /// distinct from `Pass`: with fewer than two valid points there is nothing to compare, and
 /// reporting that as a vacuous `PASS` (an empty/singleton curve trivially has no detected
@@ -215,6 +249,14 @@ fn classify_self_check(points: &[(i128, f64)], tolerance: f64) -> SelfCheckVerdi
         SelfCheckVerdict::Pass
     } else {
         SelfCheckVerdict::Fail
+    }
+}
+
+/// Every self-check verdict reports under the same heading — only `body` differs.
+fn self_check_report_section(body: String) -> ReportSection {
+    ReportSection {
+        heading: "Single-peaked self-check".to_string(),
+        body,
     }
 }
 
@@ -324,18 +366,7 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     // Docs/DESIGN.md §2.5/WHI-1213: every point that panicked during simulation, listed by
     // parameter vector and panic message — built once and reused by both the early-bail
     // report (single-peak failure or invalid winner) and the success-path report below.
-    let invalid_section = ReportSection {
-        heading: "Invalid points".to_string(),
-        body: if outcome.invalid.is_empty() {
-            "None — every evaluated point produced a valid edge.\n".to_string()
-        } else {
-            outcome
-                .invalid
-                .iter()
-                .map(|(point, reason)| format!("- {point:?} -> INVALID: {reason}\n"))
-                .collect::<String>()
-        },
-    };
+    let invalid_section = invalid_points_section(&outcome.invalid);
     let compile_timing_section = ReportSection {
         heading: "Fast-path compile timing".to_string(),
         body: format!(
@@ -385,16 +416,13 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
                     n_steps: base.n_steps,
                     execution_path: "native (fast path)".to_string(),
                 };
-                let failure_section = ReportSection {
-                    heading: "Single-peaked self-check".to_string(),
-                    body: format!(
-                        "FAILED (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the \
-                         `{}`<->edge response is not single-peaked. This blocks the issue: \
-                         investigate the bench mechanism before trusting any fitted point from \
-                         this search. Train/validation re-evaluation was skipped.\n",
-                        specs[0].name
-                    ),
-                };
+                let failure_section = self_check_report_section(format!(
+                    "FAILED (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the \
+                     `{}`<->edge response is not single-peaked. This blocks the issue: \
+                     investigate the bench mechanism before trusting any fitted point from \
+                     this search. Train/validation re-evaluation was skipped.\n",
+                    specs[0].name
+                ));
                 let sections = vec![
                     frozen_space_section,
                     budget_section,
@@ -427,29 +455,23 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
                     outcome.points_evaluated,
                     outcome.invalid.len(),
                 );
-                self_check_section = Some(ReportSection {
-                    heading: "Single-peaked self-check".to_string(),
-                    body: format!(
-                        "INCONCLUSIVE (docs/DESIGN.md §2.8/WHI-1213) — only {} of {} evaluated \
-                         point(s) produced a valid edge ({} invalid), so there is no curve to \
-                         check for single-peakedness. The winner below is unvalidated by this \
-                         check.\n",
-                        points.len(),
-                        outcome.points_evaluated,
-                        outcome.invalid.len(),
-                    ),
-                });
+                self_check_section = Some(self_check_report_section(format!(
+                    "INCONCLUSIVE (docs/DESIGN.md §2.8/WHI-1213) — only {} of {} evaluated \
+                     point(s) produced a valid edge ({} invalid), so there is no curve to \
+                     check for single-peakedness. The winner below is unvalidated by this \
+                     check.\n",
+                    points.len(),
+                    outcome.points_evaluated,
+                    outcome.invalid.len(),
+                )));
             }
             SelfCheckVerdict::Pass => {
                 println!("Single-peaked self-check: PASS (tolerance {tolerance:.6}).");
-                self_check_section = Some(ReportSection {
-                    heading: "Single-peaked self-check".to_string(),
-                    body: format!(
-                        "PASS (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the \
-                         `{}`<->edge response over the searched range is single-peaked.\n",
-                        specs[0].name
-                    ),
-                });
+                self_check_section = Some(self_check_report_section(format!(
+                    "PASS (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the `{}`<->edge \
+                     response over the searched range is single-peaked.\n",
+                    specs[0].name
+                )));
             }
         }
     }
@@ -467,21 +489,32 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         let loaded = compile_timed(&winner_safe, &mut timings)?;
         run_batch_catching_panics(&loaded, train_configs)?
     };
+    let train_invalid = matches!(train_outcome, search::PointOutcome::Invalid(_));
 
-    println!(
-        "Re-evaluating the winner on full `validation` ({} sims)...",
-        validation.seeds().len()
-    );
-    let validation_configs = validation.sim_configs(&base);
-    let validation_outcome = {
+    // A point already known invalid on `train` doesn't need confirming on `validation` too
+    // (docs/DESIGN.md §2.5/WHI-1213) — same "don't waste compute confirming a point already
+    // not trusted" reasoning as the single-peak failure path skipping train/validation
+    // entirely.
+    let validation_outcome = if train_invalid {
+        println!(
+            "Skipping full `validation` re-evaluation — the winner already panicked on \
+             `train`."
+        );
+        None
+    } else {
+        println!(
+            "Re-evaluating the winner on full `validation` ({} sims)...",
+            validation.seeds().len()
+        );
+        let validation_configs = validation.sim_configs(&base);
         let loaded = compile_timed(&winner_safe, &mut timings)?;
-        run_batch_catching_panics(&loaded, validation_configs)?
+        Some(run_batch_catching_panics(&loaded, validation_configs)?)
     };
 
     println!(
         "Train: {}  Validation: {}",
         describe_outcome(&train_outcome),
-        describe_outcome(&validation_outcome),
+        describe_optional_outcome(validation_outcome.as_ref()),
     );
 
     let param_summary = specs
@@ -505,11 +538,12 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
              Validation (1000 sims): {}\n",
             outcome.best_edge,
             describe_outcome(&train_outcome),
-            describe_outcome(&validation_outcome),
+            describe_optional_outcome(validation_outcome.as_ref()),
         ),
     };
-    // Recompute the compile-timing section now that it also covers the two final-evaluation
-    // builds, not just the search phase.
+    // Recompute the compile-timing section now that it also covers the final-evaluation
+    // build(s) — one or two, depending on whether validation ran — not just the search
+    // phase.
     let compile_timing_section = ReportSection {
         heading: "Fast-path compile timing".to_string(),
         body: format!(
@@ -541,9 +575,7 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     // above is still written either way; this blocks the ranking the same way a failed
     // single-peak check does, rather than reporting a trusted number for a point that just
     // panicked.
-    if matches!(train_outcome, search::PointOutcome::Invalid(_))
-        || matches!(validation_outcome, search::PointOutcome::Invalid(_))
-    {
+    if train_invalid || matches!(validation_outcome, Some(search::PointOutcome::Invalid(_))) {
         anyhow::bail!(
             "the search winner {:?} panicked during full train/validation re-evaluation — \
              valid on `screening`'s seeds does not guarantee valid on a different, larger \
@@ -568,6 +600,18 @@ mod tests {
     const PANICKING_FIXTURE: &str =
         include_str!("../../tests/fixtures/whi_1213_panicking_point.rs");
 
+    /// `fast_compile`'s shared `.build/fast/` directory and its global loaded-function-
+    /// pointer statics are a deliberate single slot ("the search never evaluates more than
+    /// one candidate at a time" — `fast_compile.rs`'s own module doc): whichever call last
+    /// wrote+loaded a dylib there wins the global pointer, so two `#[test]` fns racing
+    /// through `evaluate_fixture_mode` under `cargo test`'s default parallel execution can
+    /// silently run the *other* test's compiled function instead of their own. Real `bench
+    /// fit` usage never hits this (its search loop is single-threaded and never has two
+    /// calls in flight), but more than one test in this file now drives the fixture through
+    /// this same shared path, so it needs an explicit guard rather than relying on every
+    /// future test author remembering to keep calls sequential by construction.
+    static FAST_BUILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn small_configs() -> Vec<SimulationConfig> {
         let base = SimulationConfig {
             n_steps: 200,
@@ -576,34 +620,91 @@ mod tests {
         vec![HyperparameterVariance::default().apply(&base, 1)]
     }
 
+    /// Compiles/loads/runs `PANICKING_FIXTURE` at the given `MODE` value through the same
+    /// real pipeline `run()`'s own search closure uses (`rewrite_params` ->
+    /// `make_safe_source` -> `compile_and_load_fast` -> `run_batch_catching_panics`) — used
+    /// by every test below so the pipeline itself is written once, not once per test.
+    /// Serialized by [`FAST_BUILD_TEST_LOCK`] against every other caller.
+    fn evaluate_fixture_mode(mode: i128) -> search::PointOutcome {
+        let _guard = FAST_BUILD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let rewritten = params::rewrite_params(PANICKING_FIXTURE, &[mode]).unwrap();
+        let safe_source = fast_compile::make_safe_source(&rewritten).unwrap();
+        let loaded = fast_compile::compile_and_load_fast(&safe_source).unwrap();
+        run_batch_catching_panics(&loaded, small_configs()).unwrap()
+    }
+
     #[test]
     fn a_deliberately_panicking_point_becomes_invalid_and_a_safe_point_stays_valid() {
-        // Both cases in one test, run strictly sequentially: `fast_compile`'s shared
-        // `.build/fast/` directory and its global loaded-function-pointer statics are a
-        // deliberate single slot ("the search never evaluates more than one candidate at a
-        // time" — `fast_compile.rs`'s own module doc) — compiling/loading the two MODEs
-        // concurrently in separate `#[test]` fns would race on that shared directory and
-        // those globals, exactly as `bench fit`'s own single-threaded search loop assumes
-        // it never needs to.
-        let panicking_source = params::rewrite_params(PANICKING_FIXTURE, &[1]).unwrap();
-        let panicking_safe = fast_compile::make_safe_source(&panicking_source).unwrap();
-        let panicking_loaded = fast_compile::compile_and_load_fast(&panicking_safe).unwrap();
-        let panicking_outcome =
-            run_batch_catching_panics(&panicking_loaded, small_configs()).unwrap();
+        let panicking_outcome = evaluate_fixture_mode(1);
         assert!(
             matches!(panicking_outcome, search::PointOutcome::Invalid(_)),
             "expected an Invalid outcome for MODE=1, got {panicking_outcome:?}"
         );
-        drop(panicking_loaded);
 
-        let safe_source = params::rewrite_params(PANICKING_FIXTURE, &[0]).unwrap();
-        let safe_safe = fast_compile::make_safe_source(&safe_source).unwrap();
-        let safe_loaded = fast_compile::compile_and_load_fast(&safe_safe).unwrap();
-        let safe_outcome = run_batch_catching_panics(&safe_loaded, small_configs()).unwrap();
+        let safe_outcome = evaluate_fixture_mode(0);
         assert!(
             matches!(safe_outcome, search::PointOutcome::Valid(_)),
             "expected a Valid outcome for MODE=0, got {safe_outcome:?}"
         );
+    }
+
+    #[test]
+    fn the_real_fixture_driven_through_the_actual_search_loop_does_not_abort_and_reaches_inconclusive(
+    ) {
+        // Drives `PANICKING_FIXTURE`'s real `MODE: 0..=1` PARAMS block through the actual
+        // search protocol (`search::coarse_grid_then_coordinate_descent`), not a synthetic
+        // `eval` — the end-to-end path the acceptance criteria describe: "a deliberately
+        // panicking parameter point ... does not abort a `bench fit` run." Budget 4 gives
+        // the 1-D grid phase exactly enough points-per-dim (`budget.max(2)`) to land on
+        // both declared values (0 and 1) without either being truncated away.
+        let specs = params::parse_params_block(PANICKING_FIXTURE).unwrap();
+        let outcome = search::coarse_grid_then_coordinate_descent(&specs, 4, |values| {
+            Ok(evaluate_fixture_mode(values[0]))
+        })
+        .unwrap();
+
+        assert_eq!(
+            outcome.best,
+            vec![0],
+            "MODE=1 must never win despite panicking"
+        );
+        assert_eq!(outcome.invalid.len(), 1);
+        assert_eq!(outcome.invalid[0].0, vec![1]);
+        assert_eq!(outcome.history.len(), 1);
+        assert_eq!(outcome.history[0].0, vec![0]);
+
+        // Only one valid point was ever evaluated (MODE=1 panicked every time it was
+        // tried), so the single-peak self-check on the resulting curve must be
+        // INCONCLUSIVE, not a vacuous PASS — this is the case docs/DESIGN.md §2.8/WHI-1213's
+        // "the single-peak check's behaviour in the presence of invalid points is defined
+        // and tested" acceptance criterion is actually about.
+        let points: Vec<(i128, f64)> = outcome.history.iter().map(|(p, e)| (p[0], *e)).collect();
+        assert_eq!(
+            classify_self_check(&points, 1e-4),
+            SelfCheckVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn invalid_points_section_states_none_explicitly_when_empty() {
+        let section = invalid_points_section(&[]);
+        assert_eq!(section.heading, "Invalid points");
+        assert!(section.body.contains("None"));
+    }
+
+    #[test]
+    fn invalid_points_section_lists_every_point_and_its_reason() {
+        let invalid = vec![
+            (vec![7i128], "point 7 panicked".to_string()),
+            (vec![9i128], "point 9 panicked".to_string()),
+        ];
+        let section = invalid_points_section(&invalid);
+        assert!(section.body.contains("[7]"));
+        assert!(section.body.contains("point 7 panicked"));
+        assert!(section.body.contains("[9]"));
+        assert!(section.body.contains("point 9 panicked"));
     }
 
     #[test]

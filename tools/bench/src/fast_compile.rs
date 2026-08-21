@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use prop_amm_executor::{AfterSwapFn, SwapFn};
 use prop_amm_shared::config::SimulationConfig;
@@ -189,9 +189,46 @@ fn ensure_fast_build_dir_at(build_dir: &Path, safe_source: &str) -> anyhow::Resu
     };
     if should_write_source {
         std::fs::write(&source_path, source_bytes)?;
+        // WHI-1213: cargo's freshness check is mtime-based, and two writes to this same
+        // path close enough together can land in the same filesystem mtime tick — cargo
+        // then treats the second write as unchanged and silently relinks the *previous*
+        // source's already-built dylib instead of rebuilding (observed as a flaky test:
+        // rewriting `src/lib.rs` twice back-to-back scored a deliberately-panicking point
+        // as `Valid` because the compile step reused the prior point's artifact). `bench
+        // fit`'s own search loop dodges this in practice since real compiles are ~0.3-1s
+        // apart, but nothing guarantees that, so force it structurally instead: every write
+        // gets a stamped mtime strictly after the previous one this process has stamped,
+        // regardless of the OS clock's real granularity.
+        force_monotonic_mtime(&source_path)?;
     }
 
     Ok(build_dir.to_path_buf())
+}
+
+/// Monotonically increasing nanosecond clock for [`force_monotonic_mtime`], scoped to this
+/// process — the fast build path is a documented single slot (only ever one caller at a
+/// time in real usage), so this only needs to be correct for that access pattern, not
+/// arbitrary concurrent callers.
+static LAST_FORCED_MTIME_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Sets `path`'s mtime to a value strictly greater than every mtime this function has ever
+/// stamped, so cargo's fingerprint check can never mistake a genuine content change for "no
+/// change" — see the call site's comment for the failure mode this closes.
+fn force_monotonic_mtime(path: &Path) -> anyhow::Result<()> {
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let target_nanos = LAST_FORCED_MTIME_NANOS
+        .fetch_max(now_nanos, Ordering::SeqCst)
+        .max(now_nanos)
+        + 1;
+    LAST_FORCED_MTIME_NANOS.store(target_nanos, Ordering::SeqCst);
+
+    let target = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(target_nanos);
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.set_modified(target)?;
+    Ok(())
 }
 
 /// Builds `.build/fast` and loads the resulting dylib. `source` must already be the *safe*
