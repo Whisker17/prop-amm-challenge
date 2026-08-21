@@ -1,6 +1,6 @@
 # fit-003-piecewise-linear — 2026-08-21
 
-- Commit: `unknown`
+- Commit: `6a8dfbe+dirty`
 - Segment: `screening`
 - Simulations: 200
 - Steps: 10000
@@ -28,7 +28,7 @@ None — every evaluated point produced a valid edge.
 
 ## Fast-path compile timing
 
-- 151 warm compiles: min=0.420s, mean=0.674s, max=2.895s — EXCEEDS the <1s target (max warm sample 2.895s) — see NOTES.md for whether this reflects system contention rather than the fast path itself
+- cold start (one-time dependency build): 14.905s; 150 warm compiles: min=0.666s, mean=1.302s, max=8.076s — EXCEEDS the <1s target (max warm sample 8.076s) — see NOTES.md for whether this reflects system contention rather than the fast path itself
 - (search phase plus the two final train/validation builds) Every sample is a `cargo build` invocation against the single, reused `.build/fast/` directory.
 
 

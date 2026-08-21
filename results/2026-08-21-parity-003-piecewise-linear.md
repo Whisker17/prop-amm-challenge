@@ -1,6 +1,6 @@
 # parity-003-piecewise-linear — 2026-08-21
 
-- Commit: `unknown`
+- Commit: `6a8dfbe+dirty`
 - Segment: `observation`
 - Simulations: 1000
 - Steps: 10000

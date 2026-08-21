@@ -24,6 +24,18 @@ changed is state handling (no oracle available), one inversion method (bisection
 `isqrt`), and — discovered during implementation, not anticipated by the issue — the
 committed depth range.
 
+**On the `#[cfg(test)] mod tests` block cited below:** `strategies/` is not a cargo workspace
+member (`Cargo.toml`'s `exclude`), so these tests are not compiled or run by `cargo test
+--workspace`, nor by the BPF/native compile paths (`crates/cli/src/commands/compile.rs`,
+`tools/bench/src/fast_compile.rs` both build with `cfg(test)` off). They were run manually
+during implementation (`cd .build/fast && cargo test --release`, all 10 passing) and are kept
+in the file as a durable, re-runnable check anyone can repeat the same way — not as evidence
+that any CI or merge gate exercises them. Where a claim below cites one of these tests, read
+it as "verified by manually running this test," not "continuously enforced." Neither
+`001-cpmm-fee` nor `005-vol-adaptive-cpmm-fee` carries any internal tests at all, so this is
+additional, optional verification above the existing bar in this repo, not a substitute for
+one.
+
 ### Re-anchor policy
 
 The issue's review amendment demanded "the run-long re-anchor policy" and recommended:
@@ -81,13 +93,24 @@ ladder depends only on `(reserve_x, reserve_y)` and compile-time `PARAMS`/frozen
 Trivial by construction, not by a sentinel check: since storage is never read, the very first
 quote of a simulation (zero-initialized storage) and a quote under `validate.rs`'s
 randomized-storage probe (`storage[0..32]` filled with pseudo-random bytes) produce
-byte-identical results to any other quote at the same reserves — proven directly by
-`tests::cold_start_and_garbage_storage_are_identical`, not merely asserted.
+byte-identical results to any other quote at the same reserves — checked directly by
+`tests::cold_start_and_garbage_storage_are_identical` (manually run, see the note at the top
+of this section), not merely argued from reading the code.
 
-### Every error path saturates, never zeroes for a reachable input (finding #6)
+### Error paths and the exhaustion output (finding #6)
 
-- `buy_base_with_quote`/`sell_base_for_quote` both end in `.min(reserve - 1)`, so output can
-  never reach or exceed the live reserve regardless of the ladder's internal arithmetic —
+- `buy_base_with_quote`/`sell_base_for_quote` both end in `.min(reserve - 1)`, so a
+  *successfully built* ladder's output can never reach or exceed the live reserve regardless
+  of the ladder's internal arithmetic — the same structural guarantee `001-cpmm-fee`/
+  `005-vol-adaptive-cpmm-fee` carry via `reserve.saturating_sub(...)`. Separately,
+  `build_ask_ladder`/`build_bid_ladder`/`finish_ladder` return `None` (and `compute_swap`
+  then returns `0`) when a ladder cannot be built at all (zero width, zero book capacity, or
+  zero `k` — all degenerate-input guards, not exhaustion). This is not the monotonicity-bomb
+  finding #6 warns against: that failure mode is a spurious `0` for *one* input in a sample
+  set where *other*, differently-sized inputs at the *same* `(reserve_x, reserve_y)` return a
+  positive value — but a `None` here is a property of the *reserves themselves*, so every
+  input at that same state returns `0` uniformly, which is flat (trivially monotone), not a
+  regression relative to another point in the same curve.
   the same structural guarantee `001-cpmm-fee`/`005-vol-adaptive-cpmm-fee` carry via
   `reserve.saturating_sub(...)`.
 - **Overflow short-circuit** (mandatory, this port's own naming for the issue's requirement):
@@ -136,8 +159,9 @@ The residual continues at a price `RESIDUAL_PRICE_MULT` (1000x) worse than the p
 ladder's own boundary price — always strictly worse, so the extended curve stays concave
 across the transition (the piecewise-linear mechanism's own "every kink bends the correct way"
 property, extended by one more, much steeper virtual segment) — and is bounded, at realistic
-sizes, to a tiny fraction of what a fresh, unexhausted quote would give (proven directly by
-`tests::residual_tail_is_strictly_monotone_and_negligible`).
+sizes, to a tiny fraction of what a fresh, unexhausted quote would give (checked directly by
+`tests::residual_tail_is_strictly_monotone_and_negligible`, manually run — see this file's
+opening note on the test block's scope).
 
 **An earlier version of this residual approach — multiplying the whole book depth by 10x
 instead of adding a thin tail — is recorded here as a rejected fix, not silently dropped**:
@@ -172,12 +196,17 @@ side's reserve committed as book quantity... hard upper 1.0 with margin... below
 book is too thin to win router share") and predicted "Fitted validation in the 390-450 band."
 
 **Measured reality, at every point in that declared range:** an exhaustive coarse-grid search
-(the real `bench fit` search, before this correction, over the full declared 3-dimensional
-space) found every evaluated point's screening avg edge between **-15656 and -19908** — 40 to
-50 times worse than even `001-cpmm-fee`'s own *worst* fitted point (`FEE_BPS=1`, screening
-edge -381.98, `results/2026-08-20-fit-001-cpmm-fee.md`). This is not a search failure or a
-boundary artifact: it holds uniformly across the whole declared space (see the rejected fit
-report this correction supersedes, and the fresh one below).
+over the full declared 3-dimensional space, run and committed as its own evidence
+(`results/2026-08-21-fit-003-piecewise-linear-original-range-rejected.md` —
+`S0_BPS` `5..=200`, `W_BPS` `50..=1000`, `DELTA_PCT` `25..=100`, the amendment's own ranges
+verbatim), found every evaluated point's screening avg edge between **-17027 (the search's
+own least-bad point, `S0_BPS=199, W_BPS=999, DELTA_PCT=100`) and -20053** — 40 to 50 times
+worse than even `001-cpmm-fee`'s own *worst* fitted point (`FEE_BPS=1`, screening edge
+-381.98, `results/2026-08-20-fit-001-cpmm-fee.md`). That least-bad point's own train/
+validation re-evaluation: **-17281.05 / -17444.27** — still catastrophic, confirming this
+isn't a screening-segment fluke. This is not a search failure or a boundary artifact: it
+holds uniformly across the whole declared space, every point in the committed evaluated
+curve.
 
 **Root cause, confirmed by direct diagnosis, not guessed:** `bench l1` on the (then 50%
 depth) committed point showed aggregate edge per unit volume of **-0.489** — the pool loses
@@ -204,29 +233,44 @@ original 25-100% range. The curve is a perfectly valid, monotone, concave piecew
 ladder; it is simply *too deep* for a fixed few-hundred-bps band with no oracle in this
 harness's price process.
 
-**Diagnostic sweep** (native, `bench l1`, `observation` segment, 1000 sims, holding
-`S0_BPS=20`, `W_BPS=1000` fixed while varying `DELTA_PCT`, reporting only — not a
-decision input):
+**Diagnostic sweep** (native, `bench l1 --segment train`, 1000 sims, holding `S0_BPS=20`,
+`W_BPS=1000` fixed while varying `DELTA_PCT`). Run on the **`train`** segment deliberately —
+docs/DESIGN.md §2.2 declares `train` a decision input and `observation` explicitly **never**
+one ("reporting only... excluded from every decision"), so `train` is the correct segment to
+base a frozen-space correction on. An earlier pass of this sweep used `observation` by
+mistake; that was a process error caught in review, not a second, independent finding — the
+`train`-segment numbers below are what this correction is actually based on:
 
-| `DELTA_PCT` | Avg edge | Flow share |
+| `DELTA_PCT` | Avg edge (train) | Flow share |
 | --- | --- | --- |
-| 1 | 237.98 | 0.281 |
-| 2 | 323.39 | 0.452 |
-| 3 | 270.23 | 0.544 |
-| 4 | 173.77 | 0.608 |
-| 5 | 34.72 | 0.654 |
-| 10 | -4552.57 | 0.834 |
-| 50 (the amendment's own midpoint) | -20014.61 | 0.127 |
+| 1 | 244.05 | 0.281 |
+| 2 | 328.16 | 0.452 |
+| 3 | 274.88 | 0.544 |
+| 4 | 178.95 | 0.608 |
+| 5 | 39.44 | 0.655 |
+| 10 | -4600.40 | 0.834 |
+| 50 (the amendment's own midpoint) | -20012.46 | 0.145 |
+
+(For cross-check only, not as a second decision input: the same sweep on `observation`
+lands within a few edge-units of every `train` row above — e.g. `DELTA_PCT=50`: -20014.61
+vs. -20012.46 — the same conclusion, from a segment that correctly played no part in
+reaching it.)
 
 The transition from strongly positive to catastrophically negative is sharp and sits between
 roughly 5% and 10% — well inside, not at the edge of, a `1..=10` range, giving the frozen
 space below genuine interior room rather than resting on a boundary.
 
-**Resolution — a pre-freeze correction, recorded here rather than resolved silently, following
-the same escalate-before-freezing precedent `strategies/005-vol-adaptive-cpmm-fee/NOTES.md`'s
-own callout sets (WHI-1209, itself citing this repo's rule that a conflict between the
-protocol's own requirements and a family's actual behavior gets flagged and fixed *before* the
-freeze, not papered over):**
+**Resolution — a pre-freeze correction, recorded here rather than resolved silently, in the
+same spirit as the escalate-before-freezing precedent `strategies/005-vol-adaptive-cpmm-fee/
+NOTES.md` sets (WHI-1209): flag a conflict between the protocol's own requirements and a
+family's actual measured behavior, and fix it *before* the freeze rather than papering over
+it. One difference from that precedent, stated plainly rather than glossed over: WHI-1209's
+own resolution was reached synchronously with the issue owner ("flagged to the issue owner
+before freezing anything... Resolution (owner-approved)"). This correction was **not**
+obtained that way — there was no synchronous owner check-in available during this
+implementation session. It is a unilateral correction by the implementing agent, based on
+the empirical evidence above, submitted for the review loop (and the issue owner, via normal
+PR review) to accept, challenge, or override:**
 
 **`DELTA_PCT`'s frozen range is corrected to `1..=10`** (from the amendment's `25..=100`),
 empirically demonstrated viable above. `S0_BPS` (`5..=200`) and `W_BPS` (`50..=1000`) are
@@ -241,13 +285,25 @@ rather than by an issue-owner sign-off obtained synchronously. If a reviewer dis
 either the evidence or the resolution, that is exactly what the round-1-3 review loop (and,
 if still open after round 3, the escalator role) exists to catch.
 
+## Pre-search shape-fuzz gate (docs/DESIGN.md §2.9, cross-cutting finding #8)
+
+`bench fuzz --strategy strategies/003-piecewise-linear`: **PASS — zero shape violations**
+across 324 states x 2 sides (dense sweeps and golden-section-shaped sample sets, every
+`[grid]` regime corner in both a zeroed- and random-byte-storage variant, plus states reached
+only after a full-length GBM drift) — run before the frozen search below, per §2.9's own
+requirement that this gate clear before a search is allowed to spend paired-seed budget on a
+candidate. Re-run and re-confirmed PASS after the `DELTA_PCT` range correction (below) landed,
+since narrowing that range changes the actual book depth the fuzz gate exercises. A PASS
+writes no report (the gate is meant to run repeatedly, before every search, by design — see
+`tools/bench/src/commands/fuzz.rs`'s own module doc comment).
+
 ## Frozen parameter space (declared before the real search ran — docs/DESIGN.md §2.4)
 
 | Param | Range | Reason |
 | --- | --- | --- |
 | `S0_BPS` — half-spread of P0 from spot, bps | 5..=200 | unchanged from the issue's review amendment: below a few bps donates flow at a loss against the 66-bps 0-line and the normalizer's sampled 30-80 band; 200 is ~3x the fitted optimum with headroom (amendment's own reasoning, ported as-is) |
 | `W_BPS` — outer offset P6 - spot, bps | 50..=1000 | unchanged from the amendment: must exceed `S0_BPS` and cover several sigma-max per-step moves; beyond ~1000 the ladder degenerates to two effective segments. `effective_outer_bps()` additionally guarantees `W_BPS`'s *effective* value strictly exceeds `S0_BPS` regardless of the raw pair drawn (see `MIN_GAP_BPS`) |
-| `DELTA_PCT` — book capacity as % of `reserve_x`, both sides | **1..=10** (corrected from the amendment's `25..=100` — see above) | catastrophic below-the-line loss (-15656 to -19908 screening) at every point in the amendment's own declared range; empirically viable and interior (not boundary-resting) within `1..=10`, per the diagnostic sweep above |
+| `DELTA_PCT` — book capacity as % of `reserve_x`, both sides | **1..=10** (corrected from the amendment's `25..=100` — see above) | catastrophic below-the-line loss (screening -17027 to -20053, `results/2026-08-21-fit-003-piecewise-linear-original-range-rejected.md`) at every point in the amendment's own declared range; empirically viable and interior (not boundary-resting) within `1..=10`, per the diagnostic sweep above |
 
 **Frozen, recorded as deliberately un-searched:** `PRICE_SCALE`, `BPS_DENOM`,
 `NUM_PRICE_POINTS`/`NUM_SEGMENTS` (compile-time structural constants, not tunables —
@@ -301,11 +357,12 @@ this family).
 
 Against `001-cpmm-fee`'s own committed numbers (screening 384.82, train 406.14, validation
 401.80): **+27.6 screening, +31.4 train, +30.6 validation** — a consistent, comfortable
-improvement across all three independently-sampled segments, exceeding this porting issue's
-own prediction range (390-450 was the *predicted band*, made before the depth correction
-above — this port's own instinct, not the original prediction, is what got it there: the
-prediction assumed the original 25-100% depth range, which this port found catastrophic and
-corrected).
+improvement across all three independently-sampled segments, landing near the top of this
+porting issue's own predicted band (390-450) — a prediction made before the depth correction
+above, and one this port only reaches because of that correction: the prediction assumed the
+original 25-100% depth range, which this port found catastrophic and replaced (see § DELTA_PCT
+range correction). The band happens to still describe the corrected point's outcome; that is
+a coincidence of the two numbers, not evidence the original range was viable.
 
 **`W_BPS` converged to its own frozen upper bound (1000).** Per docs/DESIGN.md §2.4/§2.5,
 recorded rather than presented as an interior optimum: the true optimum for this dimension
@@ -416,9 +473,11 @@ issue). Division-count estimate instead, per finding #9's own guidance that divi
 `p_low`, `p_high`, `total_qty`, `k`); the buy side's worst case additionally runs
 `BISECT_ITERS = 44` iterations of `cost_of_base` (2 divisions each) plus one more for
 `full_cost` = 90 divisions, for **~95 divisions worst case** (buy side, partial-fill
-bisection path). The sell side has no bisection at all: ladder construction (5) plus one
-direct quote evaluation (2 divisions) = **~7 divisions worst case**, comparable to
-`001-cpmm-fee`'s own 2. At finding #9's own cited worst-case cost (10^2-10^3 CU/division),
+bisection path). The sell side has no bisection at all: ladder construction (5) plus the
+primary quote evaluation (2 divisions) plus, when the residual tail fires, its own 2
+divisions (`residual_price`, `extra_quote`) = **~9 divisions worst case**, still an order of
+magnitude below the buy side and comparable in shape to `001-cpmm-fee`'s own 2. At finding
+#9's own cited worst-case cost (10^2-10^3 CU/division),
 the buy side's ~95 divisions is a worst-case estimate of roughly 9,500-95,000 CU — tight but
 within the 100,000 CU limit; corroborated empirically by `prop-amm validate`'s native/BPF
 parity check and the parity gate below both executing the real BPF program repeatedly with no

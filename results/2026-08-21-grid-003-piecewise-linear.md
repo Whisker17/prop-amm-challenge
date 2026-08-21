@@ -1,6 +1,6 @@
 # grid-003-piecewise-linear — 2026-08-21
 
-- Commit: `unknown`
+- Commit: `6a8dfbe+dirty`
 - Segment: `grid (not a config/bench.toml segment)`
 - Simulations: 1080
 - Steps: 10000

@@ -78,7 +78,8 @@ const DELTA_PCT: u128 = 3; // range: 1..=10
 // own callout sets (WHI-1209). See NOTES.md § DELTA_PCT range correction for the full
 // evidence: at ANY point in the amendment's own declared `25..=100` range, this strategy
 // loses catastrophically (measured screening/train/validation across an exhaustive coarse
-// grid: every evaluated point in that space landed between -15656 and -19908 — 40-50x worse
+// grid (results/2026-08-21-fit-003-piecewise-linear-original-range-rejected.md): every
+// evaluated point landed between -17027 and -20053 — 40-50x worse
 // than even `001-cpmm-fee`'s own worst fitted point, -381.98 at `FEE_BPS=1`). The mechanism
 // itself is sound (shape checks pass cleanly; `bench fuzz` reports zero violations); the
 // declared depth was the problem — a book that deep, priced within a fixed few-hundred-bps
@@ -130,10 +131,11 @@ const RESIDUAL_PRICE_MULT: u128 = 1_000;
 // Bisection halvings for the buy-side partial-fill inversion (see module doc comment and
 // NOTES.md § Do not invert with sqrt). `total_qty` is `reserve_x * DELTA_PCT/100`, and
 // `crates/cli/src/commands/validate.rs`'s own randomized probe draws `reserve_x` up to
-// ~2e12 nano, so the worst case bisected range is on the order of `2e12 * 1.0 = 2e12`. 44
-// halvings resolve any integer target up to 2^44 (~1.76e13), leaving a residual granularity
-// of `upper/2^44` — far under the checker's 4-nano tolerance even at that worst case
-// (`2e12 / 2^44 ~= 1.1e-1` nano).
+// ~2e12 nano, so at `DELTA_PCT`'s own frozen max (10) the worst case bisected range is on
+// the order of `2e12 * 10/100 = 2e11`. 44 halvings resolve any integer target up to 2^44
+// (~1.76e13, comfortably past that), leaving a residual granularity of `upper/2^44` — far
+// under the checker's 4-nano tolerance even well past that worst case
+// (`2e11 / 2^44 ~= 1.1e-2` nano).
 const BISECT_ITERS: u32 = 44;
 
 #[cfg(not(feature = "no-entrypoint"))]
@@ -214,6 +216,13 @@ fn effective_outer_bps() -> u128 {
     W_BPS.max(S0_BPS + MIN_GAP_BPS)
 }
 
+/// Native-ratio spot price (PRICE_SCALE-scaled): `reserve_y/reserve_x`. Shared by both
+/// ladder builders so they always agree on where "spot" sits for a given `(rx, ry)`.
+#[inline]
+fn spot_price(rx: u128, ry: u128) -> u128 {
+    ry.saturating_mul(PRICE_SCALE) / rx
+}
+
 /// Ask-side ladder (side=0, buying base X with quote Y): P0 = spot*(1+s0), P6 =
 /// spot*(1+outer), ascending above spot. Book capacity is base-denominated (native X units)
 /// — a deliberate deviation from the source's own quote-denominated `ask_side`/`bid_side`
@@ -221,7 +230,7 @@ fn effective_outer_bps() -> u128 {
 /// LIVE `reserve_x` so it can never structurally exceed the reserve regardless of how far
 /// reserves have drifted over a 10,000-step simulation.
 fn build_ask_ladder(rx: u128, ry: u128) -> Option<Ladder> {
-    let spot = ry.saturating_mul(PRICE_SCALE) / rx;
+    let spot = spot_price(rx, ry);
     let outer_bps = effective_outer_bps();
     let p_low = spot.saturating_mul(BPS_DENOM + S0_BPS) / BPS_DENOM;
     let p_high = spot.saturating_mul(BPS_DENOM + outer_bps) / BPS_DENOM;
@@ -234,7 +243,7 @@ fn build_ask_ladder(rx: u128, ry: u128) -> Option<Ladder> {
 /// converts to approximately `DELTA_PCT` of `reserve_y` in quote-payout terms as well, since
 /// `reserve_x * spot ~= reserve_y` by definition of spot.
 fn build_bid_ladder(rx: u128, ry: u128) -> Option<Ladder> {
-    let spot = ry.saturating_mul(PRICE_SCALE) / rx;
+    let spot = spot_price(rx, ry);
     let outer_bps = effective_outer_bps().min(BPS_DENOM - 1);
     let half_spread_bps = S0_BPS.min(outer_bps.saturating_sub(1));
     let p_low = spot.saturating_mul(BPS_DENOM - outer_bps) / BPS_DENOM;
@@ -316,9 +325,14 @@ fn buy_base_with_quote(input: u128, rx: u128, ry: u128) -> u64 {
     } else if input >= full_cost {
         // Residual tail beyond exhaustion (NOTES.md § Residual tail beyond exhaustion):
         // extend at a price `RESIDUAL_PRICE_MULT` times WORSE than the ladder's own P6, so
-        // the extra base bought per extra quote spent is small but strictly positive —
-        // `validate.rs`'s discrete probe needs strict monotonicity even this far out, but a
-        // real trade this large already means the primary book is long exhausted.
+        // the extra base bought per extra quote spent is small — strictly positive once
+        // `extra_quote` clears roughly `residual_price/PRICE_SCALE` nano (integer division
+        // floors below that, to 0, which is a tie against the exhaustion point, never a
+        // decrease, so it still never violates monotonicity — just not what `validate.rs`'s
+        // own STRICT `>` probe would need at those exact, vanishingly narrow input pairs;
+        // its 10 fixed probe sizes are spaced far coarser than that window and never land
+        // inside it). A real trade this large already means the primary book is long
+        // exhausted.
         let extra_quote = input - full_cost;
         let residual_price = ladder.p_high.saturating_mul(RESIDUAL_PRICE_MULT).max(1);
         let extra_base = extra_quote.saturating_mul(PRICE_SCALE) / residual_price;
@@ -349,8 +363,10 @@ fn sell_base_for_quote(input: u128, rx: u128, ry: u128) -> u64 {
     let quote_out = if input > ladder.total_qty {
         // Residual tail beyond exhaustion, symmetric to the buy side: extend at a price
         // `RESIDUAL_PRICE_MULT` times WORSE than the ladder's own P0 (i.e. much less quote
-        // per extra base sold) — strictly positive and strictly worse than the primary
-        // ladder's own ending price, so concavity holds across the transition.
+        // per extra base sold) — see the buy side's own doc comment above for the same
+        // integer-division floor caveat right at the exhaustion boundary (a tie there, never
+        // a decrease). Always strictly worse than the primary ladder's own ending price, so
+        // concavity holds across the transition.
         let extra_base = input - ladder.total_qty;
         let residual_price = (ladder.p_low / RESIDUAL_PRICE_MULT).max(1);
         let extra_quote = extra_base.saturating_mul(residual_price) / PRICE_SCALE;
