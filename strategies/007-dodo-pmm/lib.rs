@@ -28,13 +28,17 @@ const MODEL_USED: &str = "Claude Sonnet 5";
 //
 // ANCHOR UPDATE (after_swap, no sqrt). Re-anchoring is not a no-op for a curved book: the
 // PMM's own marginal price at the post-trade reserve point differs from the pre-trade
-// anchor's naive ry/rx ratio by the same R_f multiplier the quote used, so
+// anchor's naive ry/rx ratio by the same R_f multiplier the quote used, so for k<1
 // `after_swap` recomputes the curve's own post-trade mid (`i_old * R_f` or `i_old / R_f`,
 // R_f = [(K_DEN-k)*Vp^2 + k*V0^2] / (K_DEN*Vp^2)) rather than the raw reserve ratio.
 // `V0`/`Vp` (the shortage side's pre/post-trade reserve) are reconstructed from the
 // after_swap payload alone — no reserves beyond the anchor price need to be stored, since
 // re-anchoring every trade means the last anchor's target always equals the reserve just
-// before the next trade.
+// before the next trade. At k=1 (this port's committed point) R_f's formula reduces
+// algebraically to exactly the raw ry_post/rx_post ratio, so `after_swap` recomputes it
+// directly from the ratio instead of recursively from the stored anchor — see NOTES.md
+// § A runaway anchor, found and fixed for why the recursive form is unsafe even though it
+// is mathematically equivalent in exact arithmetic.
 //
 // SHAPE SAFETY. `solve_quadratic_for_trade` reads only storage-derived state (the anchor
 // price) plus compile-time consts and the live reserves passed alongside `input_amount` —
@@ -188,14 +192,15 @@ fn isqrt(n: u128) -> u128 {
 // one end wastes precision or overflows at the other. At the small end this resolves output
 // differences well below a nano (see NOTES.md § CU and arithmetic risk); at the clamped
 // extreme, `shift` collapses to 0 (no headroom left) where nano-level precision is moot
-// anyway (the reserve itself is ~5.8e8 tokens). Capped at 60 bits so `2*shift` never
-// approaches u128's 128-bit width regardless of `n`.
+// anyway (the reserve itself is ~5.8e8 tokens). `shift = n.leading_zeros()/2` (integer
+// division) already keeps `2*shift <= n.leading_zeros()`, so `n << 2*shift` never loses a
+// bit regardless of `n` — no extra cap needed for that.
 #[inline]
 fn scaled_isqrt(n: u128) -> (u128, u128) {
     if n == 0 {
         return (0, 1);
     }
-    let shift = (n.leading_zeros() / 2).min(60);
+    let shift = n.leading_zeros() / 2;
     let scale = 1u128 << shift;
     (isqrt(n << (2 * shift)), scale)
 }
@@ -210,7 +215,7 @@ fn div_ceil(a: u128, b: u128) -> u128 {
     if b == 0 {
         return 0;
     }
-    (a + b - 1) / b
+    a.saturating_add(b - 1) / b
 }
 
 /// Fair-value of `delta` at price `i_fp`, in the reserve `v`'s own units, capped at
@@ -256,9 +261,11 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
     };
 
     // discriminant = b^2 + 4*(1-k)*k*v^2, scaled through K_DEN^2 so the intermediate stays
-    // in u128 even at v = RESERVE_CLAMP (v^2 alone is already ~3.3e35).
-    let v2 = v.saturating_mul(v);
-    let v2_over_kd2 = v2 / (K_DEN * K_DEN);
+    // in u128 even at v = RESERVE_CLAMP (v^2 alone is already ~3.3e35). Named `v_sq` (not
+    // `v2`) to avoid colliding with DODOMath.sol's own `V2` — the *output* reserve this
+    // function solves for, computed below as `v_out`.
+    let v_sq = v.saturating_mul(v);
+    let v2_over_kd2 = v_sq / (K_DEN * K_DEN);
     let disc_term = v2_over_kd2.saturating_mul(4 * k_bps * kd_minus_k);
     let discriminant = b_abs.saturating_mul(b_abs).saturating_add(disc_term);
     // scale * true_sqrt(discriminant), floor-accurate to within 1 part in `scale` instead of
@@ -276,7 +283,9 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
         if denom == 0 {
             return 0;
         }
-        let numerator = (v2 / K_DEN).saturating_mul(2 * k_bps).saturating_mul(scale);
+        let numerator = (v_sq / K_DEN)
+            .saturating_mul(2 * k_bps)
+            .saturating_mul(scale);
         div_ceil(numerator, denom)
     } else {
         // V2 = (b_abs + sqrt(disc)) / (2*(1-k)), ceiled. Same `scale`-both-sides cancellation.
@@ -367,14 +376,17 @@ fn anchor_price(storage: &[u8], rx_c: u128, ry_c: u128) -> u128 {
 
 /// R_f's denominator, K_DEN-scaled so the caller's multiply-by-`i_old` stays in u128:
 /// `R_f = [(K_DEN-k)*Vp^2 + k*V0^2] / (K_DEN*Vp^2)`, returned as `(denom_scaled, Vp^2)`
-/// where `denom_scaled ~= [(K_DEN-k)*Vp^2 + k*V0^2] / K_DEN`.
+/// where `denom_scaled ~= [(K_DEN-k)*Vp^2 + k*V0^2] / K_DEN`. Only ever called with
+/// `k_bps < K_DEN` (the `after_swap` caller special-cases `k_bps >= K_DEN` before reaching
+/// this); `.min(K_DEN)` below is a defensive guard against `K_DEN - k_bps` underflowing,
+/// not a path this port's own frozen `K_BPS` range can reach.
 #[inline]
 fn rf_denominator_scaled(v0: u128, vp: u128, k_bps: u128) -> (u128, u128) {
     let vp2 = vp.saturating_mul(vp);
     let v02 = v0.saturating_mul(v0);
     let vp2_kd = vp2 / K_DEN;
     let v02_kd = v02 / K_DEN;
-    let denom_scaled = (K_DEN - k_bps)
+    let denom_scaled = (K_DEN - k_bps.min(K_DEN))
         .saturating_mul(vp2_kd)
         .saturating_add(k_bps.saturating_mul(v02_kd));
     (denom_scaled, vp2)
@@ -399,10 +411,11 @@ fn post_trade_mid_multiply(i_old: u128, v0: u128, vp: u128, k_bps: u128) -> u128
     if vp == 0 {
         return i_old;
     }
+    // `vp != 0` (checked above) implies `vp2 = vp.saturating_mul(vp) != 0` — saturating
+    // multiplication only ever saturates a nonzero input up to `u128::MAX`, never down to 0
+    // — so no separate `vp2 == 0` guard is needed here (unlike `divide`'s `denom_scaled == 0`
+    // check, which guards a genuinely reachable zero from `rf_denominator_scaled`).
     let (denom_scaled, vp2) = rf_denominator_scaled(v0, vp, k_bps);
-    if vp2 == 0 {
-        return i_old;
-    }
     i_old.saturating_mul(denom_scaled) / vp2
 }
 
@@ -431,6 +444,24 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
         // exactly (cross-cutting §4/§5).
         let price = ry_post.saturating_mul(P_SCALE) / rx_post;
         wr_u64(storage, OFF_MAGIC, MAGIC);
+        wr16(storage, OFF_ANCHOR_PRICE, price);
+        return;
+    }
+
+    // k=1: the post-trade mid is EXACTLY the raw post-trade reserve ratio (proven above the
+    // `rf_denominator_scaled` helpers — at k=1, R_f collapses to (V0/Vp)^2 and i_old*R_f
+    // algebraically equals ry_post/rx_post, the same identity that makes k=1 the CPMM
+    // containment point in compute_swap). Recomputing directly from the ratio, instead of
+    // recursively from the stored `i_old`, matters beyond style: a recursive update carries
+    // forward any prior step's integer rounding, and — found while investigating an outlier
+    // seed during this port's own review (NOTES.md § A runaway anchor, found and fixed) — a
+    // long run of one-sided retail flow (which never corrects the curve to fair the way an
+    // arbitrageur's trade does) can compound that rounding into a persistent, self-widening
+    // mispricing. Anchoring to the raw ratio every time is self-correcting by construction:
+    // each update depends only on the CURRENT reserves, never on the previous anchor, so no
+    // error has anything to accumulate onto. This does not need `rx_pre`/`ry_pre` at all.
+    if K_BPS >= K_DEN {
+        let price = ry_post.saturating_mul(P_SCALE) / rx_post;
         wr16(storage, OFF_ANCHOR_PRICE, price);
         return;
     }
