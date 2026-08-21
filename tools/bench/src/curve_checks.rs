@@ -175,4 +175,44 @@ mod tests {
         let err = submission_shape_violation(&points, MIN_INPUT).expect("expected violation");
         assert!(err.contains("concavity"), "unexpected error: {err}");
     }
+
+    /// Ported from `crates/sim/src/curve_checks.rs`'s own
+    /// `exposes_false_positive_from_cancellation_prone_concave_curve` — a regression pin for
+    /// a subtle nano-quantization false-positive the checker itself once needed guarding
+    /// against. Kept in sync with the upstream test by inspection at each upstream sync,
+    /// same as the mirrored function above (see `docs/DEFERRED_ISSUES.md` for the residual
+    /// drift risk this doesn't fully close).
+    #[test]
+    fn exposes_false_positive_from_cancellation_prone_concave_curve() {
+        // f(x) = sqrt(C + x) - sqrt(C) is monotone and concave for C > 0:
+        // f'(x) = 1 / (2*sqrt(C+x)) > 0, f''(x) = -1 / (4*(C+x)^(3/2)) < 0.
+        // With large C, naive evaluation suffers cancellation and can create flat-then-jump
+        // artifacts that trip the discrete slope-rise check.
+        let c: f64 = 1e16;
+        let xs = [
+            0.9628366933867734,
+            0.9828747494989979,
+            1.0029128056112224,
+            1.0229508617234468,
+        ];
+
+        let naive_points: Vec<(f64, f64)> = xs
+            .iter()
+            .map(|x| (*x, (c + *x).sqrt() - c.sqrt()))
+            .collect();
+        let err = submission_shape_violation(&naive_points, MIN_INPUT).expect(
+            "expected checker to flag cancellation-prone evaluation despite legal underlying shape",
+        );
+        assert!(err.contains("concavity"), "unexpected error: {err}");
+
+        // Equivalent stable form: sqrt(C+x)-sqrt(C) = x / (sqrt(C+x)+sqrt(C)).
+        let stable_points: Vec<(f64, f64)> = xs
+            .iter()
+            .map(|x| (*x, *x / ((c + *x).sqrt() + c.sqrt())))
+            .collect();
+        assert_valid(
+            &stable_points,
+            "stable algebraic form of same legal concave/monotone curve",
+        );
+    }
 }

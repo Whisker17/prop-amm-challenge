@@ -60,8 +60,13 @@ seeds_per_cell = 40
 # grid regime corner when locating that regime's drift extremes (very small / very large
 # spot). `golden_price_multipliers`: relative-to-spot fair-price targets driving the
 # golden-section-shaped sample sets (mirrors what `crates/sim/src/arbitrageur.rs`'s search
-# actually produces, at several assumed mispricings).
+# actually produces, at several assumed mispricings). `moderate_max_input`: the upper bound
+# of the "moderate range" dense sweep — generously exceeds every kink threshold named in the
+# M1 strategy reviews (e.g. WHI-1207's ~1670x a per-strategy delta) while still giving that
+# sweep fine resolution under a linear grid; the second dense sweep always runs up to
+# `MAX_INPUT_AMOUNT` regardless of this value.
 [fuzz]
 dense_sweep_points = 240
 seeds_per_regime = 3
 golden_price_multipliers = [0.1, 0.5, 0.9, 1.0, 1.1, 2.0, 10.0]
+moderate_max_input = 50000.0

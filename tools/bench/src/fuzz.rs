@@ -12,9 +12,11 @@
 //!   `bracket_maximum`/`golden_section_max` and `crates/sim/src/router.rs`'s own alpha-split
 //!   golden section actually produce (re-implemented here, not imported — both are private
 //!   methods on crate-private search state, and this is a faithful-shape mirror, not a
-//!   byte-for-byte port of either's two-stage algorithm),
+//!   byte-for-byte port of either's two-stage algorithm; see `docs/DEFERRED_ISSUES.md` for
+//!   the residual gap that leaves open),
 //! - states drawn from all of `config/bench.toml`'s `[grid]` regime corners, including
 //!   states only reachable after a full-length GBM drift (very small and very large spot),
+//!   each in both an exact-CPMM-invariant and a randomly jittered, off-invariant variant,
 //! - a zeroed and a random-byte storage variant per state (mirrors `validate.rs`'s own
 //!   randomized reserve/storage probe — issue WHI-1212's own rationale: "it is where clamp
 //!   bugs surface").
@@ -41,18 +43,20 @@ const MIN_INPUT: f64 = 1e-3;
 /// Mirrors `crates/sim/src/arbitrageur.rs::MAX_INPUT_AMOUNT` — the largest input an
 /// arbitrageur's search is ever allowed to reach.
 const MAX_INPUT_AMOUNT: f64 = (u64::MAX as f64 / NANO_SCALE_F64) * 0.999_999;
-/// Generously exceeds every kink threshold named in the M1 strategy reviews (e.g. WHI-1207's
-/// ~1670x a per-strategy delta) while still giving a dense sweep fine resolution under a
-/// linear grid — the "moderate" range a router split or a retail-sized arb trade actually
-/// lands in, as distinct from the `MAX_INPUT_AMOUNT`-scale sweep run alongside it.
-const MODERATE_MAX_INPUT: f64 = 50_000.0;
 const GOLDEN_RATIO_CONJUGATE: f64 = 0.618_033_988_749_894_8;
 const GOLDEN_MAX_ITERS: usize = 20;
 /// Not a `config/bench.toml` segment and not a decision input — purely an internal RNG seed
 /// for exploring a regime's GBM drift range when building fuzz states, disjoint from grid
-/// mode's own `GRID_SEED_BASE` (`tools/bench/src/grid.rs`) only so the two are never
-/// confused when reading a seed value in a debugger.
+/// mode's own `GRID_SEED_BASE` (`tools/bench/src/grid.rs`) and from `FUZZ_STATE_SEED_BASE`
+/// below only so the three are never confused when reading a seed value in a debugger.
 const FUZZ_PRICE_SEED_BASE: u64 = 5_000_000;
+/// Seeds the random-byte storage buffer and the off-invariant reserve jitter (`storage_seed`/
+/// `jitter_seed` below) — a distinct base from `FUZZ_PRICE_SEED_BASE` so the two purposes
+/// never share a literal seed value for the same cell.
+const FUZZ_STATE_SEED_BASE: u64 = 6_000_000;
+/// Offset added to `FUZZ_STATE_SEED_BASE` for jitter seeds, keeping that namespace disjoint
+/// from the storage-seed namespace below it.
+const FUZZ_JITTER_SEED_OFFSET: u64 = 1_000_000;
 
 const SIDES: [(u8, &str); 2] = [(0, "buy X (input Y)"), (1, "sell X (input X)")];
 
@@ -77,8 +81,15 @@ pub struct Violation {
 /// Builds the fuzz states: every regime corner in `grid_config` (`config/bench.toml`'s
 /// `[grid]` table — the same 27-cell factorial `bench grid` uses), each contributing the
 /// reserves implied by its own initial price and by the extremes of a full-length GBM price
-/// path sampled under that regime's own sigma, each paired with a zeroed and a random-byte
-/// storage buffer.
+/// path sampled under that regime's own sigma. Each `(cell, price)` pair contributes both
+/// the exact-CPMM-invariant reserve pair and a randomly jittered, off-invariant, asymmetric
+/// one (issue WHI-1212 asks for "*random* states", and WHI-1206's own reserve-clamp-plateau
+/// failure is specifically an off-invariant state) — each in turn paired with a zeroed and a
+/// random-byte storage buffer. `norm_fee_bps` (the third grid axis) has no principled effect
+/// on a *submission's own* reserves — it only ever governs the normalizer counterpart's
+/// curve — so it distinguishes states here only through jitter/storage seeding (every cell
+/// still gets its own distinct states; it just isn't the reserve-scale axis liquidity and
+/// sigma are).
 pub fn build_states(grid_config: &GridConfig, fuzz_config: &FuzzConfig) -> Vec<FuzzState> {
     let mut states = Vec::new();
     for cell in grid::cells(grid_config) {
@@ -93,38 +104,76 @@ pub fn build_states(grid_config: &GridConfig, fuzz_config: &FuzzConfig) -> Vec<F
         prices.retain(|p| p.is_finite() && *p > 0.0);
         prices.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
 
-        for price in prices {
-            let reserve_x = (k / price).sqrt();
-            let reserve_y = (k * price).sqrt();
-            if !reserve_x.is_finite()
-                || !reserve_y.is_finite()
-                || reserve_x <= 0.0
-                || reserve_y <= 0.0
+        for (price_idx, price) in prices.into_iter().enumerate() {
+            let on_invariant_x = (k / price).sqrt();
+            let on_invariant_y = (k * price).sqrt();
+            if !on_invariant_x.is_finite()
+                || !on_invariant_y.is_finite()
+                || on_invariant_x <= 0.0
+                || on_invariant_y <= 0.0
             {
                 continue;
             }
 
-            for (storage, storage_label) in [
-                (vec![0u8; STORAGE_SIZE], "zero storage"),
+            let jitter_seed = jitter_seed(cell.index, price_idx);
+            let jitter_x = jitter_factor(jitter_seed);
+            let jitter_y = jitter_factor(jitter_seed.wrapping_add(1));
+            let reserve_variants = [
+                (on_invariant_x, on_invariant_y, "on-invariant"),
                 (
-                    random_storage(FUZZ_PRICE_SEED_BASE + cell.index as u64),
-                    "random storage",
+                    on_invariant_x * jitter_x,
+                    on_invariant_y * jitter_y,
+                    "off-invariant jitter",
                 ),
-            ] {
-                states.push(FuzzState {
-                    label: format!(
-                        "cell {} ({}) price={price:.6} [{storage_label}]",
-                        cell.index,
-                        cell.label_axes(),
+            ];
+
+            for (reserve_x, reserve_y, reserve_label) in reserve_variants {
+                if !reserve_x.is_finite()
+                    || !reserve_y.is_finite()
+                    || reserve_x <= 0.0
+                    || reserve_y <= 0.0
+                {
+                    continue;
+                }
+
+                for (storage, storage_label) in [
+                    (vec![0u8; STORAGE_SIZE], "zero storage"),
+                    (
+                        random_storage(storage_seed(cell.index, price_idx)),
+                        "random storage",
                     ),
-                    reserve_x,
-                    reserve_y,
-                    storage,
-                });
+                ] {
+                    states.push(FuzzState {
+                        label: format!(
+                            "cell {} ({}) price={price:.6} [{reserve_label}, {storage_label}]",
+                            cell.index,
+                            cell.label_axes(),
+                        ),
+                        reserve_x,
+                        reserve_y,
+                        storage,
+                    });
+                }
             }
         }
     }
     states
+}
+
+fn storage_seed(cell_index: usize, price_idx: usize) -> u64 {
+    FUZZ_STATE_SEED_BASE + (cell_index as u64) * 100 + price_idx as u64
+}
+
+fn jitter_seed(cell_index: usize, price_idx: usize) -> u64 {
+    FUZZ_STATE_SEED_BASE + FUZZ_JITTER_SEED_OFFSET + (cell_index as u64) * 100 + price_idx as u64
+}
+
+/// Maps a seed to a multiplicative factor in `[0.4, 2.5]` — wide enough that applying it
+/// independently to `reserve_x` and `reserve_y` lands off the CPMM invariant the
+/// "on-invariant" state sits on, narrow enough to stay a plausible reserve state.
+fn jitter_factor(seed: u64) -> f64 {
+    let unit = (mix(seed) % 1_000_000) as f64 / 1_000_000.0;
+    0.4 + unit * (2.5 - 0.4)
 }
 
 /// The min/max fair price a full-length GBM path reaches under `sigma`, across
@@ -173,6 +222,21 @@ pub fn run_fuzz(
     states: &[FuzzState],
     fuzz_config: &FuzzConfig,
 ) -> Option<Violation> {
+    // (sample kind label, min input, max input) for the two dense sweeps — a table instead
+    // of two near-identical `if let` blocks below.
+    let dense_sweeps: [(&str, f64, f64); 2] = [
+        (
+            "dense sweep (moderate range)",
+            MIN_INPUT,
+            fuzz_config.moderate_max_input,
+        ),
+        (
+            "dense sweep (up to MAX_INPUT_AMOUNT)",
+            MIN_INPUT,
+            MAX_INPUT_AMOUNT,
+        ),
+    ];
+
     for state in states {
         for (side, side_label) in SIDES {
             let mut quote = |input: f64| {
@@ -185,31 +249,20 @@ pub fn run_fuzz(
                 )
             };
 
-            if let Some(message) = dense_sweep_violation(
-                &mut quote,
-                MIN_INPUT,
-                MODERATE_MAX_INPUT,
-                fuzz_config.dense_sweep_points,
-            ) {
-                return Some(Violation {
-                    state_label: state.label.clone(),
-                    side_label,
-                    sample_kind: "dense sweep (moderate range)",
-                    message,
-                });
-            }
-            if let Some(message) = dense_sweep_violation(
-                &mut quote,
-                MIN_INPUT,
-                MAX_INPUT_AMOUNT,
-                fuzz_config.dense_sweep_points,
-            ) {
-                return Some(Violation {
-                    state_label: state.label.clone(),
-                    side_label,
-                    sample_kind: "dense sweep (up to MAX_INPUT_AMOUNT)",
-                    message,
-                });
+            for (sample_kind, min_input, max_input) in dense_sweeps {
+                if let Some(message) = dense_sweep_violation(
+                    &mut quote,
+                    min_input,
+                    max_input,
+                    fuzz_config.dense_sweep_points,
+                ) {
+                    return Some(Violation {
+                        state_label: state.label.clone(),
+                        side_label,
+                        sample_kind,
+                        message,
+                    });
+                }
             }
 
             let spot = state.reserve_y / state.reserve_x.max(1e-12);
@@ -234,8 +287,10 @@ pub fn run_fuzz(
 }
 
 /// Several grid shapes spanning `[min_input, max_input]` — linear, geometric, and two
-/// power-clustered variants (toward the low end and the high end) — mirroring
-/// `crates/sim/src/curve_checks.rs`'s own test module's grid-shape helpers.
+/// power-clustered variants (toward the low end and the high end) — in the same spirit as
+/// `crates/sim/src/curve_checks.rs`'s own test module's grid-shape helpers, but this is a
+/// separate, purpose-built production sweep generator for `bench fuzz`, not a fidelity-bound
+/// mirror of those test-only helpers — its constants are free to differ from theirs.
 fn dense_sweep_grids(min_input: f64, max_input: f64, n: usize) -> Vec<Vec<f64>> {
     vec![
         linear_grid(min_input, max_input, n),
@@ -393,6 +448,7 @@ mod tests {
             dense_sweep_points: 40,
             seeds_per_regime: 2,
             golden_price_multipliers: vec![0.5, 1.0, 2.0],
+            moderate_max_input: 50_000.0,
         }
     }
 
@@ -406,8 +462,9 @@ mod tests {
             * grid_config.norm_liquidity_mult_levels.len()
             * grid_config.gbm_sigma_levels.len();
         // Every cell contributes at least its initial-price state (min/max drift can
-        // collapse onto the same price and get deduped), each in two storage variants.
-        assert!(states.len() >= n_cells * 2);
+        // collapse onto the same price and get deduped), each in an on-invariant and an
+        // off-invariant-jitter reserve variant, each in two storage variants.
+        assert!(states.len() >= n_cells * 4);
 
         for state in &states {
             assert!(state.reserve_x.is_finite() && state.reserve_x > 0.0);
@@ -421,6 +478,33 @@ mod tests {
         let states = build_states(&sample_grid_config(), &sample_fuzz_config());
         assert!(states.iter().any(|s| s.storage.iter().all(|&b| b == 0)));
         assert!(states.iter().any(|s| s.storage.iter().any(|&b| b != 0)));
+    }
+
+    #[test]
+    fn build_states_includes_an_off_invariant_jittered_reserve_pair() {
+        let grid_config = sample_grid_config();
+        let states = build_states(&grid_config, &sample_fuzz_config());
+        let cell = grid::cells(&grid_config)[0];
+        let k = (INITIAL_X * cell.norm_liquidity_mult) * (INITIAL_Y * cell.norm_liquidity_mult);
+        let on_invariant = (k / INITIAL_PRICE).sqrt();
+
+        // At least one state at the initial price departs from the exact CPMM invariant —
+        // "many random states", not just the two deterministic on-invariant reserve scales.
+        assert!(states
+            .iter()
+            .any(|s| (s.reserve_x - on_invariant).abs() > 1e-6));
+    }
+
+    #[test]
+    fn jitter_seed_distinguishes_cells_that_differ_only_in_fee() {
+        // norm_fee_bps has no effect on a submission's own reserves (it only governs the
+        // normalizer counterpart), so two cells differing only in fee would otherwise be
+        // indistinguishable at the reserve level — `cell.index` is what still gives every
+        // one of the 27 grid cells its own distinct jittered reserve state.
+        let seed_a = jitter_seed(0, 0);
+        let seed_b = jitter_seed(1, 0);
+        assert_ne!(seed_a, seed_b);
+        assert!((jitter_factor(seed_a) - jitter_factor(seed_b)).abs() > 1e-9);
     }
 
     #[test]

@@ -330,12 +330,14 @@ construction. An issue that establishes this records the reason and closes as `w
 candidate's input/state space to make "passed validation" mean "won't panic mid-search" —
 10 sizes at one fixed reserve state, versus the ~10^7 instances a real 1000-sim run
 exercises. `bench fuzz --strategy <dir>` (WHI-1212) closes that gap: dense sweeps and
-golden-section-shaped sample sets, run against every `[grid]` regime corner (including
-states only reachable after a full-length GBM drift) in both a zeroed- and a
-random-byte-storage variant, mirroring `curve_checks.rs`'s own check. Every M1 strategy
-issue runs this gate before a `bench fit` search is allowed to spend paired-seed budget on
-that candidate; a violation here is filed the same way a runtime panic would be (this
-section's `wontfix` path, or a fix, not a note).
+golden-section-shaped sample sets, run against every `[grid]` regime corner — both on the
+CPMM invariant and randomly jittered off it — including states only reachable after a
+full-length GBM drift, in both a zeroed- and a random-byte-storage variant, mirroring
+`curve_checks.rs`'s own check. Every M1 strategy issue runs this gate before a `bench fit`
+search is allowed to spend paired-seed budget on that candidate. A PASS writes no report
+(the gate is meant to run repeatedly, before every search); a violation commits a
+`results/*.md` report naming the state and input pair, the same evidentiary role a runtime
+panic's stack trace plays for this section's `wontfix` path.
 
 ### 2.10 Convergence
 
@@ -358,7 +360,7 @@ Every tunable falls into exactly one bucket:
 | Bucket | Where it lives | Who may change it |
 | --- | --- | --- |
 | Challenge-owned (volatility range, normalizer sampling, step count, edge formula) | `crates/shared/src/config.rs` | upstream sync only. **Never** tuned to improve a local number — the grader runs upstream's values. |
-| Ours, protocol-level (seed segments, search budget, grid levels, sim counts) | `config/bench.toml`, typed + fail-fast validated | a PR that also updates §2 |
+| Ours, protocol-level (seed segments, search budget, grid levels, sim counts, fuzz-gate sample counts) | `config/bench.toml`, typed + fail-fast validated | a PR that also updates §2 |
 | Ours, strategy-level (a family's free parameters) | the strategy's `lib.rs`, space declared in its `NOTES.md` | frozen before search (§2.4) |
 
 No parameter appears in code without a §2 or `NOTES.md` citation.

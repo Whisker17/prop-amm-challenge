@@ -67,6 +67,7 @@ struct RawFuzzConfig {
     dense_sweep_points: usize,
     seeds_per_regime: u64,
     golden_price_multipliers: Vec<f64>,
+    moderate_max_input: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,6 +128,7 @@ pub struct FuzzConfig {
     pub dense_sweep_points: usize,
     pub seeds_per_regime: u64,
     pub golden_price_multipliers: Vec<f64>,
+    pub moderate_max_input: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -377,10 +379,14 @@ fn validate_fuzz(raw: &RawFuzzConfig) -> anyhow::Result<FuzzConfig> {
     {
         anyhow::bail!("fuzz config's golden_price_multipliers must all be finite and positive");
     }
+    if !raw.moderate_max_input.is_finite() || raw.moderate_max_input <= 0.0 {
+        anyhow::bail!("fuzz config's moderate_max_input must be finite and positive");
+    }
 
     Ok(FuzzConfig {
         dense_sweep_points: raw.dense_sweep_points,
         seeds_per_regime: raw.seeds_per_regime,
+        moderate_max_input: raw.moderate_max_input,
         golden_price_multipliers: raw.golden_price_multipliers.clone(),
     })
 }
@@ -755,7 +761,7 @@ max_points = {MAX_SEARCH_POINTS}
     #[test]
     fn fuzz_table_parses_and_validates() {
         let text = format!(
-            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [0.5, 1.0, 2.0]\n",
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [0.5, 1.0, 2.0]\nmoderate_max_input = 50000.0\n",
             sample_valid()
         );
         let cfg = BenchConfig::parse(&text).unwrap();
@@ -763,12 +769,13 @@ max_points = {MAX_SEARCH_POINTS}
         assert_eq!(fuzz.dense_sweep_points, 200);
         assert_eq!(fuzz.seeds_per_regime, 3);
         assert_eq!(fuzz.golden_price_multipliers, vec![0.5, 1.0, 2.0]);
+        assert_eq!(fuzz.moderate_max_input, 50_000.0);
     }
 
     #[test]
     fn fuzz_table_rejects_too_few_dense_sweep_points() {
         let text = format!(
-            "{}\n[fuzz]\ndense_sweep_points = 1\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0]\n",
+            "{}\n[fuzz]\ndense_sweep_points = 1\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0]\nmoderate_max_input = 50000.0\n",
             sample_valid()
         );
         let err = BenchConfig::parse(&text).unwrap_err();
@@ -781,7 +788,7 @@ max_points = {MAX_SEARCH_POINTS}
     #[test]
     fn fuzz_table_rejects_zero_seeds_per_regime() {
         let text = format!(
-            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 0\ngolden_price_multipliers = [1.0]\n",
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 0\ngolden_price_multipliers = [1.0]\nmoderate_max_input = 50000.0\n",
             sample_valid()
         );
         let err = BenchConfig::parse(&text).unwrap_err();
@@ -794,7 +801,7 @@ max_points = {MAX_SEARCH_POINTS}
     #[test]
     fn fuzz_table_rejects_empty_golden_price_multipliers() {
         let text = format!(
-            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = []\n",
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = []\nmoderate_max_input = 50000.0\n",
             sample_valid()
         );
         let err = BenchConfig::parse(&text).unwrap_err();
@@ -808,7 +815,7 @@ max_points = {MAX_SEARCH_POINTS}
     #[test]
     fn fuzz_table_rejects_non_positive_golden_price_multiplier() {
         let text = format!(
-            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0, 0.0]\n",
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0, 0.0]\nmoderate_max_input = 50000.0\n",
             sample_valid()
         );
         let err = BenchConfig::parse(&text).unwrap_err();
@@ -816,6 +823,29 @@ max_points = {MAX_SEARCH_POINTS}
             err.to_string().contains("finite and positive"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn fuzz_table_rejects_zero_moderate_max_input() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0]\nmoderate_max_input = 0.0\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("moderate_max_input must be finite and positive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_table_rejects_missing_moderate_max_input() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0]\n",
+            sample_valid()
+        );
+        assert!(BenchConfig::parse(&text).is_err());
     }
 
     #[test]
