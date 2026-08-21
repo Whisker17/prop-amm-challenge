@@ -49,8 +49,10 @@ const MODEL_USED: &str = "Claude Opus 4.8";
 // ---- estimator / fixed-point tunables --------------------------------------
 const P_SCALE: u128 = 1_000_000_000; // price fixed-point: p_fp = ry*P_SCALE/rx
 const MOVE_BPS_CAP: u128 = 250; // cap the per-step relative move BEFORE squaring
-                                // Derived, not an independent parameter (docs/DESIGN.md §2.4 amendment): by
-                                // construction this is MOVE_BPS_CAP^2, the cap on one squared per-step move.
+
+// Derived, not an independent parameter (per this issue's own review amendment, not a
+// docs/DESIGN.md rule): by construction this is MOVE_BPS_CAP^2, the cap on one squared
+// per-step move.
 const R2_CAP: u128 = MOVE_BPS_CAP * MOVE_BPS_CAP;
 
 // ---- vol -> fee mapping (bps) -----------------------------------------------
@@ -58,8 +60,7 @@ const R2_CAP: u128 = MOVE_BPS_CAP * MOVE_BPS_CAP;
 const FEE_LO: u128 = 5; // range: 5..=66
 const A_NUM: u128 = 13; // range: 0..=25
 const B_DEN: u128 = 1265; // range: 40..=2000
-
-// === PARAMS END ===
+                          // === PARAMS END ===
 const FEE_HI: u128 = 130; // fee ceiling (rarely binding) — frozen, not searched
 const A_DEN: u128 = 10; // linear term denominator — frozen, not searched
 const COLD_FEE: u128 = 55; // default fee until the estimator warms up — frozen

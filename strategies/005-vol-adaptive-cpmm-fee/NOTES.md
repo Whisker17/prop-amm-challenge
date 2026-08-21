@@ -45,8 +45,13 @@ parity) — it was written for this exact simulator, not adapted from an unrelat
   - A one-sentence softening added to the header comment's sampling-point claim (the search
     only "typically" lands on the arbitrageur's correction, not always — see § Estimator bias
     below) and a pointer to that section. No code changed.
+  - The four frozen consts below the `PARAMS` block (`FEE_HI`, `A_DEN`, `COLD_FEE`,
+    `WARMUP_STEPS`) each gained a `— frozen, not searched` trailing note, and were reordered
+    to sit together immediately after the block for readability. Cosmetic; no value changed.
 
-No other line differs. This is as close to a zero-fidelity-risk port as the frozen list gets.
+No other *code* line differs — every comment/ordering change above is accounted for and none
+of them touch `compute_swap`/`fee_from_state`/`cp_out`/`after_swap`/`isqrt` or any byte
+offset. This is as close to a zero-fidelity-risk port as the frozen list gets.
 
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting review finding #3)
 
@@ -78,10 +83,18 @@ by construction (the same form `001-cpmm-fee` and the source both use) — it ca
 the reserve passed in, so it never trips `crates/sim/src/amm.rs`'s "quote > reserve -> 0.0"
 guard. For a huge `input` (bracketing toward `MAX_INPUT_AMOUNT ~= 1.8e19` nano), `net` grows
 without bound and `ceil(k/n) -> 0`, so the output *saturates toward the full reserve*
-(exhaustion), never collapses to `0`. `net == 0` only when `input == 0` (a genuine no-op swap,
-where `0` is the correct output, not a manufactured monotonicity violation) — a real
-degenerate case, not a policy the review is warning against, since it can never appear
-adjacent to a positive-input sample in the same shape check.
+(exhaustion), never collapses to `0`.
+
+**Correction against an earlier draft of this section:** `net == 0` is *not* limited to
+`input == 0`. At the committed `FEE_LO = 5`, `net = input * 9995 / 10000` also floors to `0`
+for `input == 1` (a single nano unit) — a genuine truncation-to-zero on a *positive* input,
+not just the trivial `input == 0` no-op. This is still safe, for the same reason the review's
+concern doesn't apply: `input == 1` is always the *smallest* nonzero input in any shape-check
+sample set, so its `output == 0` can only sit below a larger input's output (monotonically
+consistent, `0 <= anything`), never above one. The failure mode the review warns about is a
+*large* input collapsing to `0` and reading as a monotonicity violation against a smaller
+input's positive output — that path is closed by the saturate-toward-`reserve` behavior above,
+independent of this small-input truncation.
 
 ## Clamping before squaring (finding #7)
 
@@ -269,10 +282,26 @@ than either fixed-fee at any level, so flow floods toward whichever venue is pri
 cheaper, adaptive floor (`FEE_LO=5` vs. `001`'s flat `66`) captures noticeably more of that
 already-abundant flow.
 
-Within `liq >= 1.0`, the negative cells cluster further: **all 6 `norm_fee_bps=80` cells (21-26)
-are negative** — the single largest and most consistent block — plus two small ones at
-`norm_fee_bps ∈ {30, 55}` with `liq=2.0` and low/mid sigma (6, 7; 12, 13 are negative but not
-significant). The `fee=80` pattern is the important one: at `norm_fee_bps=80` **both**
+Within `liq >= 1.0`, the negative cells cluster into two distinct groups — **correction
+against an earlier draft, which understated the first group's significance:**
+
+- **All 6 `norm_fee_bps=80` cells (21-26) are negative** — the single largest and most
+  consistent block, explained below.
+- **Cells 6 and 7 (`norm_fee_bps=30, liq=2.0`, low/mid sigma: -48.61 and -24.45)** are a
+  second, real effect — both 95% CIs exclude 0, same as every cell in the first group; they
+  are *not* noise (only cells 12/13 are the non-significant ones, tiny in magnitude with CIs
+  straddling 0). `fee=30, liq=2.0` is the single toughest opponent configuration in the whole
+  grid — simultaneously the cheapest *and* the deepest the normalizer ever gets — so at
+  low/mid sigma, where our own `sigma_hat` sits near its `FEE_LO=5` floor, the flow we do win
+  is genuinely price-sensitive and hard-fought rather than abundant, and `001`'s flat 66bps
+  edges it out on margin per trade the same way it does in the `fee=80` cluster below. This
+  reasoning does *not* extend to cell 8 (same `fee=30, liq=2.0`, high sigma), which flips
+  strongly **positive** (+105.52): at high sigma the adaptive fee's LVR defense (ramping well
+  above 66, per the cell-26 calculation below) starts to dominate the margin-per-trade effect
+  even against this toughest competitor — the two forces trade off differently by sigma level,
+  and this grid does not resolve exactly where the crossover sits.
+
+The `fee=80` pattern is the important one: at `norm_fee_bps=80` **both**
 candidate and reference already do well (edges of 300-1050) regardless of which one is
 running — an expensive, non-thin opponent still routes plenty of flow to *any* competitively
 priced venue, so flow-share is not the deciding factor there. What differs is **edge captured
