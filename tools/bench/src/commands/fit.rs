@@ -447,22 +447,20 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
                 );
             }
             SelfCheckVerdict::Inconclusive => {
-                println!(
-                    "Single-peaked self-check: INCONCLUSIVE — only {} of {} evaluated point(s) \
-                     were valid ({} invalid); not enough data to judge single-peakedness. The \
-                     winner below is unvalidated by this check.",
+                let detail = format!(
+                    "only {} of {} evaluated point(s) produced a valid edge ({} invalid), so \
+                     there is no curve to check for single-peakedness",
                     points.len(),
                     outcome.points_evaluated,
                     outcome.invalid.len(),
                 );
+                println!(
+                    "Single-peaked self-check: INCONCLUSIVE — {detail}. The winner below is \
+                     unvalidated by this check."
+                );
                 self_check_section = Some(self_check_report_section(format!(
-                    "INCONCLUSIVE (docs/DESIGN.md §2.8/WHI-1213) — only {} of {} evaluated \
-                     point(s) produced a valid edge ({} invalid), so there is no curve to \
-                     check for single-peakedness. The winner below is unvalidated by this \
-                     check.\n",
-                    points.len(),
-                    outcome.points_evaluated,
-                    outcome.invalid.len(),
+                    "INCONCLUSIVE (docs/DESIGN.md §2.8/WHI-1213) — {detail}. The winner below \
+                     is unvalidated by this check.\n"
                 )));
             }
             SelfCheckVerdict::Pass => {

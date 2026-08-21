@@ -223,7 +223,12 @@ fn force_monotonic_mtime(path: &Path) -> anyhow::Result<()> {
         .fetch_max(now_nanos, Ordering::SeqCst)
         .max(now_nanos)
         + 1;
-    LAST_FORCED_MTIME_NANOS.store(target_nanos, Ordering::SeqCst);
+    // `fetch_max`, not `store`: an unconditional store here would let a concurrent caller's
+    // *earlier* (now-stale) `target_nanos` clobber a later caller's already-published,
+    // larger value — silently rolling the shared counter backward. `fetch_max` can only
+    // ever move it forward, so the "never re-issues a mtime it has already stamped"
+    // invariant holds under concurrent callers too, not just under this call in isolation.
+    LAST_FORCED_MTIME_NANOS.fetch_max(target_nanos, Ordering::SeqCst);
 
     let target = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(target_nanos);
     let file = std::fs::OpenOptions::new().write(true).open(path)?;
