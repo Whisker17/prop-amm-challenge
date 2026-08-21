@@ -169,11 +169,36 @@ soon — anything touching a declared high-risk path defaults to at least High),
   strategy author debugging a violation is expected to fix it and re-run, not accumulate
   several same-day violations that all need separate evidence — and this exact
   one-report-per-day tradeoff is already an accepted, precedented limitation of `report.rs`
-  (see the existing "A committed `compare` report with a regime-slice table needed a
-  non-standard filename" entry above). Fix: none needed unless a workflow emerges that
-  genuinely needs multiple same-day violation reports for one strategy; if so, a
-  `--report-suffix` flag (or a timestamp in the filename) would resolve it the same way that
-  entry's manual rename did.
+  (see the "A committed `compare` report with a regime-slice table needed a non-standard
+  filename" entry in *Resolved* below — WHI-1215 resolved its filename symptom, not this
+  underlying one-report-per-day tradeoff, which both entries accept). Fix: none needed
+  unless a workflow emerges that genuinely needs multiple same-day violation reports for one
+  strategy; if so, a `--report-suffix` flag (or a timestamp in the filename) would resolve
+  it the same way that entry's manual rename did.
+- **`bench anchor` still has a constant `STAGE` despite taking a per-target `--file`
+  argument** (Low, WHI-1215). `tools/bench/src/commands/anchor.rs::STAGE`/`DEFAULT_FILE` —
+  the same shape WHI-1215 fixed in `grid`/`l1`/`compare`, but WHI-1215's own "Verified
+  state" section only named `grid.rs:98`, `l1.rs:183`, `compare.rs:99` as colliding, not
+  `anchor.rs`; out of that issue's stated scope, so left unfixed here rather than expanding
+  it. Lower risk in practice than the three fixed here: `anchor`'s whole point (docs/DESIGN.md
+  §2.6) is cross-checking bench's own numbers against `prop-amm run` for one file at a time,
+  and `DEFAULT_FILE` (the starter) is rarely overridden the way `grid`/`compare`'s
+  `--candidate`/`l1`'s primary `--file` are expected to vary per strategy — but two
+  same-day `anchor` runs against two different `--file` values would still collide exactly
+  the way `grid`/`l1`/`compare` did before this issue. Fix: the same treatment
+  (`slug_from_source_path(&args.file)`, `commands::claim_report_slot`) if this is ever hit
+  in practice.
+- **`bench l1`'s stage still collides across two runs that share only their primary
+  (first) `--file`** (Low, WHI-1215). `tools/bench/src/commands/l1.rs::run` — the issue's
+  own implementation note offered two choices for `l1` ("derive from the primary target or
+  accept an explicit suffix"); this PR took the first, so `--file a --file b` and
+  `--file a --file c` on the same day still collide on `l1-<a-slug>`. Accepted: the primary
+  file is what varies day to day across strategies in the scenario the issue describes,
+  and this mirrors the same short-slug tradeoff `resolve_strategy_lib_path` already accepts
+  for `fit`/`parity`/`fuzz` (two differently-located strategy directories sharing a final
+  path component would collide there too — not a new limitation this issue introduces).
+  Fix: an explicit `--stage-suffix` (the issue's second, declined option) if this is ever
+  hit in practice.
 
 ---
 

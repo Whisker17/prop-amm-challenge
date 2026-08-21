@@ -26,25 +26,54 @@ pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, Path
     Ok((slug, strategy_dir.join("lib.rs")))
 }
 
-/// Derives a short, filesystem-safe identifier for a `.rs` source file path — the
-/// `grid`/`l1`/`compare` equivalent of [`resolve_strategy_lib_path`]'s slug, for the
-/// subcommands that take the source file directly (`--candidate`/`--reference`/`--file`)
-/// rather than a `--strategy <dir>`. Strips a trailing `lib.rs`, and then a `src` above it,
-/// so both `strategies/<slug>/lib.rs` and `programs/<name>/src/lib.rs` resolve to their
-/// meaningful directory name (`<slug>`, `<name>`) instead of the uninformative `lib`/`src`
-/// a plain `file_stem()`/immediate-parent lookup would give.
+/// Derives a short identifier for a `.rs` source file path — the `grid`/`l1`/`compare`
+/// equivalent of [`resolve_strategy_lib_path`]'s slug, for the subcommands that take the
+/// source file directly (`--candidate`/`--reference`/`--file`) rather than a
+/// `--strategy <dir>`. Those commands' own doc comments only ever promise "a path to the
+/// candidate's `.rs` source file" (`grid.rs`/`compare.rs`), with no requirement that it live
+/// under a strategy directory, so this only ever fails on a genuinely empty `path` — never
+/// on a plain file with no informative parent (`lib.rs`, `src/lib.rs`) — since those were
+/// valid `--candidate`/`--reference` values before this stage-naming existed and must stay
+/// valid now.
+///
+/// If the file is named `lib.rs`, and then (transitively) if what's left is a `src`
+/// directory, walks up to the next meaningful path component — so both
+/// `strategies/<slug>/lib.rs` and `programs/<name>/src/lib.rs` resolve to their meaningful
+/// directory name (`<slug>`, `<name>`) instead of the uninformative `lib`/`src` a plain
+/// `file_stem()`/immediate-parent lookup would give — but only ever climbs a level that
+/// actually has a name of its own; a bare `lib.rs` or `src/lib.rs` with nothing more
+/// informative above it just keeps its own last component (`lib`, `src`), with a trailing
+/// `.rs` stripped so the result reads as an identifier rather than a filename.
 pub fn slug_from_source_path(path: &str) -> anyhow::Result<String> {
     let mut p = Path::new(path);
     if p.file_name().and_then(|n| n.to_str()) == Some("lib.rs") {
-        p = p.parent().unwrap_or(p);
+        if let Some(parent) = p.parent().filter(|par| par.file_name().is_some()) {
+            p = parent;
+        }
     }
     if p.file_name().and_then(|n| n.to_str()) == Some("src") {
-        p = p.parent().unwrap_or(p);
+        if let Some(parent) = p.parent().filter(|par| par.file_name().is_some()) {
+            p = parent;
+        }
     }
-    p.file_name()
+    let name = p
+        .file_name()
         .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("could not derive a slug from source path `{path}`"))
+        .ok_or_else(|| anyhow::anyhow!("could not derive a slug from source path `{path}`"))?;
+    Ok(name.strip_suffix(".rs").unwrap_or(name).to_string())
+}
+
+/// Derives `stage`'s report slot (`report::DEFAULT_REPORT_DIR`) and fails fast — before any
+/// compiling/simulating — if today's is already taken. `grid`/`l1`/`compare` each repeat
+/// "compute a per-target stage, then claim its slot" verbatim; extracted at the same
+/// "three duplicates is worth extracting" bar [`resolve_strategy_lib_path`]'s own doc
+/// comment cites. `fit`/`parity`/`fuzz` keep calling `report::ensure_report_slot_free`
+/// directly instead of through this — `fit`'s call is conditional on `!args.no_report`,
+/// which this helper has no way to express, so converging all six sites would mean adding a
+/// parameter that only one of them needs.
+pub fn claim_report_slot(stage: String) -> anyhow::Result<String> {
+    crate::report::ensure_report_slot_free(Path::new(crate::report::DEFAULT_REPORT_DIR), &stage)?;
+    Ok(stage)
 }
 
 /// Printed once when a resolved segment isn't a decision input (docs/DESIGN.md §2.2) —
@@ -202,6 +231,35 @@ mod tests {
         let a = slug_from_source_path("strategies/001-cpmm-fee/lib.rs").unwrap();
         let b = slug_from_source_path("strategies/002-other/lib.rs").unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn slug_from_source_path_gives_distinct_slugs_for_l1s_own_two_default_files() {
+        // The two files `l1`'s own default `--file` list ships with (WHI-1195) — not that
+        // they need distinct slugs (only the primary one is ever used for `l1`'s stage),
+        // but proving the helper doesn't collapse the repo's two real, committed default
+        // paths onto the same thing.
+        let starter = slug_from_source_path("programs/starter/src/lib.rs").unwrap();
+        let normalizer = slug_from_source_path("strategies/000-normalizer/lib.rs").unwrap();
+        assert_ne!(starter, normalizer);
+    }
+
+    #[test]
+    fn slug_from_source_path_keeps_a_flat_file_stripped_of_its_rs_extension() {
+        // `--candidate`/`--reference`/`--file` only ever promise "a path to a `.rs` source
+        // file" (`grid.rs`/`compare.rs`/`l1.rs`'s own doc comments) — nothing requires it
+        // live under a strategy directory, e.g. `my_amm.rs` at the repo root (AGENTS.md's
+        // own example submission filename).
+        assert_eq!(slug_from_source_path("my_amm.rs").unwrap(), "my_amm");
+    }
+
+    #[test]
+    fn slug_from_source_path_never_hard_errors_on_a_bare_lib_rs_or_src_lib_rs() {
+        // These were valid `--candidate`/`--reference` values before this stage-naming
+        // existed (nothing ever required a wrapping strategy directory) and must stay
+        // valid — even though neither has a parent informative enough to climb to.
+        assert_eq!(slug_from_source_path("lib.rs").unwrap(), "lib");
+        assert_eq!(slug_from_source_path("src/lib.rs").unwrap(), "src");
     }
 
     #[test]

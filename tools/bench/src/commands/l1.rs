@@ -3,13 +3,12 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::{note_if_not_decision_input, slug_from_source_path};
+use crate::commands::{claim_report_slot, note_if_not_decision_input, slug_from_source_path};
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::telemetry::{self, L1Sim};
 
-const STAGE_PREFIX: &str = "l1";
 const DEFAULT_STARTER: &str = "programs/starter/src/lib.rs";
 const DEFAULT_NORMALIZER_AS_SUBMISSION: &str = "strategies/000-normalizer/lib.rs";
 
@@ -129,17 +128,18 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
         anyhow::bail!("bench l1 requires at least one --file");
     }
 
-    // WHI-1215: `l1` measures a *list* of files in one report (its own default covers both
-    // the starter and the normalizer-as-submission baseline so they don't collide with each
-    // other on `report.rs`'s one-report-per-stage-per-day slot, WHI-1195) — so the stage
-    // derives from the primary (first) file only, not every file in the list. That's also
-    // the file that actually varies day to day across strategies (docs/DESIGN.md's own
-    // collision scenario), so it alone is what needs to disambiguate.
+    // WHI-1215 (see docs/DEFERRED_ISSUES.md's now-resolved WHI-1195 entry for the collision
+    // this fixes): `l1` measures a *list* of files in one report (`files`' own doc comment
+    // above explains why its two defaults share a single stage rather than each colliding
+    // with a `report.rs` slot of their own), so the stage derives from just the primary
+    // (first) file, not every file in the list — that's the file most likely to differ
+    // between two strategies' `l1` runs on the same day, so it alone is what needs to
+    // disambiguate. A caller measuring several non-default files under the same primary on
+    // the same day still collides; accepted for now (docs/DEFERRED_ISSUES.md).
     let primary_slug = slug_from_source_path(&args.files[0])?;
-    let stage = format!("{STAGE_PREFIX}-{primary_slug}");
 
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    let stage = claim_report_slot(format!("l1-{primary_slug}"))?;
 
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;

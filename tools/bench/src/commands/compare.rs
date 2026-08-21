@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::{note_if_not_decision_input, slug_from_source_path};
+use crate::commands::{claim_report_slot, note_if_not_decision_input, slug_from_source_path};
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
 use crate::regime;
@@ -38,10 +38,9 @@ pub fn run(args: CompareArgs) -> anyhow::Result<()> {
     // `--stage-suffix` flag is needed the way an ambiguous case might require.
     let candidate_slug = slug_from_source_path(&args.candidate)?;
     let reference_slug = slug_from_source_path(&args.reference)?;
-    let stage = format!("compare-{candidate_slug}-vs-{reference_slug}");
 
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    let stage = claim_report_slot(format!("compare-{candidate_slug}-vs-{reference_slug}"))?;
 
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;

@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::slug_from_source_path;
+use crate::commands::{claim_report_slot, slug_from_source_path};
 use crate::compile::{self, Slot};
 use crate::config::BenchConfig;
 use crate::grid::{self, GridCell};
@@ -36,18 +36,18 @@ struct CellResult {
 }
 
 pub fn run(args: GridArgs) -> anyhow::Result<()> {
-    // WHI-1215: the stage names only the candidate under test, not the reference — unlike
-    // `compare`'s two interchangeable comparison subjects, grid's own report already reads
-    // as "one candidate's fragility, measured against an operator-chosen reference" (the
-    // table below has one "candidate avg" column and one "reference avg" column, not a
+    // WHI-1215 (see docs/DEFERRED_ISSUES.md's now-resolved WHI-1195 entry for the collision
+    // this fixes): the stage names only the candidate under test, not the reference —
+    // unlike `compare`'s two interchangeable comparison subjects, grid's own report already
+    // reads as "one candidate's fragility, measured against an operator-chosen reference"
+    // (the table below has one "candidate avg" column and one "reference avg" column, not a
     // symmetric pairing), and it's the candidate that varies day to day across strategies
-    // (docs/DESIGN.md's own collision scenario: two different candidates gridded against
-    // the same fixed reference on the same day).
+    // (the issue's own "Why it blocks now": several strategies each running their own grid
+    // on the same day, against the same fixed reference).
     let candidate_slug = slug_from_source_path(&args.candidate)?;
-    let stage = format!("grid-{candidate_slug}");
 
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    let stage = claim_report_slot(format!("grid-{candidate_slug}"))?;
 
     let bench_config = BenchConfig::load_default()?;
     let grid_config = bench_config.grid()?;
