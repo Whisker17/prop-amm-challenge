@@ -30,9 +30,10 @@ this document really does describe *this* challenge's simulator. The mismatch is
 than it first looks: this challenge's own simulator (`crates/shared/src/config.rs`,
 `AGENTS.md`) scores on **average edge** (`SimResult`'s `submission_edge`, `docs/DESIGN.md`
 §2.1) — a per-trade accumulated quantity — not the doc's own `HPnL = (Σ Δx_t)·p_T + (Σ
-Δy_t)` terminal-inventory formula, and the doc itself names that exact distinction ("Edge
-effectively assumes hedging at every individual step, HPnL accounts for cumulative
-inventory risk held until the end of the simulation"). Per `docs/DESIGN.md` §2.9,
+Δy_t)` terminal-inventory formula, and the doc itself names that exact distinction (`While
+"Edge" effectively assumes hedging at every individual step, HPnL accounts for the
+cumulative inventory risk held until the end of the simulation cycle.`). Per
+`docs/DESIGN.md` §2.9,
 "Provenance is mandatory. Prose-only strategies may be second-hand or simply wrong" — the
 scoring-metric mismatch is exactly that case, flagged rather than silently resolved. Two
 readings are possible and this freeze does **not** pick between them:
