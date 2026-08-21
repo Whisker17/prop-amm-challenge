@@ -185,9 +185,10 @@ soon — anything touching a declared high-risk path defaults to at least High),
   and `DEFAULT_FILE` (the starter) is rarely overridden the way `grid`/`compare`'s
   `--candidate`/`l1`'s primary `--file` are expected to vary per strategy — but two
   same-day `anchor` runs against two different `--file` values would still collide exactly
-  the way `grid`/`l1`/`compare` did before this issue. Fix: the same treatment
-  (`slug_from_source_path(&args.file)`, `commands::claim_report_slot`) if this is ever hit
-  in practice.
+  the way `grid`/`l1`/`compare` did before this issue. Fix: the same treatment —
+  `slug_from_source_path(&args.file)` to derive the stage, then the same
+  `report::ensure_report_slot_free` call `grid`/`l1`/`compare` each make directly — if this
+  is ever hit in practice.
 - **`bench l1`'s stage still collides across two runs that share only their primary
   (first) `--file`** (Low, WHI-1215). `tools/bench/src/commands/l1.rs::run` — the issue's
   own implementation note offered two choices for `l1` ("derive from the primary target or

@@ -26,10 +26,10 @@ pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, Path
     Ok((slug, strategy_dir.join("lib.rs")))
 }
 
-/// Uninformative path components [`slug_from_source_path`] climbs past, in climb order —
-/// `lib.rs` (the file itself), then `src` above it (only reached once `lib.rs` has already
-/// been stripped, since `programs/<name>/src/lib.rs` only has a `src` component directly
-/// above the file).
+/// Uninformative path components [`slug_from_source_path`] climbs past, checked in this
+/// order against whatever the path's current final component is — `lib.rs` first (the file
+/// itself), then `src`, so `programs/<name>/src/lib.rs` climbs past both in the same call
+/// (`lib.rs` first, landing on `src`, then `src` on the very next check).
 const UNINFORMATIVE_PATH_COMPONENTS: [&str; 2] = ["lib.rs", "src"];
 
 /// Derives a short identifier for a `.rs` source file path — the `grid`/`l1`/`compare`
