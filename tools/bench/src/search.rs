@@ -30,18 +30,47 @@ pub fn validate_budget(budget: usize, label: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The outcome of evaluating one search point (docs/DESIGN.md §2.5, WHI-1213). A candidate
+/// whose output violates the runtime shape check (`crates/sim/src/curve_checks.rs`) panics
+/// mid-simulation — `crates/sim` is upstream-owned (§3.2), so the panic site itself can
+/// never be fixed here; `commands/fit.rs` instead catches it (`std::panic::catch_unwind`
+/// around the batch run) and reports it as `Invalid` rather than letting it abort the whole
+/// `bench fit` process.
+///
+/// Deliberately not folded into `f64` (e.g. as `f64::NEG_INFINITY`): that would contaminate
+/// the single-peak self-check's tolerance/scale math (docs/DESIGN.md §2.8, which takes the
+/// max absolute edge over the curve) with an infinite value. It is also deliberately not
+/// silently skipped: skipping would spend no budget and let coordinate descent step back
+/// into the same panicking region for free, whereas an `Invalid` point still consumes one
+/// of the 300 evaluation points and is memoized like a valid one.
+#[derive(Debug, Clone)]
+pub enum PointOutcome {
+    /// The point compiled and simulated cleanly; this is its average edge.
+    Valid(f64),
+    /// The point panicked during simulation (a caught, not propagated, panic). The `String`
+    /// is the panic message, for the `results/` snapshot's "Invalid points" section.
+    Invalid(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchOutcome {
     pub best: Vec<i128>,
     pub best_edge: f64,
-    /// Every *distinct* `(params, edge)` pair actually compiled and simulated, in first-seen
-    /// order — a coordinate-descent revisit of an already-measured point is answered from the
-    /// cache (see `coarse_grid_then_coordinate_descent`'s `memo`) and does not add a second
-    /// entry here. For a single parameter this is exactly the fee<->edge curve docs/DESIGN.md
-    /// §2.8 requires be committed to `results/`.
+    /// Every *distinct* point that produced a **valid** edge, in first-seen order — an
+    /// `Invalid` point is never added here (it has no edge to report as a curve sample); a
+    /// coordinate-descent revisit of an already-measured point is answered from the cache
+    /// (see `coarse_grid_then_coordinate_descent`'s `memo`) and does not add a second entry
+    /// either. For a single parameter this is exactly the fee<->edge curve docs/DESIGN.md
+    /// §2.8 requires be committed to `results/` — holes left by `Invalid` points are just
+    /// absent from it, not present with some sentinel edge.
     pub history: Vec<(Vec<i128>, f64)>,
-    /// Count of distinct points actually compiled and simulated — never exceeds `budget`, and
-    /// never double-counts a cached revisit.
+    /// Every *distinct* point that panicked, in first-seen order, with its panic message —
+    /// docs/DESIGN.md §2.5/WHI-1213's "listed explicitly in the `results/` snapshot".
+    pub invalid: Vec<(Vec<i128>, String)>,
+    /// Count of distinct points actually compiled and simulated (valid **and** invalid) —
+    /// never exceeds `budget`, and never double-counts a cached revisit. An invalid point
+    /// still consumed a compile and a simulation, so it counts against the budget the same
+    /// as a valid one (docs/DESIGN.md §2.5/WHI-1213).
     pub points_evaluated: usize,
     /// True if the search stopped because `points_evaluated` reached `budget`, rather than
     /// because coordinate descent converged on its own — "the search refuses to exceed 300
@@ -51,18 +80,20 @@ pub struct SearchOutcome {
 }
 
 /// Runs the search. `eval` is called with one candidate parameter vector (in `specs` order)
-/// at a time and must return that point's edge; routing it through `params::rewrite_params`,
-/// the fast compile path, and a **fixed** set of simulation configs is the caller's job
-/// (`commands/fit.rs`) — common random numbers (docs/DESIGN.md §2.5: "every point in a
-/// search is evaluated on the same screening seeds") is enforced by the caller reusing one
-/// `Vec<SimulationConfig>` across every call, not by anything in this module.
+/// at a time and must return that point's outcome; routing it through `params::rewrite_params`,
+/// the fast compile path, and a **fixed** set of simulation configs — including catching a
+/// shape-check panic into `PointOutcome::Invalid` — is the caller's job (`commands/fit.rs`).
+/// Common random numbers (docs/DESIGN.md §2.5: "every point in a search is evaluated on the
+/// same screening seeds") is enforced by the caller reusing one `Vec<SimulationConfig>`
+/// across every call, not by anything in this module.
 ///
 /// Never evaluates more than `budget` points; an `eval` failure (e.g. the candidate failed
-/// to compile) propagates immediately as an error.
+/// to compile — a genuine error, distinct from a caught runtime panic) propagates
+/// immediately as an error.
 pub fn coarse_grid_then_coordinate_descent(
     specs: &[ParamSpec],
     budget: usize,
-    mut eval: impl FnMut(&[i128]) -> anyhow::Result<f64>,
+    mut eval: impl FnMut(&[i128]) -> anyhow::Result<PointOutcome>,
 ) -> anyhow::Result<SearchOutcome> {
     if specs.is_empty() {
         anyhow::bail!("search requires at least one declared parameter");
@@ -70,31 +101,35 @@ pub fn coarse_grid_then_coordinate_descent(
     validate_budget(budget, "search budget")?;
 
     let mut history: Vec<(Vec<i128>, f64)> = Vec::new();
+    let mut invalid: Vec<(Vec<i128>, String)> = Vec::new();
     let mut points_evaluated = 0usize;
     // Coordinate descent revisits points the grid phase (or an earlier descent step) already
     // measured — e.g. clamping two different step sizes to the same boundary value. A cache
-    // keyed on the exact parameter vector answers those for free: the budget counts *distinct*
-    // points actually compiled and simulated, not evaluation *attempts* (docs/DESIGN.md §2.5's
-    // "hard cap 300 evaluation points" — re-asking a fast-path build for a value it already
-    // measured is not a new evaluation).
-    let mut memo: HashMap<Vec<i128>, f64> = HashMap::new();
+    // keyed on the exact parameter vector answers those for free (whether the point was valid
+    // or invalid): the budget counts *distinct* points actually compiled and simulated, not
+    // evaluation *attempts* (docs/DESIGN.md §2.5's "hard cap 300 evaluation points" —
+    // re-asking a fast-path build for a value it already measured is not a new evaluation).
+    let mut memo: HashMap<Vec<i128>, PointOutcome> = HashMap::new();
 
     // `None` once the budget is spent (not an error — running out of budget is an expected
     // stopping condition, not a failed evaluation). A genuine `eval` error still propagates.
-    let mut try_eval = |point: &[i128]| -> anyhow::Result<Option<f64>> {
-        // A revisit is not a new curve sample either — it's already in `history` from the
-        // first time this exact point was measured.
-        if let Some(&edge) = memo.get(point) {
-            return Ok(Some(edge));
+    let mut try_eval = |point: &[i128]| -> anyhow::Result<Option<PointOutcome>> {
+        // A revisit is not a new curve sample either — it's already in `history`/`invalid`
+        // from the first time this exact point was measured.
+        if let Some(outcome) = memo.get(point) {
+            return Ok(Some(outcome.clone()));
         }
         if points_evaluated >= budget {
             return Ok(None);
         }
-        let edge = eval(point)?;
+        let outcome = eval(point)?;
         points_evaluated += 1;
-        memo.insert(point.to_vec(), edge);
-        history.push((point.to_vec(), edge));
-        Ok(Some(edge))
+        memo.insert(point.to_vec(), outcome.clone());
+        match &outcome {
+            PointOutcome::Valid(edge) => history.push((point.to_vec(), *edge)),
+            PointOutcome::Invalid(reason) => invalid.push((point.to_vec(), reason.clone())),
+        }
+        Ok(Some(outcome))
     };
 
     // Half the budget locates the region (coarse grid), half refines it (coordinate descent)
@@ -106,13 +141,21 @@ pub fn coarse_grid_then_coordinate_descent(
     let mut best_point: Option<Vec<i128>> = None;
     let mut best_edge = f64::NEG_INFINITY;
     let mut budget_exhausted = false;
+    // Tracked separately from `invalid` (rather than reading `invalid.len()` below) since
+    // `try_eval` captures `invalid` mutably for as long as it's still callable — including
+    // the coordinate-descent loop further down — so an intervening read of `invalid` itself
+    // would conflict with that borrow.
+    let mut grid_invalid_count = 0usize;
     for point in &grid {
         match try_eval(point)? {
-            Some(edge) => {
+            Some(PointOutcome::Valid(edge)) => {
                 if edge > best_edge {
                     best_edge = edge;
                     best_point = Some(point.clone());
                 }
+            }
+            Some(PointOutcome::Invalid(_)) => {
+                grid_invalid_count += 1;
             }
             None => {
                 budget_exhausted = true;
@@ -121,7 +164,15 @@ pub fn coarse_grid_then_coordinate_descent(
         }
     }
     let mut best_point = best_point.ok_or_else(|| {
-        anyhow::anyhow!("search budget ({budget}) is too small to evaluate even one grid point")
+        if grid_invalid_count == 0 {
+            anyhow::anyhow!("search budget ({budget}) is too small to evaluate even one grid point")
+        } else {
+            anyhow::anyhow!(
+                "every evaluated grid point ({grid_invalid_count}) was invalid (a caught \
+                 shape-check panic) — no valid point exists yet to start coordinate \
+                 descent from"
+            )
+        }
     })?;
 
     if !budget_exhausted {
@@ -146,7 +197,7 @@ pub fn coarse_grid_then_coordinate_descent(
                         candidate[dim] = clamped;
 
                         match try_eval(&candidate)? {
-                            Some(edge) if edge > best_edge => {
+                            Some(PointOutcome::Valid(edge)) if edge > best_edge => {
                                 best_edge = edge;
                                 best_point = candidate;
                                 moved = true;
@@ -178,6 +229,7 @@ pub fn coarse_grid_then_coordinate_descent(
         best: best_point,
         best_edge,
         history,
+        invalid,
         points_evaluated,
         budget_exhausted,
     })
@@ -296,20 +348,24 @@ mod tests {
     #[test]
     fn finds_the_peak_of_a_clean_1d_quadratic() {
         let specs = vec![spec("x", 0, 500)];
-        let outcome =
-            coarse_grid_then_coordinate_descent(&specs, 60, |p| Ok(-((p[0] - 77).pow(2)) as f64))
-                .unwrap();
+        let outcome = coarse_grid_then_coordinate_descent(&specs, 60, |p| {
+            Ok(PointOutcome::Valid(-((p[0] - 77).pow(2)) as f64))
+        })
+        .unwrap();
         assert_eq!(outcome.best, vec![77]);
         assert_eq!(outcome.best_edge, 0.0);
         assert!(!outcome.budget_exhausted);
         assert!(outcome.points_evaluated <= 60);
+        assert!(outcome.invalid.is_empty());
     }
 
     #[test]
     fn finds_the_peak_of_a_clean_2d_quadratic() {
         let specs = vec![spec("x", 0, 200), spec("y", 0, 200)];
         let outcome = coarse_grid_then_coordinate_descent(&specs, 150, |p| {
-            Ok(-(((p[0] - 40).pow(2) + (p[1] - 160).pow(2)) as f64))
+            Ok(PointOutcome::Valid(
+                -(((p[0] - 40).pow(2) + (p[1] - 160).pow(2)) as f64),
+            ))
         })
         .unwrap();
         assert_eq!(outcome.best, vec![40, 160]);
@@ -319,9 +375,10 @@ mod tests {
     #[test]
     fn never_exceeds_the_budget() {
         let specs = vec![spec("x", 0, 500)];
-        let outcome =
-            coarse_grid_then_coordinate_descent(&specs, 5, |p| Ok(-((p[0] - 77).pow(2)) as f64))
-                .unwrap();
+        let outcome = coarse_grid_then_coordinate_descent(&specs, 5, |p| {
+            Ok(PointOutcome::Valid(-((p[0] - 77).pow(2)) as f64))
+        })
+        .unwrap();
         assert!(outcome.points_evaluated <= 5);
         assert!(outcome.budget_exhausted);
     }
@@ -329,7 +386,10 @@ mod tests {
     #[test]
     fn a_single_point_budget_still_returns_that_point() {
         let specs = vec![spec("x", 0, 500)];
-        let outcome = coarse_grid_then_coordinate_descent(&specs, 1, |p| Ok(p[0] as f64)).unwrap();
+        let outcome = coarse_grid_then_coordinate_descent(&specs, 1, |p| {
+            Ok(PointOutcome::Valid(p[0] as f64))
+        })
+        .unwrap();
         assert_eq!(outcome.points_evaluated, 1);
         assert!(outcome.budget_exhausted);
     }
@@ -345,14 +405,16 @@ mod tests {
 
     #[test]
     fn empty_specs_is_rejected() {
-        let err = coarse_grid_then_coordinate_descent(&[], 10, |_| Ok(0.0)).unwrap_err();
+        let err = coarse_grid_then_coordinate_descent(&[], 10, |_| Ok(PointOutcome::Valid(0.0)))
+            .unwrap_err();
         assert!(err.to_string().contains("at least one"));
     }
 
     #[test]
     fn zero_budget_is_rejected() {
         let specs = vec![spec("x", 0, 500)];
-        let err = coarse_grid_then_coordinate_descent(&specs, 0, |_| Ok(0.0)).unwrap_err();
+        let err = coarse_grid_then_coordinate_descent(&specs, 0, |_| Ok(PointOutcome::Valid(0.0)))
+            .unwrap_err();
         assert!(err.to_string().contains("at least 1"));
     }
 
@@ -363,8 +425,10 @@ mod tests {
         // `validate_budget`'s own tests, but this confirms the widening actually reached
         // this call site too.
         let specs = vec![spec("x", 0, 500)];
-        let err = coarse_grid_then_coordinate_descent(&specs, MAX_SEARCH_POINTS + 1, |_| Ok(0.0))
-            .unwrap_err();
+        let err = coarse_grid_then_coordinate_descent(&specs, MAX_SEARCH_POINTS + 1, |_| {
+            Ok(PointOutcome::Valid(0.0))
+        })
+        .unwrap_err();
         assert!(err.to_string().contains("exceeds the protocol's hard cap"));
     }
 
@@ -393,7 +457,7 @@ mod tests {
         let calls_inner = Rc::clone(&calls);
         let outcome = coarse_grid_then_coordinate_descent(&specs, 8, move |p| {
             *calls_inner.borrow_mut() += 1;
-            Ok(-((p[0] - 5).pow(2)) as f64)
+            Ok(PointOutcome::Valid(-((p[0] - 5).pow(2)) as f64))
         })
         .unwrap();
 
@@ -406,6 +470,96 @@ mod tests {
             7,
             "a cached revisit must not re-invoke eval"
         );
+    }
+
+    #[test]
+    fn an_invalid_point_consumes_budget_and_is_never_chosen_as_best() {
+        // Every point with x >= 5 is invalid (simulating a panicking parameter sub-region);
+        // the true unconstrained peak at x=77 is deep in that region, so the search must
+        // settle on the best *valid* point instead of chasing the invalid peak.
+        let specs = vec![spec("x", 0, 10)];
+        let outcome = coarse_grid_then_coordinate_descent(&specs, 10, |p| {
+            if p[0] >= 5 {
+                Ok(PointOutcome::Invalid(format!("point {} panicked", p[0])))
+            } else {
+                Ok(PointOutcome::Valid(-((p[0] - 77).pow(2)) as f64))
+            }
+        })
+        .unwrap();
+
+        assert!(
+            outcome.best[0] < 5,
+            "best point {:?} should be valid",
+            outcome.best
+        );
+        assert!(
+            outcome.history.iter().all(|(p, _)| p[0] < 5),
+            "history must contain only valid points: {:?}",
+            outcome.history
+        );
+        assert!(
+            outcome.invalid.iter().all(|(p, _)| p[0] >= 5),
+            "invalid must contain only invalid points: {:?}",
+            outcome.invalid
+        );
+        assert!(!outcome.invalid.is_empty());
+        assert_eq!(
+            outcome.points_evaluated,
+            outcome.history.len() + outcome.invalid.len(),
+            "every evaluated point is either valid or invalid, never both or neither"
+        );
+    }
+
+    #[test]
+    fn a_revisited_invalid_point_does_not_re_invoke_eval_or_spend_budget() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // Same peak-at-5 shape and grid trajectory as
+        // `revisiting_an_already_measured_point_does_not_re_invoke_eval_or_spend_budget`
+        // above (grid points [0, 3, 7, 10], descent revisits 7 while stepping from the new
+        // best 5), except x=7 is invalid instead of just a low-scoring valid point — it is
+        // visited twice (once by the grid phase, once as a descent candidate) but must only
+        // ever invoke `eval` once and appear once in `invalid`.
+        let specs = vec![spec("x", 0, 10)];
+        let calls = Rc::new(RefCell::new(0usize));
+        let calls_inner = Rc::clone(&calls);
+        let outcome = coarse_grid_then_coordinate_descent(&specs, 8, move |p| {
+            *calls_inner.borrow_mut() += 1;
+            if p[0] == 7 {
+                Ok(PointOutcome::Invalid("point 7 panicked".to_string()))
+            } else {
+                Ok(PointOutcome::Valid(-((p[0] - 5).pow(2)) as f64))
+            }
+        })
+        .unwrap();
+
+        assert_eq!(outcome.best, vec![5]);
+        assert_eq!(outcome.best_edge, 0.0);
+        assert_eq!(outcome.points_evaluated, 7);
+        assert_eq!(
+            outcome.invalid,
+            vec![(vec![7], "point 7 panicked".to_string())]
+        );
+        assert_eq!(
+            *calls.borrow(),
+            7,
+            "a cached revisit of an invalid point must not re-invoke eval"
+        );
+    }
+
+    #[test]
+    fn all_invalid_grid_points_report_a_distinct_error_from_budget_too_small() {
+        let specs = vec![spec("x", 0, 500)];
+        let err = coarse_grid_then_coordinate_descent(&specs, 10, |p| {
+            Ok(PointOutcome::Invalid(format!("point {} panicked", p[0])))
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("was invalid"),
+            "unexpected error: {err}"
+        );
+        assert!(!err.to_string().contains("too small"));
     }
 
     #[test]

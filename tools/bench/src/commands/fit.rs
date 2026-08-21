@@ -1,3 +1,4 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -145,6 +146,78 @@ fn compile_timed(
     Ok(loaded)
 }
 
+/// Runs `configs` against `loaded`, catching a shape-check panic (docs/DESIGN.md §2.5,
+/// WHI-1213) instead of letting it abort the process. `crates/sim/src/curve_checks.rs`
+/// panics from inside a rayon worker spawned by `run_batch`'s own pool — `crates/sim` is
+/// upstream-owned (§3.2), so this is the only place the behavior can be fixed. The panic
+/// hook is suppressed for the duration of the call: this is an *expected*, handled outcome
+/// for parameter sub-regions three of M1's five families have by construction, not a bug
+/// worth a backtrace on every invalid point across a 300-point search. A caught panic from
+/// any other cause inside `run_batch` is indistinguishable from a shape-check one and is
+/// reported the same way — `curve_checks.rs` is the only known panic site reachable from
+/// submission code today.
+fn run_batch_catching_panics(
+    loaded: &fast_compile::LoadedFast,
+    configs: Vec<SimulationConfig>,
+) -> anyhow::Result<search::PointOutcome> {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = catch_unwind(AssertUnwindSafe(|| loaded.run_batch(configs)));
+    std::panic::set_hook(previous_hook);
+
+    match result {
+        Ok(Ok(batch)) => Ok(search::PointOutcome::Valid(batch.avg_edge())),
+        Ok(Err(e)) => Err(e),
+        Err(payload) => Ok(search::PointOutcome::Invalid(panic_message(&payload))),
+    }
+}
+
+/// Extracts a human-readable message from a caught panic payload — `curve_checks.rs`'s own
+/// `panic!("submission shape violation during {context}: {message}")` is always a `&str` or
+/// `String`, so this recovers it verbatim; anything else falls back to a fixed string
+/// rather than failing to produce an `Invalid` outcome at all.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panicked with a non-string payload".to_string()
+    }
+}
+
+/// A point's edge (or lack of one) for println!/report text — shared by the search
+/// closure's own logging and the train/validation re-evaluation below.
+fn describe_outcome(outcome: &search::PointOutcome) -> String {
+    match outcome {
+        search::PointOutcome::Valid(edge) => format!("avg edge {edge:.6}"),
+        search::PointOutcome::Invalid(reason) => {
+            format!("INVALID (caught shape-check panic) — {reason}")
+        }
+    }
+}
+
+/// The single-peak self-check's verdict (docs/DESIGN.md §2.8, WHI-1213). `Inconclusive` is
+/// distinct from `Pass`: with fewer than two valid points there is nothing to compare, and
+/// reporting that as a vacuous `PASS` (an empty/singleton curve trivially has no detected
+/// decrease-then-increase) would misrepresent an untested curve as a verified one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfCheckVerdict {
+    Inconclusive,
+    Pass,
+    Fail,
+}
+
+fn classify_self_check(points: &[(i128, f64)], tolerance: f64) -> SelfCheckVerdict {
+    if points.len() < 2 {
+        SelfCheckVerdict::Inconclusive
+    } else if search::is_unimodal_1d(points, tolerance) {
+        SelfCheckVerdict::Pass
+    } else {
+        SelfCheckVerdict::Fail
+    }
+}
+
 pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let strategy_dir = Path::new(&args.strategy);
     let slug = strategy_dir
@@ -203,10 +276,9 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         let rewritten = params::rewrite_params(&source, values)?;
         let safe_source = fast_compile::make_safe_source(&rewritten)?;
         let loaded = compile_timed(&safe_source, &mut timings)?;
-        let batch = loaded.run_batch(screening_configs.clone())?;
-        let edge = batch.avg_edge();
-        println!("  {values:?} -> avg edge {edge:.6}");
-        Ok(edge)
+        let point_outcome = run_batch_catching_panics(&loaded, screening_configs.clone())?;
+        println!("  {values:?} -> {}", describe_outcome(&point_outcome));
+        Ok(point_outcome)
     })?;
 
     if outcome.budget_exhausted {
@@ -239,14 +311,30 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let budget_section = ReportSection {
         heading: "Search budget".to_string(),
         body: format!(
-            "- Cap: {budget}\n- Spent: {}\n- Stopped: {}\n",
+            "- Cap: {budget}\n- Spent: {}\n- Invalid: {}\n- Stopped: {}\n",
             outcome.points_evaluated,
+            outcome.invalid.len(),
             if outcome.budget_exhausted {
                 "budget exhausted"
             } else {
                 "converged"
             },
         ),
+    };
+    // Docs/DESIGN.md §2.5/WHI-1213: every point that panicked during simulation, listed by
+    // parameter vector and panic message — built once and reused by both the early-bail
+    // report (single-peak failure or invalid winner) and the success-path report below.
+    let invalid_section = ReportSection {
+        heading: "Invalid points".to_string(),
+        body: if outcome.invalid.is_empty() {
+            "None — every evaluated point produced a valid edge.\n".to_string()
+        } else {
+            outcome
+                .invalid
+                .iter()
+                .map(|(point, reason)| format!("- {point:?} -> INVALID: {reason}\n"))
+                .collect::<String>()
+        },
     };
     let compile_timing_section = ReportSection {
         heading: "Fast-path compile timing".to_string(),
@@ -283,59 +371,87 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
 
         let scale = points.iter().map(|(_, e)| e.abs()).fold(1.0_f64, f64::max);
         let tolerance = scale * 1e-4;
-        if !search::is_unimodal_1d(&points, tolerance) {
-            // Write what was measured before bailing — a multi-modal result "blocks this
-            // issue rather than being reported as a finding" (WHI-1194), but blocking must
-            // not mean losing the evidence that triggered the block. Train/validation are
-            // skipped: they'd waste compute confirming a point the self-check already says
-            // not to trust.
-            let meta = ReportMeta {
-                stage: stage.clone(),
-                segment: "screening".to_string(),
-                n_sims: screening.seeds().len(),
-                n_steps: base.n_steps,
-                execution_path: "native (fast path)".to_string(),
-            };
-            let failure_section = ReportSection {
-                heading: "Single-peaked self-check".to_string(),
-                body: format!(
-                    "FAILED (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the \
-                     `{}`<->edge response is not single-peaked. This blocks the issue: \
-                     investigate the bench mechanism before trusting any fitted point from \
-                     this search. Train/validation re-evaluation was skipped.\n",
-                    specs[0].name
-                ),
-            };
-            let sections = vec![
-                frozen_space_section,
-                budget_section,
-                compile_timing_section,
-                failure_section,
-                curve_section,
-            ];
-            let evidence_note = if args.no_report {
-                "Curve and search budget were not written (--no-report).".to_string()
-            } else {
-                let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
-                format!("Curve and search budget written to {}.", path.display())
-            };
-            anyhow::bail!(
-                "the `{}`<->edge response is not single-peaked (docs/DESIGN.md §2.8's \
-                 self-check, tolerance {tolerance:.6}) — this blocks the issue; investigate \
-                 the bench mechanism before trusting any fitted point from this search. \
-                 {evidence_note}",
-                specs[0].name,
-            );
+        match classify_self_check(&points, tolerance) {
+            SelfCheckVerdict::Fail => {
+                // Write what was measured before bailing — a multi-modal result "blocks this
+                // issue rather than being reported as a finding" (WHI-1194), but blocking must
+                // not mean losing the evidence that triggered the block. Train/validation are
+                // skipped: they'd waste compute confirming a point the self-check already says
+                // not to trust.
+                let meta = ReportMeta {
+                    stage: stage.clone(),
+                    segment: "screening".to_string(),
+                    n_sims: screening.seeds().len(),
+                    n_steps: base.n_steps,
+                    execution_path: "native (fast path)".to_string(),
+                };
+                let failure_section = ReportSection {
+                    heading: "Single-peaked self-check".to_string(),
+                    body: format!(
+                        "FAILED (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the \
+                         `{}`<->edge response is not single-peaked. This blocks the issue: \
+                         investigate the bench mechanism before trusting any fitted point from \
+                         this search. Train/validation re-evaluation was skipped.\n",
+                        specs[0].name
+                    ),
+                };
+                let sections = vec![
+                    frozen_space_section,
+                    budget_section,
+                    invalid_section,
+                    compile_timing_section,
+                    failure_section,
+                    curve_section,
+                ];
+                let evidence_note = if args.no_report {
+                    "Curve and search budget were not written (--no-report).".to_string()
+                } else {
+                    let path =
+                        report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+                    format!("Curve and search budget written to {}.", path.display())
+                };
+                anyhow::bail!(
+                    "the `{}`<->edge response is not single-peaked (docs/DESIGN.md §2.8's \
+                     self-check, tolerance {tolerance:.6}) — this blocks the issue; investigate \
+                     the bench mechanism before trusting any fitted point from this search. \
+                     {evidence_note}",
+                    specs[0].name,
+                );
+            }
+            SelfCheckVerdict::Inconclusive => {
+                println!(
+                    "Single-peaked self-check: INCONCLUSIVE — only {} of {} evaluated point(s) \
+                     were valid ({} invalid); not enough data to judge single-peakedness. The \
+                     winner below is unvalidated by this check.",
+                    points.len(),
+                    outcome.points_evaluated,
+                    outcome.invalid.len(),
+                );
+                self_check_section = Some(ReportSection {
+                    heading: "Single-peaked self-check".to_string(),
+                    body: format!(
+                        "INCONCLUSIVE (docs/DESIGN.md §2.8/WHI-1213) — only {} of {} evaluated \
+                         point(s) produced a valid edge ({} invalid), so there is no curve to \
+                         check for single-peakedness. The winner below is unvalidated by this \
+                         check.\n",
+                        points.len(),
+                        outcome.points_evaluated,
+                        outcome.invalid.len(),
+                    ),
+                });
+            }
+            SelfCheckVerdict::Pass => {
+                println!("Single-peaked self-check: PASS (tolerance {tolerance:.6}).");
+                self_check_section = Some(ReportSection {
+                    heading: "Single-peaked self-check".to_string(),
+                    body: format!(
+                        "PASS (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the \
+                         `{}`<->edge response over the searched range is single-peaked.\n",
+                        specs[0].name
+                    ),
+                });
+            }
         }
-        println!("Single-peaked self-check: PASS (tolerance {tolerance:.6}).");
-        self_check_section = Some(ReportSection {
-            heading: "Single-peaked self-check".to_string(),
-            body: format!(
-                "PASS (docs/DESIGN.md §2.8) at tolerance {tolerance:.6} — the `{}`<->edge \
-                 response over the searched range is single-peaked.\n",
-                specs[0].name
-            ),
-        });
     }
 
     // Final point evaluation (docs/DESIGN.md §2.5): full train, then validation.
@@ -347,9 +463,9 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         train.seeds().len()
     );
     let train_configs = train.sim_configs(&base);
-    let train_batch = {
+    let train_outcome = {
         let loaded = compile_timed(&winner_safe, &mut timings)?;
-        loaded.run_batch(train_configs)?
+        run_batch_catching_panics(&loaded, train_configs)?
     };
 
     println!(
@@ -357,15 +473,15 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         validation.seeds().len()
     );
     let validation_configs = validation.sim_configs(&base);
-    let validation_batch = {
+    let validation_outcome = {
         let loaded = compile_timed(&winner_safe, &mut timings)?;
-        loaded.run_batch(validation_configs)?
+        run_batch_catching_panics(&loaded, validation_configs)?
     };
 
     println!(
-        "Train avg edge: {:.4}  Validation avg edge: {:.4}",
-        train_batch.avg_edge(),
-        validation_batch.avg_edge()
+        "Train: {}  Validation: {}",
+        describe_outcome(&train_outcome),
+        describe_outcome(&validation_outcome),
     );
 
     let param_summary = specs
@@ -385,10 +501,11 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let winning_point_section = ReportSection {
         heading: "Winning point".to_string(),
         body: format!(
-            "- {param_summary}\n- Screening avg edge: {:.6}\n- Train avg edge (1000 sims): {:.6}\n- Validation avg edge (1000 sims): {:.6}\n",
+            "- {param_summary}\n- Screening avg edge: {:.6}\n- Train (1000 sims): {}\n- \
+             Validation (1000 sims): {}\n",
             outcome.best_edge,
-            train_batch.avg_edge(),
-            validation_batch.avg_edge(),
+            describe_outcome(&train_outcome),
+            describe_outcome(&validation_outcome),
         ),
     };
     // Recompute the compile-timing section now that it also covers the two final-evaluation
@@ -402,7 +519,12 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
             timings.summary()
         ),
     };
-    let mut sections = vec![frozen_space_section, budget_section, compile_timing_section];
+    let mut sections = vec![
+        frozen_space_section,
+        budget_section,
+        invalid_section,
+        compile_timing_section,
+    ];
     sections.extend(self_check_section);
     sections.push(winning_point_section);
     sections.push(curve_section);
@@ -413,12 +535,108 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         println!("Report written to {}", path.display());
     }
 
+    // docs/DESIGN.md §2.5/WHI-1213: a point valid on `screening`'s seeds is not guaranteed
+    // valid on a different, larger seed set (Orbic's own quantization jitter is exactly
+    // this — probabilistic across seeds, not just across parameter values). The evidence
+    // above is still written either way; this blocks the ranking the same way a failed
+    // single-peak check does, rather than reporting a trusted number for a point that just
+    // panicked.
+    if matches!(train_outcome, search::PointOutcome::Invalid(_))
+        || matches!(validation_outcome, search::PointOutcome::Invalid(_))
+    {
+        anyhow::bail!(
+            "the search winner {:?} panicked during full train/validation re-evaluation — \
+             valid on `screening`'s seeds does not guarantee valid on a different, larger \
+             seed set (docs/DESIGN.md §2.5/WHI-1213); do not trust this point without \
+             investigating why. This is also exactly the kind of gap a fuzz-coverage gate \
+             (WHI-1212) exists to catch earlier, before a search ever runs.",
+            outcome.best,
+        );
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prop_amm_shared::config::HyperparameterVariance;
+
+    /// A fixture strategy for WHI-1213: `MODE == 0` is an ordinary safe CPMM payout,
+    /// `MODE == 1` deliberately panics `crates/sim`'s runtime shape check on essentially the
+    /// first routed order (see the fixture file's own doc comment for why).
+    const PANICKING_FIXTURE: &str =
+        include_str!("../../tests/fixtures/whi_1213_panicking_point.rs");
+
+    fn small_configs() -> Vec<SimulationConfig> {
+        let base = SimulationConfig {
+            n_steps: 200,
+            ..SimulationConfig::default()
+        };
+        vec![HyperparameterVariance::default().apply(&base, 1)]
+    }
+
+    #[test]
+    fn a_deliberately_panicking_point_becomes_invalid_and_a_safe_point_stays_valid() {
+        // Both cases in one test, run strictly sequentially: `fast_compile`'s shared
+        // `.build/fast/` directory and its global loaded-function-pointer statics are a
+        // deliberate single slot ("the search never evaluates more than one candidate at a
+        // time" — `fast_compile.rs`'s own module doc) — compiling/loading the two MODEs
+        // concurrently in separate `#[test]` fns would race on that shared directory and
+        // those globals, exactly as `bench fit`'s own single-threaded search loop assumes
+        // it never needs to.
+        let panicking_source = params::rewrite_params(PANICKING_FIXTURE, &[1]).unwrap();
+        let panicking_safe = fast_compile::make_safe_source(&panicking_source).unwrap();
+        let panicking_loaded = fast_compile::compile_and_load_fast(&panicking_safe).unwrap();
+        let panicking_outcome =
+            run_batch_catching_panics(&panicking_loaded, small_configs()).unwrap();
+        assert!(
+            matches!(panicking_outcome, search::PointOutcome::Invalid(_)),
+            "expected an Invalid outcome for MODE=1, got {panicking_outcome:?}"
+        );
+        drop(panicking_loaded);
+
+        let safe_source = params::rewrite_params(PANICKING_FIXTURE, &[0]).unwrap();
+        let safe_safe = fast_compile::make_safe_source(&safe_source).unwrap();
+        let safe_loaded = fast_compile::compile_and_load_fast(&safe_safe).unwrap();
+        let safe_outcome = run_batch_catching_panics(&safe_loaded, small_configs()).unwrap();
+        assert!(
+            matches!(safe_outcome, search::PointOutcome::Valid(_)),
+            "expected a Valid outcome for MODE=0, got {safe_outcome:?}"
+        );
+    }
+
+    #[test]
+    fn classify_self_check_is_inconclusive_under_two_points() {
+        assert_eq!(
+            classify_self_check(&[], 1e-9),
+            SelfCheckVerdict::Inconclusive
+        );
+        assert_eq!(
+            classify_self_check(&[(0, 1.0)], 1e-9),
+            SelfCheckVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn classify_self_check_delegates_to_is_unimodal_1d_from_two_points_on() {
+        let unimodal: Vec<(i128, f64)> = (0i128..=10)
+            .map(|x| (x, -((x - 5).pow(2)) as f64))
+            .collect();
+        assert_eq!(classify_self_check(&unimodal, 1e-9), SelfCheckVerdict::Pass);
+
+        let multi_modal: Vec<(i128, f64)> = (0i128..=10)
+            .map(|x| {
+                let a = -((x - 2).pow(2)) as f64;
+                let b = -((x - 8).pow(2)) as f64;
+                (x, a.max(b))
+            })
+            .collect();
+        assert_eq!(
+            classify_self_check(&multi_modal, 1e-9),
+            SelfCheckVerdict::Fail
+        );
+    }
 
     #[test]
     fn cold_start_excludes_the_first_sample_from_warm_stats() {

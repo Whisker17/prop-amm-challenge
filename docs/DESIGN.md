@@ -204,6 +204,28 @@ number is no longer an honest estimate.
   family loses (§8).
 - **Final point evaluation:** the search winner is re-evaluated on the full train segment
   (1,000 sims) and on validation (1,000 sims) before entering the ranking.
+- **Search-time panics (WHI-1213).** `crates/sim/src/curve_checks.rs`'s shape check panics
+  mid-simulation on a monotonicity/concavity violation, from inside a rayon worker spawned
+  by `runner::run_batch_native` — `crates/sim` is upstream-owned (§3.2), so the fix lives
+  entirely in `tools/bench`, the caller. `bench fit` catches it
+  (`std::panic::catch_unwind` around the whole batch-run call, with the panic hook
+  suppressed for that call so an expected, handled outcome doesn't spam a backtrace) rather
+  than letting it abort the process. A caught point becomes a distinct `Invalid` outcome —
+  not scored `-inf` (which would contaminate the single-peak scale/tolerance computation,
+  §2.8, since `abs(-inf)` poisons the `f64::max` fold) and not silently skipped (which could
+  let coordinate descent wander back into the same panicking region without penalty): it
+  still consumes one of the 300 evaluation points, is excluded from the peak search, and is
+  listed by parameter vector and panic message in the `results/` snapshot. The search winner
+  is re-evaluated the same way on the full train/validation segments (this section's "final
+  point evaluation") — a point valid on `screening`'s seeds is not guaranteed valid on a
+  different, larger seed set (the Orbic family's quantization jitter, WHI-1206, is exactly
+  this: probabilistic across seeds, not just across parameter values) — and an invalid
+  re-evaluation blocks the run the same way a failed single-peak check does (§2.8): the
+  evidence gathered so far is still written, but the point is not entered into the ranking
+  un-flagged. If a future fuzz-coverage gate (WHI-1212, not yet built) passes for a family
+  but a search point still panics, that gap is itself the signal the gate's corner set is
+  incomplete — the failing parameter vector recorded here is exactly the input needed to
+  extend it.
 
 ### 2.6 Compile paths and the parity gate
 
@@ -302,6 +324,13 @@ the decomposition is wrong without failing. See §8.
 should be single-peaked. If bench reports a multi-modal response or an absurd optimum, that
 is a bench defect, not a discovery. This check must pass before any other strategy's numbers
 are trusted.
+
+The check runs over the sub-curve of points that produced a valid edge only (§2.5,
+WHI-1213) — an `Invalid` point is a hole in the curve, not a data point with an extreme
+edge, so it is simply absent rather than injected as a sentinel value. With fewer than two
+valid points the check has nothing to compare and is reported `INCONCLUSIVE`, not `PASS` —
+a vacuous "no decrease seen" over 0 or 1 points must not be read as confirmation of
+single-peakedness.
 
 ### 2.9 Fidelity contract
 
@@ -625,7 +654,10 @@ output contradicts an entry here must flag it explicitly rather than silently ov
    misstate the mechanism; we would rank a strategy nobody proposed. *Mitigation:* the
    fidelity self-assessment in `NOTES.md`.
 7. **Concavity is a runtime panic, not a score.** Structurally incompatible designs can
-   absorb unbounded effort. *Mitigation:* the `wontfix` terminal state (§2.9).
+   absorb unbounded effort. *Mitigation:* the `wontfix` terminal state (§2.9) for a family
+   that panics **everywhere** in its frozen range. A family that panics only in part of its
+   range (three of M1's five families do — WHI-1206/1207/1210) is not this case: `bench
+   fit` handles it per-point via the `Invalid` outcome instead (§2.5, WHI-1213).
 
 **Open questions**
 
