@@ -128,9 +128,9 @@ This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file
 `docs/agents/issue-template.md`, `docs/agents/triage-labels.md`, and
 `.claude/skills/implement/SKILL.md`) no longer asserts the tracker is in-repo markdown, as
 of this PR (WHI-1196). `.scratch/README.md` and `docs/DEFERRED_ISSUES.md` were known,
-out-of-scope exceptions at the time (above), not overlooked ones — both were since closed
-by WHI-1199. `.claude/skills/setup-matt-pocock-skills/`
-was, and remains, a different case: its `issue-tracker-{local,github,gitlab}.md` files are
+out-of-scope exceptions at the time (above), not overlooked ones — both have since been
+closed by WHI-1199. `.claude/skills/setup-matt-pocock-skills/` is, and remains, a
+different case: its `issue-tracker-{local,github,gitlab}.md` files are
 option templates copied into this very file when `/setup-matt-pocock-skills` runs, not live
 guidance any skill reads — each says so explicitly rather than reading as a live claim
 about this repo. Its `SKILL.md` (e.g. "Local markdown — issues live as files under
