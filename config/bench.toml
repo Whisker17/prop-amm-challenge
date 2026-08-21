@@ -52,3 +52,26 @@ norm_fee_bps_levels = [30, 55, 80]
 norm_liquidity_mult_levels = [0.4, 1.0, 2.0]
 gbm_sigma_levels = [0.0001, 0.001, 0.007]
 seeds_per_cell = 40
+
+# `bench fuzz`'s own sample counts (WHI-1212, docs/DESIGN.md §2.9): how hard the pre-search
+# shape gate hammers a candidate before a frozen search may spend budget on it.
+# `dense_sweep_points`: points per dense sweep (linear/geometric/clustered grid shapes) run
+# against each state, on each side. `seeds_per_regime`: GBM price-path seeds sampled per
+# grid regime corner when locating that regime's drift extremes (very small / very large
+# spot). `golden_price_multipliers`: relative-to-spot fair-price targets driving the
+# golden-section-shaped sample sets (mirrors what `crates/sim/src/arbitrageur.rs`'s search
+# actually produces, at several assumed mispricings). `moderate_max_input`: the upper bound
+# of the "moderate range" dense sweep — generously exceeds every kink threshold named in the
+# M1 strategy reviews (e.g. WHI-1207's ~1670x a per-strategy delta) while still giving that
+# sweep fine resolution under a linear grid; the second dense sweep always runs up to
+# `MAX_INPUT_AMOUNT` regardless of this value. `golden_max_iters`: golden-section iterations
+# per fair-price multiplier — how many points each golden-section-shaped sample set spends
+# converging (the golden-section algorithm's own shape constants — the ratio conjugate, the
+# dense-sweep grids' clustering powers — stay code-level, same bucket as upstream's own
+# hardcoded search constants; only *counts* live here).
+[fuzz]
+dense_sweep_points = 240
+seeds_per_regime = 3
+golden_price_multipliers = [0.1, 0.5, 0.9, 1.0, 1.1, 2.0, 10.0]
+moderate_max_input = 50000.0
+golden_max_iters = 20

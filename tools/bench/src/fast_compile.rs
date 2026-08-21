@@ -21,6 +21,8 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use prop_amm_executor::{AfterSwapFn, SwapFn};
 use prop_amm_shared::config::SimulationConfig;
+use prop_amm_shared::instruction::encode_swap_instruction;
+use prop_amm_shared::nano::{f64_to_nano, nano_to_f64};
 use prop_amm_shared::normalizer;
 use prop_amm_shared::result::BatchResult;
 use prop_amm_sim::runner;
@@ -141,6 +143,34 @@ impl LoadedFast {
             configs,
             None,
         )
+    }
+
+    /// Quotes `side`/`input_amount` against a caller-chosen, frozen `(reserve_x, reserve_y,
+    /// storage)` triple, calling `self.swap_fn` directly rather than through `BpfAmm` — the
+    /// same "encode an instruction, call the loaded fn" shape
+    /// `crates/cli/src/commands/validate.rs`'s own randomized reserve/storage probe uses.
+    /// `bench fuzz` (WHI-1212) needs this: `BpfAmm` has no public way to set arbitrary
+    /// storage bytes without first executing a real trade, but fuzzing needs to probe many
+    /// synthetic states that were never actually reached by an execution history.
+    pub fn quote(
+        &self,
+        side: u8,
+        input_amount: f64,
+        reserve_x: f64,
+        reserve_y: f64,
+        storage: &[u8],
+    ) -> f64 {
+        if input_amount <= 0.0 || !input_amount.is_finite() {
+            return 0.0;
+        }
+        let data = encode_swap_instruction(
+            side,
+            f64_to_nano(input_amount),
+            f64_to_nano(reserve_x),
+            f64_to_nano(reserve_y),
+            storage,
+        );
+        nano_to_f64((self.swap_fn)(&data))
     }
 }
 
