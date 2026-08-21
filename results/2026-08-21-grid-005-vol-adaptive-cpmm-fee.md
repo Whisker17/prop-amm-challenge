@@ -1,6 +1,6 @@
-# grid — 2026-08-21
+# grid-005-vol-adaptive-cpmm-fee — 2026-08-21
 
-- Commit: `439b61f`
+- Commit: `0379a6f`
 - Segment: `grid (not a config/bench.toml segment)`
 - Simulations: 1080
 - Steps: 10000

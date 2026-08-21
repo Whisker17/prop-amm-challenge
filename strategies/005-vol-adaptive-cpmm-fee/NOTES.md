@@ -252,7 +252,7 @@ small parity check on the fast path's own determinism.
 --reference strategies/001-cpmm-fee/lib.rs` — reference is `001-cpmm-fee` (the 0-line every
 M1 candidate is measured against, docs/DESIGN.md §2.8), not `000-normalizer`, since this is a
 ranked candidate comparison, not a router-symmetry check. Full table committed at
-`results/2026-08-21-grid.md`.
+`results/2026-08-21-grid-005-vol-adaptive-cpmm-fee.md`.
 
 | cell | fee (bps) | liq mult | sigma | candidate | reference | mean diff |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -286,7 +286,7 @@ ranked candidate comparison, not a router-symmetry check. Full table committed a
 
 17 of 27 cells favor `005`, several by a wide margin (up to +285 at cell 2); 10 favor `001`
 (bold, negative). All 95% CIs exclude 0 except the two smallest-magnitude cells (12, 13) —
-every other listed sign is a real effect, not noise (`results/2026-08-21-grid.md` for the
+every other listed sign is a real effect, not noise (`results/2026-08-21-grid-005-vol-adaptive-cpmm-fee.md` for the
 full CIs).
 
 ### Explaining the negative cells
