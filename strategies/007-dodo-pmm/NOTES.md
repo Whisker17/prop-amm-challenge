@@ -58,7 +58,17 @@ source's own arithmetic is itemised here per the fidelity contract:
   needs this; at 1e9/u128 it does. This is new code with no Solidity analogue, added to
   satisfy `prop-amm validate`'s 1-nano concavity tolerance (see the callout below) — not a
   mechanism change, since it only tightens the same floor-then-ceil computation already
-  described above.
+  described above. **A deliberate substitution for the issue's own named fallback, not an
+  application of it** — the issue's own text says "if fuzz still shows >4-nano jitter, fall
+  back to integer bisection against the exact forward integral." This port hit exactly that
+  jitter (see the callout) but chose adaptive-precision `isqrt` over bisection: bisection
+  would replace one `isqrt` call with an iterative search against the forward integral —
+  materially more code, another tunable (iteration count / convergence tolerance), and a
+  second CU-consuming loop — for the same result. `scaled_isqrt` fixes the *actual* defect
+  (floor error too coarse relative to the signal) directly, with no new tunables and a
+  smaller CU footprint, and is itself a "stable form" in the same sense finding #7 already
+  asks for (a numerically superior way to compute the same value, not a different value).
+  Recorded here as a conscious choice, not an oversight.
 - **Fee collapsed to a single `FEE_BPS` on the output.** Source-faithful direction
   (`DVMTrader.querySellBase/querySellQuote` fee the *output*, verified in source), but the
   source's own `lpFeeRate`/`mtFeeRate` split is collapsed to one rate since no separate LP/
@@ -69,12 +79,21 @@ source's own arithmetic is itemised here per the fidelity contract:
   post-trade marginal price via `R_f` from the reconstructed pre-trade reserve, not the raw
   post-trade reserve ratio — follows directly from `getMidPrice`'s own formula (verified
   algebraically against the k=1 case reducing exactly to a CPMM's post-trade reserve ratio;
-  see the derivation note in `lib.rs`'s own header comment), but has no line-for-line source
-  counterpart since the source never re-derives its own mid without an oracle read.
+  see the derivation note in `lib.rs`'s own header comment). At `k=1` (the committed point)
+  `after_swap` now recomputes that same value **directly from the ratio** instead of
+  recursively from the stored anchor — see § A runaway anchor, found and fixed below for why.
 - **Overflow clamps** (`RESERVE_CLAMP = 2^59`, `INPUT_CAP_MULT = 16`): engineering guards
   with no Solidity analogue (the EVM's 256-bit words never need them). Both are
   monotone-safe terminal plateaus, never binding in real simulations (§ CU and arithmetic
-  risk below) — see cross-cutting finding #7 ("clamp first, never saturate").
+  risk below). Cross-cutting finding #7's "clamp first, never saturate" is about *what
+  bounds the state* going into the discriminant: `RESERVE_CLAMP`/`INPUT_CAP_MULT` are the
+  actual clamps, applied to reserves and the fair-value input *before* any squaring. The
+  `saturating_mul`/`saturating_add` calls that then appear inside the discriminant's own
+  computation (e.g. `b_abs.saturating_mul(b_abs).saturating_add(disc_term)`) are a
+  *defensive backstop*, not a substitute for those clamps — verified by direct enumeration
+  (§ Clamping before squaring below) that every such call stays strictly under `u128::MAX`
+  given the two state clamps, so none of them is ever the thing standing between a correct
+  value and silently wrapped garbage.
 
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting finding #3)
 
@@ -141,11 +160,13 @@ this family's real operating range — ~1e22 at `validate`'s small fixed probe (
 reserves of a few thousand tokens) vs. ~1e37 at the `RESERVE_CLAMP` extreme — so a single
 fixed scale-up factor is either wasted (too small at the small end) or overflows (too large
 at the clamped end). `scaled_isqrt` instead spends whatever leading-zero headroom `u128`
-has left on the discriminant *itself*: `shift = min(60, discriminant.leading_zeros()/2)`,
-`sqrt_disc_scaled = isqrt(discriminant << 2*shift)`. At the small, realistic end this
-buys roughly 1e8x finer effective precision (`shift` around 25-30); at the clamped extreme,
-`shift` collapses toward 0 (no spare headroom left) — exactly where nano-level precision is
-moot anyway, since the reserve itself is ~5.8e8 tokens.
+has left on the discriminant *itself*: `shift = discriminant.leading_zeros()/2`,
+`sqrt_disc_scaled = isqrt(discriminant << 2*shift)` — since `2*shift <= leading_zeros()` by
+construction (integer division), this never loses a bit, so no extra cap is needed for
+safety. At the small, realistic end this buys roughly 1e8x finer effective precision
+(`shift` around 25-30); at the clamped extreme, `shift` collapses toward 0 (no spare
+headroom left) — exactly where nano-level precision is moot anyway, since the reserve
+itself is ~5.8e8 tokens.
 
 ### Why this was necessary — a real concavity violation, found and fixed before freezing
 
@@ -157,13 +178,10 @@ the same quadratic: the *true* marginal-output differences at that probe were
 `step1 = 9994.996`, `step2 = 9994.995` — genuinely concave, differing by under **0.0005
 nano**, a signal an order of magnitude below a single `isqrt` floor unit once that unit is
 scaled through the rest of the formula. This is exactly the "isqrt floor error times a
-large coefficient" trap docs/DESIGN.md §2.9 cross-cutting finding #7 warns about, and
-exactly the failure mode this issue's own § CU and arithmetic risk section flagged as
-possible ("if fuzz still shows >4-nano jitter, fall back to integer bisection"). Rather than
-falling back to bisection (a materially larger rewrite), `scaled_isqrt` resolves it directly
-by shrinking the floor error itself below the signal it was drowning out — confirmed by
-re-running `prop-amm validate` at all four Step 0.5 probe points (below) after the fix,
-all passing cleanly, and by the exact-rational model matching the fixed integer
+large coefficient" trap docs/DESIGN.md §2.9 cross-cutting finding #7 warns about. Fixed
+directly by shrinking the floor error itself below the signal it was drowning out —
+confirmed by re-running `prop-amm validate` at all four Step 0.5 probe points (below) after
+the fix, all passing cleanly, and by the exact-rational model matching the fixed integer
 implementation's sign at every probed size.
 
 **CU, measured through the BPF executor** (not assumed — this repo's public API doesn't
@@ -187,7 +205,78 @@ modifying the upstream-owned crate; the example was deleted before this PR, not 
 issue's own ~80,000 CU stop-rule threshold (Step 0.5 #2 below), and well below the
 `leading_zeros`-seeded `isqrt`'s own predicted 2,000-25,000 CU estimate (measured at
 `K_BPS=2500`, the general-branch, non-`k=1` case; every `K_BPS` in the frozen range shares
-the same code path and division count, so this is representative, not a single lucky point).
+the same code path and division count, so this is representative, not a single lucky point;
+the committed `k=1` point's `after_swap` is *cheaper* still, per the table above, since it
+skips `rf_denominator_scaled` entirely — see the next section).
+
+## A runaway anchor, found and fixed
+
+Round-1 code review (Standards + Spec axis, `/code-review`) flagged that this port's own
+initial containment/train/validation numbers didn't hang together: screening and the
+`observation` segment agreed (~+2), but the *fuller* `train` and `validation` segments (1000
+seeds each, independently sampled) both showed the candidate **losing** to `001-cpmm-fee` by
+~10 — a sign flip the first draft of this file explained away as "fee-on-output is only
+second-order for small trades, but not for the arbitrageur's largest brackets" without
+verifying it. That explanation does not survive scrutiny (the reviewer's own
+counter-derivation: at a fixed input size, fee-on-output *always* gives the trader less than
+fee-on-input at the same bps, which if anything favors the pool) — a real discrepancy this
+size needed diagnosis, not a plausible-sounding paragraph.
+
+**Diagnosis.** `bench compare --segment train` with `docs/DESIGN.md §2.3`'s regime-slice
+breakdown isolated it immediately: 26 of 27 regime bins were small and positive; one bin
+(`fee=Low liq=Low sigma=High`, 46 seeds) showed a **-257 mean diff with a 95% CI straddling
+zero** — a single bin dragging the pooled -9.8 average, not a broad effect. A per-seed
+breakdown of that bin (via a throwaway example reusing `tools/bench`'s own `compile`/
+`regime` modules, not committed) found **one seed** (`1,000,231` of 1000) responsible:
+candidate edge **-12,402.58** against `001`'s own **-381.55** at the same seed — a single
+seed single-handedly accounting for more than the entire pooled deficit (the other 999 seeds
+net *positive*). Re-running just that seed with temporary instrumentation in `after_swap`
+(comparing the stored anchor against the raw `ry_post/rx_post` ratio after every trade)
+showed the anchor drifting to **less than 1%** of the true ratio over the course of the
+10,000-step simulation, with `rx` (base reserve) draining from ~100 tokens to ~0.4 tokens
+while a trader bought base at roughly 1/300th of its reserve-implied value.
+
+**Root cause.** `after_swap`'s anchor update was **recursive**: `new_price = i_old *
+(something derived from the current trade)`. This is correct in exact arithmetic (verified
+algebraically — at `k=1` it reduces exactly to `ry_post/rx_post`), but it has no mechanism to
+*self-correct*: if `i_old` was ever slightly wrong, the update just carries that error
+forward, scaled by a factor derived from a state that was itself computed under the wrong
+price. The issue's own theoretical framing ("re-anchoring after an arb trade centres the
+curve on fair") implicitly assumes the trade that triggers each re-anchor is representative
+of fair value — but this port re-anchors on **every** trade, retail included, and a run of
+one-sided retail flow (routed to us specifically *because* our price was already slightly
+favorable to it) nudges the anchor further in the same direction each time. Under most
+regimes this settles fast; under this port's own rare unlucky combination (`sigma=High`:
+frequent large true-price moves; `liq=Low`: a thin normalizer routes more flow to us,
+i.e. more chances for the drift to compound) it snowballed into a two-order-of-magnitude
+mispricing over 10,000 steps — a genuine bug, not a "mechanism effect."
+
+**Fix.** At `k=1` — the committed point — `R_f`'s formula is *exactly* the raw post-trade
+reserve ratio in real arithmetic (the same identity that makes `k=1` the CPMM containment
+point in `compute_swap`), so `after_swap` now special-cases `K_BPS >= K_DEN` to recompute
+`ry_post*P_SCALE/rx_post` **directly**, bypassing `post_trade_mid_multiply`/`_divide`
+entirely. This is not a different value — it's the same value computed the numerically
+stable way: every update now depends only on the *current* reserves, never on the previous
+anchor, so there is nothing for rounding error to compound onto. (The general `k<1` path,
+`post_trade_mid_divide`/`_multiply`, keeps the recursive form unchanged — it is not part of
+the committed point, since the concentration axis is rejected below on its own economic
+merits regardless of this bug; a `007b` variant that revisits concentration would need to
+address this same recursive-anchor risk for `k<1` too, most likely with an analogous
+periodic or continuous re-grounding to the raw ratio.)
+
+**Verification.** Re-running the full round-1 diagnostic chain after the fix:
+
+| Check | Before fix | After fix |
+| --- | --- | --- |
+| Seed 1,000,231 alone | -12,402.58 | -378.69 (vs. `001`'s -381.55 — now in line) |
+| `train` paired mean diff (`bench compare`, n=1000) | -9.80, 95% CI `[-33.37, 13.77]` (includes 0) | **+1.40, 95% CI `[1.25, 1.56]`** (excludes 0) |
+| `train` regime slices | 1 of 27 bins wildly negative, wide CI | **all 27 bins positive or CI-straddling-0-near-zero** |
+| screening / train / validation / observation | +2.02 / -9.80 / -10.06 / +2.08 (sign-inconsistent) | **+1.23 / +1.41 / +1.46 / +1.31** (consistent) |
+
+The fixed numbers replace every occurrence below. This also means the containment
+demonstration's originally-measured "sign flip" (screening positive, train/validation
+negative) was **entirely an artifact of this bug**, not a genuine segment-to-segment
+mechanism difference as the first draft speculated — a correction, not just an update.
 
 ## Parameter space — 2 dimensions (docs/DESIGN.md §2.4/§2.5)
 
@@ -200,9 +289,7 @@ the same code path and division count, so this is representative, not a single l
 collapsed to one rate); the anchor rule (full re-anchor to the post-trade mid on every
 executed trade — a partial/EWMA anchor is a `007b` variant, its weight an invented
 parameter this port declines to add); `RESERVE_CLAMP = 2^59` and `INPUT_CAP_MULT = 16`
-(engineering guards, never binding in real regimes); the `scaled_isqrt` shift cap (`60`,
-chosen only to keep `2*shift` safely under u128's 128-bit width, never a binding precision
-limit at any tested state).
+(engineering guards, never binding in real regimes).
 
 **No special-casing to `001`'s exact ceil-div arithmetic.** The issue's own "if
 bit-exactness is preferred" callout is optional; this port keeps the general `k=1` closed
@@ -215,12 +302,16 @@ Recorded here, before the freeze, per the issue's own instruction.
 
 All four steps used the scratch degenerate-range method `005` established: a throwaway
 single-point range (frozen range collapsed to `MIN==MAX`) with `bench fit --max-points 1
---no-report`, never committed, never part of the real search budget.
+--no-report`, never committed, never part of the real search budget. Numbers below are
+post-fix (§ A runaway anchor, found and fixed) throughout.
 
 ### 1. Shape gate
 
 `prop-amm validate` and `bench fuzz --strategy strategies/007-dodo-pmm` at
-`K_BPS in {25, 400, 2500, 10_000}`, `FEE_BPS = 66` fixed:
+`K_BPS in {25, 400, 2500, 10_000}`, `FEE_BPS = 66` fixed. Per docs/DESIGN.md §2.9, a PASS
+writes no `results/*.md` report by design ("the gate is meant to run repeatedly, before
+every search" — only a violation commits one); the table below is this port's own record of
+having run it, not a substitute for a report a PASS was never meant to produce:
 
 | `K_BPS` | `prop-amm validate` | `bench fuzz` (324 states x 2 sides) |
 | --- | --- | --- |
@@ -244,36 +335,27 @@ rationalised quadratic and the two clamps), not deferred.
 `(K_BPS=10_000, FEE_BPS=66)` on the 200 screening seeds (`bench fit --max-points 1
 --no-report` against a degenerate `10000..=10000`/`66..=66` range):
 
-**screening avg edge: 386.842545**, against `001-cpmm-fee`'s committed **384.82** — a
-**+2.02** gap. *Stop rule* ("diagnose if `|gap| > 5`") not triggered; the issue predicted
+**screening avg edge: 386.052462**, against `001-cpmm-fee`'s committed **384.82** — a
+**+1.23** gap. *Stop rule* ("diagnose if `|gap| > 5`") not triggered; the issue predicted
 `|gap| <= ~2` (sign "mildly negative") from two unconditional terms (fee-on-output vs.
-`001`'s fee-on-input; anchor-drift under nonzero fee) — the **magnitude** matches almost
-exactly, the **sign** does not (this port measures a small *positive* delta, not negative).
-Given the two terms the issue itself names are both plausibly sub-nano-precision-sensitive
-at this scale (rounding-direction choices in the ceil/floor split, and the exact anchor
-re-derivation this port uses — new code with no direct Solidity counterpart, per §
-Fidelity self-assessment), a sign flip within the same tiny predicted magnitude reads as
-implementation-detail noise around a genuinely near-zero effective gap, not broken
-plumbing — consistent with the observation-segment and full grid results below, which show
-the *same* small, consistently positive gap across 1000 seeds and all 27 regime cells.
+`001`'s fee-on-input; anchor-drift under nonzero fee) — the magnitude matches, the sign does
+not (measured positive, not negative). Given the two named terms are both plausibly
+sub-nano-precision-sensitive at this scale, a sign flip within the same tiny predicted
+magnitude reads as implementation-detail noise around a genuinely near-zero effective gap.
 
-Train/validation re-evaluation of the same point: **train 396.34** vs. `001`'s 406.14
-(**-9.80**); **validation 391.74** vs. `001`'s 401.80 (**-10.06**) — a larger, and
-sign-*flipped*, gap than screening's own +2.02. This is a real, reportable discrepancy
-between segments, not a copy error (re-checked): screening is the *first 200* of train's
-1000 seeds (`config/bench.toml`, `subset_of = "train"`), so the remaining 800 train seeds
-pull the full-train average substantially negative relative to screening. The most likely
-explanation, not independently confirmed: fee-on-output vs. fee-on-input is a genuinely
-second-order effect only for *small* trades relative to reserves (verified algebraically:
-at `B=100, input=10, fee=66bps`, the two conventions differ by ~0.07% of output) — but the
-arbitrageur's largest brackets are *not* small relative to reserves, and at large trade
-sizes the two fee conventions diverge well past second order. If the additional 800
-train/validation seeds happen to sample more large-arb-trade activity than the 200
-screening seeds do, this mechanism-level (not implementation-bug) explanation is
-consistent with the sign and magnitude observed. Flagged here rather than investigated
-further, since it does not change this issue's own decision (the concentration probe below
-is decided on **screening**, per protocol, and the containment point itself is not being
-searched or tuned).
+**Consolidated segment table** (all measured post-fix; `001-cpmm-fee`'s own numbers from
+`strategies/001-cpmm-fee/NOTES.md`):
+
+| Segment | n | `007` avg edge | `001` avg edge | diff | 95% CI (paired, where measured) |
+| --- | --- | --- | --- | --- | --- |
+| screening | 200 | 386.05 | 384.82 | +1.23 | not measured (point estimate only, per `bench fit`) |
+| train | 1,000 | 407.55 | 406.14 | +1.41 | `[1.25, 1.56]` (`bench compare`, excludes 0) |
+| validation | 1,000 | 403.26 | 401.80 | +1.46 | not measured (`bench fit`'s re-evaluation step) |
+| observation (leaderboard-comparable) | 1,000 | 401.28 | 399.97 | +1.31 | see § Parity gate |
+
+All four segments now agree in **both sign and magnitude** (a tight `+1.2` to `+1.5`
+band) — the pre-fix sign flip between screening/observation and train/validation (§ A
+runaway anchor, found and fixed) is gone.
 
 ### 4. The concentration probe — the actual go/no-go
 
@@ -288,6 +370,18 @@ Three points on screening, same degenerate-range method:
 **All three land dramatically below 384.82.** *Stop rule triggered*: "the `k` axis is
 net-harmful at every tested concentration, the family's whole thesis is dead — record a
 negative result and close **without** running the 300-point search."
+
+These three points were measured *before* § A runaway anchor, found and fixed was
+diagnosed, and use the general `k<1` anchor path (`post_trade_mid_divide`/`_multiply`),
+which keeps the same recursive structure that caused that bug — not re-measured after the
+fix, since the fix only special-cased `k=1` (the only point this port ships) and
+re-verifying three already-catastrophically-negative points was not judged worth the budget.
+It is possible a fraction of this loss is the same runaway-anchor artifact rather than
+"genuine" `1/k`-amplified adverse selection; it is not plausible that fixing it would flip
+these three points positive given the sheer magnitude (a `-5,535` gap has a lot of room to
+still be net-harmful even after removing a bug-driven component) — but the mechanistic
+story below should be read as directionally right, not numerically precise down to the
+last edge unit.
 
 ## Negative result — the concentration axis does not pay in this harness
 
@@ -307,17 +401,18 @@ minority of typical trade sizes); at `k=0.04`/`0.01` (`K_BPS in {400, 100}`) the
 amplification (25x-100x) overwhelms any plausible retail-side benefit, producing the
 catastrophic (-1,733, -5,151) screening losses measured. The probe's monotone-looking
 collapse (169 -> -1,733 -> -5,151 as `k` shrinks) is consistent with this single mechanism
-dominating at every tested concentration, not three unrelated failures.
+dominating at every tested concentration — plausibly compounded, at the low-`k` end, by the
+same recursive-anchor fragility documented above (see the caveat in Step 0.5 #4).
 
 **The family's best point is its own upper boundary (`k=1`), which is not a tie — it is a
 small, consistent edge win over `001-cpmm-fee`.** Per the parity gate below, the
-committed `(K_BPS=10_000, FEE_BPS=66)` point measures **avg edge 402.05** on the
+committed `(K_BPS=10_000, FEE_BPS=66)` point measures **avg edge 401.28** on the
 `observation` segment (seeds `0..=999`) against `001-cpmm-fee`'s own **399.97**
-(`strategies/001-cpmm-fee/NOTES.md`) — a **+2.08 (+0.5%)** improvement, consistent with the
-+2.02 screening gap above. The 27-cell grid (§ Grid mode below) shows the *same sign*
-in every one of 27 cells (26 positive, 1 slightly negative but statistically
-indistinguishable from 0) — a small, structurally consistent win from the fee-on-output/
-anchor-drift differences documented in § Fidelity self-assessment, not sampling noise.
+(`strategies/001-cpmm-fee/NOTES.md`) — a **+1.31 (+0.3%)** improvement, consistent with the
+consolidated segment table above. The 27-cell grid (§ Grid mode below) shows the *same
+sign* in every one of 27 cells (25 positive, 2 statistically indistinguishable from 0) — a
+small, structurally consistent win from the fee-on-output/anchor-drift differences
+documented in § Fidelity self-assessment, not sampling noise.
 
 **Committed value: `(K_BPS=10_000, FEE_BPS=66)`** — the boundary the pre-registered stop
 rule closes the family at, per the `WHI-1209` boundary-hit precedent this issue's own
@@ -332,57 +427,57 @@ point. Full table: `results/2026-08-21-grid-007-dodo-pmm.md`.
 
 | cell | fee (bps) | liq mult | sigma | candidate | reference | mean diff |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | 30 | 0.4 | 0.0001 | 716.70 | 710.96 | +5.74 |
-| 1 | 30 | 0.4 | 0.0010 | 700.63 | 695.34 | +5.29 |
-| 2 | 30 | 0.4 | 0.0070 | 203.52 | 197.26 | +6.26 |
-| 3 | 30 | 1.0 | 0.0001 | 391.45 | 389.11 | +2.34 |
-| 4 | 30 | 1.0 | 0.0010 | 385.02 | 382.63 | +2.38 |
-| 5 | 30 | 1.0 | 0.0070 | -126.89 | -128.96 | +2.07 |
-| 6 | 30 | 2.0 | 0.0001 | 206.71 | 205.57 | +1.15 |
-| 7 | 30 | 2.0 | 0.0010 | 193.51 | 192.54 | +0.96 |
-| 8 | 30 | 2.0 | 0.0070 | -287.34 | -288.26 | +0.93 |
-| 9 | 55 | 0.4 | 0.0001 | 849.56 | 842.83 | +6.73 |
-| 10 | 55 | 0.4 | 0.0010 | 843.03 | 836.89 | +6.14 |
-| 11 | 55 | 0.4 | 0.0070 | 284.45 | 278.70 | +5.75 |
-| 12 | 55 | 1.0 | 0.0001 | 549.17 | 547.15 | +2.02 |
-| 13 | 55 | 1.0 | 0.0010 | 548.97 | 546.96 | +2.01 |
-| 14 | 55 | 1.0 | 0.0070 | 33.83 | 32.09 | +1.74 |
-| 15 | 55 | 2.0 | 0.0001 | 348.87 | 348.19 | +0.68 |
-| 16 | 55 | 2.0 | 0.0010 | 341.71 | 341.02 | +0.69 |
-| 17 | 55 | 2.0 | 0.0070 | -159.53 | -159.57 | +0.05 |
-| 18 | 80 | 0.4 | 0.0001 | 1035.70 | 1030.48 | +5.21 |
-| 19 | 80 | 0.4 | 0.0010 | 1024.81 | 1018.67 | +6.15 |
-| 20 | 80 | 0.4 | 0.0070 | 490.03 | 483.73 | +6.30 |
-| 21 | 80 | 1.0 | 0.0001 | 840.81 | 838.09 | +2.72 |
-| 22 | 80 | 1.0 | 0.0010 | 841.25 | 838.72 | +2.53 |
-| 23 | 80 | 1.0 | 0.0070 | 318.17 | 315.55 | +2.61 |
-| 24 | 80 | 2.0 | 0.0001 | 669.21 | 668.09 | +1.13 |
-| 25 | 80 | 2.0 | 0.0010 | 667.05 | 665.90 | +1.15 |
-| 26 | 80 | 2.0 | 0.0070 | 152.85 | 152.43 | +0.42 |
+| 0 | 30 | 0.4 | 0.0001 | 714.74 | 710.96 | +3.78 |
+| 1 | 30 | 0.4 | 0.0010 | 698.81 | 695.34 | +3.46 |
+| 2 | 30 | 0.4 | 0.0070 | 202.48 | 197.26 | +5.21 |
+| 3 | 30 | 1.0 | 0.0001 | 390.43 | 389.11 | +1.32 |
+| 4 | 30 | 1.0 | 0.0010 | 383.98 | 382.63 | +1.35 |
+| 5 | 30 | 1.0 | 0.0070 | -126.89 | -128.96 | +2.08 |
+| 6 | 30 | 2.0 | 0.0001 | 205.99 | 205.57 | +0.42 |
+| 7 | 30 | 2.0 | 0.0010 | 192.88 | 192.54 | +0.33 (CI includes 0) |
+| 8 | 30 | 2.0 | 0.0070 | -286.85 | -288.26 | +1.41 |
+| 9 | 55 | 0.4 | 0.0001 | 847.16 | 842.83 | +4.33 |
+| 10 | 55 | 0.4 | 0.0010 | 841.01 | 836.89 | +4.13 |
+| 11 | 55 | 0.4 | 0.0070 | 283.52 | 278.70 | +4.82 |
+| 12 | 55 | 1.0 | 0.0001 | 548.27 | 547.15 | +1.12 |
+| 13 | 55 | 1.0 | 0.0010 | 547.93 | 546.96 | +0.97 |
+| 14 | 55 | 1.0 | 0.0070 | 33.92 | 32.09 | +1.83 |
+| 15 | 55 | 2.0 | 0.0001 | 348.58 | 348.19 | +0.39 |
+| 16 | 55 | 2.0 | 0.0010 | 341.11 | 341.02 | +0.09 |
+| 17 | 55 | 2.0 | 0.0070 | -158.54 | -159.57 | +1.03 |
+| 18 | 80 | 0.4 | 0.0001 | 1033.51 | 1030.48 | +3.02 |
+| 19 | 80 | 0.4 | 0.0010 | 1022.27 | 1018.67 | +3.60 |
+| 20 | 80 | 0.4 | 0.0070 | 488.72 | 483.73 | +5.00 |
+| 21 | 80 | 1.0 | 0.0001 | 839.38 | 838.09 | +1.29 |
+| 22 | 80 | 1.0 | 0.0010 | 839.86 | 838.72 | +1.14 |
+| 23 | 80 | 1.0 | 0.0070 | 317.89 | 315.55 | +2.33 |
+| 24 | 80 | 2.0 | 0.0001 | 668.30 | 668.09 | +0.21 (CI includes 0) |
+| 25 | 80 | 2.0 | 0.0010 | 666.15 | 665.90 | +0.25 |
+| 26 | 80 | 2.0 | 0.0070 | 153.30 | 152.43 | +0.87 |
 
-**26 of 27 cells favor `007` (positive), 1 (cell 17) is a statistical tie** (95% CI
-`[-0.33, 0.43]`, straddling 0 — the only cell where this is true; every other cell's CI
-excludes 0, per `results/2026-08-21-grid-007-dodo-pmm.md`). The pattern is consistent with
-the fee-on-output vs. fee-on-input distinction: the effect is *largest* in the thinnest,
+**25 of 27 cells favor `007` with a CI excluding 0; 2 (cells 7, 24) are statistical ties**
+(95% CIs `[-0.01, 0.68]` and `[-0.04, 0.46]`, both barely straddling 0 — the only two cells
+where this is true; every other cell's CI excludes 0, per
+`results/2026-08-21-grid-007-dodo-pmm.md`). The pattern is consistent with the
+fee-on-output vs. fee-on-input distinction: the effect is *largest* in the thinnest,
 cheapest-opponent cells (0-2, 9-11, 18-20, where flow volume and hence total fee revenue is
-largest) and *smallest* at high sigma against a deep opponent (cell 17, 26 — where trade
-sizes and hence the fee-convention delta per trade shrink relative to the volatility-driven
-swings dominating the edge number). No cell is fragile in the way `005`'s own grid showed
-(no cell flips sign, unlike `005`'s 10 negative cells) — expected, since this port and
-`001` are nearly the same mechanism at `K_BPS=10_000`.
+largest) and *smallest* at high sigma against a deep opponent (cells 7, 16, 24, 25 — where
+trade sizes and hence the fee-convention delta per trade shrink relative to the
+volatility-driven swings dominating the edge number). No cell is fragile in the way `005`'s
+own grid showed (no cell flips sign, unlike `005`'s 10 negative cells) — expected, since
+this port and `001` are nearly the same mechanism at `K_BPS=10_000`.
 
 ## Parity gate (docs/DESIGN.md §2.6)
 
 `cargo run -p prop-amm-bench --release -- parity --strategy strategies/007-dodo-pmm`:
 `prop-amm validate` passes; the fast path and reference path agree on **all 1,000
 `observation`-segment seeds to `0` relative difference** (well inside the `1e-9` gate); the
-fast-path aggregate (avg edge 402.05) matches `prop-amm run`'s own output exactly (402.05,
-total 402052.04). See `results/2026-08-21-parity-007-dodo-pmm.md` for the committed
-snapshot.
+fast-path aggregate (avg edge 401.28) matches `prop-amm run`'s own output exactly. See
+`results/2026-08-21-parity-007-dodo-pmm.md` for the committed snapshot.
 
-**Leaderboard-comparable number: avg edge 402.05** (`observation` segment, seeds
+**Leaderboard-comparable number: avg edge 401.28** (`observation` segment, seeds
 `0..=999`, native), against `001-cpmm-fee`'s own **399.97** on the same segment — a
-**+2.08 (+0.5%)** improvement.
+**+1.31 (+0.3%)** improvement.
 
 ## Compute units
 
