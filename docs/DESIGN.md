@@ -379,7 +379,7 @@ stack trace plays for this section's `wontfix` path.
 ### 2.10 Convergence
 
 1. Freeze the strategy list (§6.2). Nothing is added to v1 after this point, except
-   through the single, recorded exception below.
+   through a recorded exception below.
 2. Run every listed strategy through M1 to a terminal state.
 3. Rank on validation. Open **one** variant for each of the top three (§2.9).
 4. Use the test segment **once**: winner and runner-up, paired interval, regime slices.
@@ -596,16 +596,16 @@ wrong in the same direction as its own tests.
 
 Frozen 2026-08-21 (WHI-1197). This is the complete list M1 iterates over — per §2.10,
 nothing is added to v1 after this point, save the single post-freeze exception recorded
-below (`007`). Each entry's original material is filed under
-`docs/references/<id>-<slug>/`, one directory per strategy (a directory rather than a
-single file, since several entries are multi-file source trees); each directory carries
-its own `README.md` with the four fields below plus a mechanism summary, known parameters,
-and a fidelity note. That `README.md` is a **snapshot fixed at freeze time** — for the
-2026-08-21 freeze that means `002`–`006`; for the post-freeze exception `007` it means the
-point WHI-1219 starts porting, since that is `007`'s own freeze moment — and it does not
-change once the porting issue starts. `NOTES.md` (§2.4, §2.9) is the living record after
-that: it re-declares the parameter space in the porting issue's own words and is the one
-that governs if the two ever drift, since it is what's actually frozen before search runs.
+below (`007`). Each entry's original material is filed under `docs/references/<id>-<slug>/`,
+one directory per strategy (a directory rather than a single file, since several entries
+are multi-file source trees); each directory carries its own `README.md` with the four
+fields below plus a mechanism summary, known parameters, and a fidelity note. That
+`README.md` is a **snapshot fixed at freeze time** — for the 2026-08-21 freeze that means
+`002`–`006`; for the post-freeze exception `007` it means the point WHI-1219 starts
+porting, since that is `007`'s own freeze moment — and it does not change once the porting
+issue starts. `NOTES.md` (§2.4, §2.9) is the living record after that: it re-declares the
+parameter space in the porting issue's own words and is the one that governs if the two
+ever drift, since it is what's actually frozen before search runs.
 
 | Id | Name | Source form | Original material | Known parameters (starting point, not frozen — §2.4) |
 | --- | --- | --- | --- | --- |
@@ -614,7 +614,7 @@ that governs if the two ever drift, since it is what's actually frozen before se
 | `004` | EWMA Dynamic Fee + Shock-Decay | source (Rust) + Solidity (richer port) + source (v3 extension) | `docs/references/004-ewma-shock-decay-fee/` — `lilaclilac09/pamm-a`'s own past competition submission | `SHOCK_THRESHOLD_1E9 = 5_000_000` (0.5%); vol EWMA α = 0.20; fee cap 100bps; `VOL_MULT`/`SHOCK_FEE_PER_STEP`/`SHOCK_DECAY_STEPS`/`BASE` per source |
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
 | `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
-| `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219), supersedes `002`'s v0.2.0 earmark** | Solidity (to port) | `docs/references/007-dodo-pmm/` (created by WHI-1219, per its own snapshot-at-porting-start) — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
+| `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219); supersedes `002`'s earmark, see below** | Solidity (to port) | `docs/references/007-dodo-pmm/` (created by WHI-1219, per its own snapshot-at-porting-start) — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
 
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
