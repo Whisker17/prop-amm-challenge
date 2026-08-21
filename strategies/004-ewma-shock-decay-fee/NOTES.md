@@ -202,6 +202,15 @@ a deviation requiring escalation.
 
 ## Search (docs/DESIGN.md §2.5)
 
+**On the issue's optional "free pre-test"** (an offline replay of `001@66`'s L1-recorded
+trade stream through the EWMA update, rank-correlating per-seed `ewma_vol` against true
+`gbm_sigma`): not run. The issue frames it as optional, budget-free evidence to
+*pre-register* an expectation before the real search, not an acceptance item — and the
+bit-exact containment demonstration above already confirmed the plumbing is correct, while
+the actual search result (`VOL_MULT=1`, +45 train over `001`) directly answers the
+question the correlation would only have predicted. Superseded by stronger, real evidence,
+not skipped.
+
 Run via `cargo run -p prop-amm-bench --release -- fit --strategy
 strategies/004-ewma-shock-decay-fee` (`config/bench.toml`'s `[search]` budget, 300 points;
 screening segment `1_000_000..=1_000_199`, common random numbers). Full curve committed at
@@ -250,8 +259,7 @@ read as confirming the same claim more strongly than this direct sensitivity doe
 
 **Compile timing:** 139 warm compiles, min=0.198s, mean=0.762s, max=3.342s during this run
 — exceeds `docs/DESIGN.md` §2.6's `<1s` target on the max sample only (mean stays under it).
-Consistent with
-the standing conclusion `strategies/001-cpmm-fee/NOTES.md` and WHI-1205 already reached (a
+Consistent with the standing conclusion `strategies/001-cpmm-fee/NOTES.md` and WHI-1205 already reached (a
 session/system-load effect, not a fast-path regression) — not re-investigated here for the
 same reason `005`'s NOTES.md gave: a single run cannot establish a fresh recurrence
 independent of load.
