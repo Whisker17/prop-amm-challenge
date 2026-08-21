@@ -60,9 +60,9 @@ These three were explicitly called out as decisions to make and record, not inve
 here they are, with the reasoning.
 
 **1. Is the in-repo tracker deleted, or kept as a read-only archive?**
-Deleted, eventually — but not by this PR. `.scratch/` was **never actually populated** —
-`NEXT_ID` was still `001`, no issue file was ever created, `releases/` held only
-`.gitkeep`. There was no real *issue data* to lose by deleting it or to preserve by
+Deleted, eventually — but not by this PR (WHI-1196). `.scratch/` was **never actually
+populated** — `NEXT_ID` was still `001`, no issue file was ever created, `releases/` held
+only `.gitkeep`. There was no real *issue data* to lose by deleting it or to preserve by
 archiving it. That did **not** mean `.scratch/` was harmless as-is: `.scratch/README.md`
 still asserted "This directory **is** the issue tracker for this repo," which was false
 and was exactly the kind of second authority Decision 1 was framed to avoid — it just
@@ -103,11 +103,11 @@ repo and could never serve as a version signal.
 
 `.scratch/` was untouched by this PR (WHI-1196) — it touched only the governance carve-out
 file list (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out), and `.scratch/` was
-not on that list, so deleting or correcting it here would have violated this same issue's
-own scope constraint ("the diff contains carve-out paths only"). Since it held no real
-issue data (Decision 1), this didn't block anything at the time, but its `README.md` was
-factually wrong until WHI-1199 — the follow-up chore issue this section named — deleted
-`.scratch/` outright (`b459d61`, PR #5).
+not on that list, so deleting or correcting it in this PR would have violated this same
+issue's own scope constraint ("the diff contains carve-out paths only"). Since it held no
+real issue data (Decision 1), this didn't block anything at the time, but its `README.md`
+was factually wrong until WHI-1199 — the follow-up chore issue this section anticipated —
+deleted `.scratch/` outright (`b459d61`).
 
 The same reasoning covered `docs/DEFERRED_ISSUES.md`, also outside the carve-out, which at
 the time carried **two** affected entries: the `WHI-1192` entry described the tracker as
@@ -115,8 +115,8 @@ in-repo and said the naming inconsistency "resolves when WHI-1196 lands" (this P
 WHI-1196); the "`Done` state flip cannot ride its own PR" entry's whole deferral reason —
 "the alternative (an external tracker) is what we deliberately traded away" — was inverted
 the moment this PR adopted an external tracker. Resolving either meant editing
-`docs/DEFERRED_ISSUES.md`, which was not a carve-out path — WHI-1199 (`b459d61`, PR #5)
-moved both entries to *Resolved*.
+`docs/DEFERRED_ISSUES.md`, which was not a carve-out path — WHI-1199 moved both entries to
+*Resolved*.
 
 **Why this wasn't recorded in `docs/DEFERRED_ISSUES.md` per the usual rule.** `AGENTS.md` §
 Git workflow says a review finding left unfixed goes there *in this PR*. That rule
@@ -126,11 +126,10 @@ exactly this situation — was the compensating move, not a skipped step.
 
 This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file,
 `docs/agents/issue-template.md`, `docs/agents/triage-labels.md`, and
-`.claude/skills/implement/SKILL.md`) stopped asserting the tracker was in-repo markdown as
+`.claude/skills/implement/SKILL.md`) no longer asserts the tracker is in-repo markdown, as
 of this PR (WHI-1196). `.scratch/README.md` and `docs/DEFERRED_ISSUES.md` were known,
-out-of-scope exceptions at the time (above), not overlooked ones — both were closed by
-WHI-1199 (`b459d61`, PR #5), which deleted `.scratch/` outright and moved both
-`docs/DEFERRED_ISSUES.md` entries to *Resolved*. `.claude/skills/setup-matt-pocock-skills/`
+out-of-scope exceptions at the time (above), not overlooked ones — both were since closed
+by WHI-1199. `.claude/skills/setup-matt-pocock-skills/`
 was, and remains, a different case: its `issue-tracker-{local,github,gitlab}.md` files are
 option templates copied into this very file when `/setup-matt-pocock-skills` runs, not live
 guidance any skill reads — each says so explicitly rather than reading as a live claim
