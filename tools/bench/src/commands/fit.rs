@@ -598,18 +598,6 @@ mod tests {
     const PANICKING_FIXTURE: &str =
         include_str!("../../tests/fixtures/whi_1213_panicking_point.rs");
 
-    /// `fast_compile`'s shared `.build/fast/` directory and its global loaded-function-
-    /// pointer statics are a deliberate single slot ("the search never evaluates more than
-    /// one candidate at a time" — `fast_compile.rs`'s own module doc): whichever call last
-    /// wrote+loaded a dylib there wins the global pointer, so two `#[test]` fns racing
-    /// through `evaluate_fixture_mode` under `cargo test`'s default parallel execution can
-    /// silently run the *other* test's compiled function instead of their own. Real `bench
-    /// fit` usage never hits this (its search loop is single-threaded and never has two
-    /// calls in flight), but more than one test in this file now drives the fixture through
-    /// this same shared path, so it needs an explicit guard rather than relying on every
-    /// future test author remembering to keep calls sequential by construction.
-    static FAST_BUILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn small_configs() -> Vec<SimulationConfig> {
         let base = SimulationConfig {
             n_steps: 200,
@@ -622,9 +610,10 @@ mod tests {
     /// real pipeline `run()`'s own search closure uses (`rewrite_params` ->
     /// `make_safe_source` -> `compile_and_load_fast` -> `run_batch_catching_panics`) — used
     /// by every test below so the pipeline itself is written once, not once per test.
-    /// Serialized by [`FAST_BUILD_TEST_LOCK`] against every other caller.
+    /// Serialized by [`fast_compile::FAST_BUILD_TEST_LOCK`] against every other caller
+    /// (there or elsewhere) of the shared fast-build path.
     fn evaluate_fixture_mode(mode: i128) -> search::PointOutcome {
-        let _guard = FAST_BUILD_TEST_LOCK
+        let _guard = fast_compile::FAST_BUILD_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let rewritten = params::rewrite_params(PANICKING_FIXTURE, &[mode]).unwrap();
