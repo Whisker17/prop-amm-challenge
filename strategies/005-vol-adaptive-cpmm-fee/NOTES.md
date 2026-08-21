@@ -51,13 +51,18 @@ parity) — it was written for this exact simulator, not adapted from an unrelat
     below) and a pointer to that section. No code changed.
   - The four frozen consts below the `PARAMS` block (`FEE_HI`, `A_DEN`, `COLD_FEE`,
     `WARMUP_STEPS`) were reordered to sit together immediately after the block for
-    readability, and each gained a trailing note: `FEE_HI`/`A_DEN` say `— frozen, not
-    searched`; `COLD_FEE`/`WARMUP_STEPS` keep their own pre-existing descriptive comments
-    (which already stated their role) and add only `— frozen`. Cosmetic; no value changed.
+    readability. `FEE_HI`'s pre-existing comment gained a `— frozen, not searched` suffix;
+    `A_DEN` (uncommented in the source) gained one from scratch; `COLD_FEE`/`WARMUP_STEPS`
+    kept their own pre-existing descriptive comments and gained only `— frozen`. Cosmetic; no
+    value changed.
 
-No other *code* line differs — every comment/reorder change above is named and none of them
-touch `compute_swap`/`fee_from_state`/`cp_out`/`after_swap`/`isqrt` or any byte offset. This
-is as close to a zero-fidelity-risk port as the frozen list gets.
+The bullets above cover every change that matters to the fidelity contract: no executable
+line in `compute_swap`/`fee_from_state`/`cp_out`/`after_swap`/`isqrt` and no byte offset
+differs from the source. Comments elsewhere (e.g. inside `fee_from_state`'s cold-start
+branch, noting how it doubles as garbage-state sanitisation) were added or adjusted for
+clarity throughout the port; this list names the ones a reviewer would actually need to
+check against the frozen-space/searched-parameter rules, not a token-level diff of every
+comment in the file. This is as close to a zero-fidelity-risk port as the frozen list gets.
 
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting review finding #3)
 
@@ -205,18 +210,23 @@ range (+10 to +40) near the top of it, and matching the source's own upstream RE
 *source's original* constants `FEE_LO=20, A_NUM=7, B_DEN=160`, not this fitted point, so the
 agreement is a family-level cross-check, not the same point).
 
-**`FEE_LO` converged to its own frozen lower bound (5).** The coarse-grid curve shows every
-`FEE_LO=5` row outperforming every `FEE_LO∈{20,36,51,66}` row at the matching `(A_NUM, B_DEN)`
-— e.g. `[5,13,1265]=405.38` vs. `[66,13,1265]≈354.16` two rows down. This is a genuine
-boundary hit, not a search artifact: per docs/DESIGN.md §2.4/§2.5, the frozen range is not
-widened after seeing this result — a space widened post-hoc stops being an honest estimate.
+**`FEE_LO` converged to its own frozen lower bound (5).** This is a genuine boundary hit, not
+a search artifact: per docs/DESIGN.md §2.4/§2.5, the frozen range is not widened after seeing
+this result — a space widened post-hoc stops being an honest estimate. It is also
+**conditional on `A_NUM`, not universal across the grid:** at the winning `A_NUM=13`,
+every evaluated `FEE_LO=5` row beats the matching `FEE_LO∈{20,36,51,66}` row at the same
+`B_DEN` (e.g. `[5,13,1265]=405.38` vs. the nearest evaluated point on that row,
+`[66,13,2000]=354.16`), but at `A_NUM∈{0,6}` the reverse holds for most `B_DEN` levels —
+`[66,6,2000]=367.11` beats `[5,6,2000]=263.51`, for instance. A low `FEE_LO` floor only pays
+off once `A_NUM` is large enough to offset it with slope, which is exactly what converging to
+the interior point `A_NUM=13` (not the low end of its own `0..=25` range) already shows.
 Recorded as a known consequence for a future `005b` variant to explore (a lower `FEE_LO` floor
 than 5, which this issue's own frozen-space rationale rejected in favor of avoiding the
 near-zero-fee/normalizer-as-submission failure mode). Note the interior optimum is *not*
 degenerate at that boundary: `A_NUM=13` and `B_DEN≈1265` are both interior points (coordinate
-descent's step-halving converged smoothly around `B_DEN∈[1235,1387]`, a <0.1 edge-unit plateau
-— see the curve's tail entries), so the fee mechanism's slope (`A_NUM`) is doing real work
-compensating for a low floor, not just resting on a boundary in every dimension.
+descent's step-halving converged smoothly around `B_DEN∈[1235,1387]`, a ~0.23 edge-unit
+plateau — see the curve's tail entries), so the fee mechanism's slope (`A_NUM`) is doing real
+work compensating for a low floor, not just resting on a boundary in every dimension.
 
 **Compile timing:** 154 warm compiles, min=0.317s, mean=0.616s, max=2.656s during this run —
 exceeds `docs/DESIGN.md` §2.6's `<1s` target on the max sample. WHI-1205's own investigation
