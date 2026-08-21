@@ -255,7 +255,7 @@ soon — anything touching a declared high-risk path defaults to at least High),
   (Low, WHI-1195). `results/2026-08-20-compare-with-regime-slices.md` — `report.rs`'s
   one-report-per-`(day, stage)` rule meant `2026-08-20-compare.md`'s slot, already spent by
   WHI-1193's own compare run, forced a hand-named file for the second same-day `compare`
-  report. Resolved by WHI-1215: `compare`'s stage is now
+  report. Resolved by WHI-1215 (PR #14): `compare`'s stage is now
   `compare-<candidate-slug>-vs-<reference-slug>` (`tools/bench/src/commands/compare.rs::run`),
   so two different `compare` pairs on the same day get distinct filenames automatically —
   no manual rename needed the way this entry's case required. `grid` and `l1` got the same
