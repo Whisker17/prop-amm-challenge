@@ -69,8 +69,8 @@ v1 is done when all of the following hold:
 2. The **0-line** is established: the CPMM fee family (`strategies/001-*`) is fitted under
    the full protocol, and its fee↔edge response is single-peaked (§2.8).
 3. Every strategy on the frozen list (§6.2) has reached a terminal state: a fitted point
-   with train/validation numbers, or an explicit `wontfix` with a recorded structural
-   reason (§2.9).
+   with train/validation numbers, an explicit `wontfix` with a recorded structural reason
+   (§2.9), or a `Canceled` by owner decision with its reason recorded in §6.2 (§2.10).
 4. A winner is named from a **single** use of the test segment, reported with a paired
    confidence interval and its regime slice table, and the answer to "does it beat the best
    fixed-fee CPMM?" is stated explicitly — including if the answer is no.
@@ -570,7 +570,7 @@ so any result is re-derivable by re-running it. The only durable artifacts are t
 | Milestone | Deliverable | Success criterion |
 | --- | --- | --- |
 | **M0** | The measurement layer | bench reproduces `prop-amm run` per seed for starter (210.50 on `0..=999`); the 0-line is fitted and single-peaked; grid mode and L1 report |
-| **M1** | Every listed strategy at a terminal state | each has a fitted point with train/validation/parity numbers, or a recorded `wontfix` |
+| **M1** | Every listed strategy at a terminal state | each has a fitted point with train/validation/parity numbers, a recorded `wontfix`, or a recorded `Canceled` (§2.10) |
 | **M2** | A named winner | one test-segment use; paired interval; regime slices; `results/` snapshot; §1.4 satisfied |
 
 M0 is split into three issues so the measurement layer is validated *before* anything is
@@ -607,13 +607,14 @@ is measured against, not additional candidates.
 carried to a measured negative result (`WHI-1206`). The mechanism depends on top-of-block
 parameter republication via Flashbots' `PrioUpdateRegistry`; this harness exposes no
 pre-arbitrage surface (four instruction tags, `after_swap` fires only on executed trades,
-and a `sol_set_storage` call inside `compute_swap` is silently discarded). Post-hoc
-re-anchoring is therefore a **no-op** for a symmetric zero-fee curve, not merely late — and
-the family has no fee axis at all, so the revenue model stays broken even granting the
+and a `sol_set_storage` call inside `compute_swap` is silently discarded), so re-anchoring
+can only ever happen post-hoc. For a symmetric zero-fee curve that lateness is fatal, not
+merely inconvenient: the arbitrageur has already moved the reserves to the fair price by
+the time any re-anchor could run, so post-hoc re-anchoring is a **no-op**, not just late —
+and the family has no fee axis at all, so the revenue model stays broken even granting the
 primitive. `WHI-1206` carries the full argument, the per-sigma bleed table, and a recorded
 dissent. The surviving idea — virtual-reserve amplification at a real spread, i.e. `001`
-plus a concentration knob — is a **v0.2.0 candidate**, not part of this list (§2.10 forbids
-opening it while the v0.2.0 list is unfrozen).
+plus a concentration knob — is a **v0.2.0 candidate**, not part of this list.
 
 Two entries carry an explicit provenance caveat, read before porting:
 
@@ -632,8 +633,8 @@ Two entries carry an explicit provenance caveat, read before porting:
   mechanism as the thing to port, not its claimed scoring rule.
 
 One M1 issue per strategy above is opened per `docs/agents/issue-template.md`, each
-`blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`), `WHI-1207` (`003`),
-`WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
+`blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`, **Canceled** — see above),
+`WHI-1207` (`003`), `WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
 
 ## 7. Rejected Alternatives
 
