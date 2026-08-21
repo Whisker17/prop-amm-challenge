@@ -265,8 +265,8 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
     // `v2`) to avoid colliding with DODOMath.sol's own `V2` — the *output* reserve this
     // function solves for, computed below as `v_out`.
     let v_sq = v.saturating_mul(v);
-    let v2_over_kd2 = v_sq / (K_DEN * K_DEN);
-    let disc_term = v2_over_kd2.saturating_mul(4 * k_bps * kd_minus_k);
+    let v_sq_over_kd2 = v_sq / (K_DEN * K_DEN);
+    let disc_term = v_sq_over_kd2.saturating_mul(4 * k_bps * kd_minus_k);
     let discriminant = b_abs.saturating_mul(b_abs).saturating_add(disc_term);
     // scale * true_sqrt(discriminant), floor-accurate to within 1 part in `scale` instead of
     // isqrt's usual +/-1 absolute unit — see scaled_isqrt's own comment for why a fixed scale
@@ -361,6 +361,14 @@ fn reciprocal_fp(i_fp: u128) -> u128 {
     (P_SCALE * P_SCALE) / i_fp
 }
 
+/// The raw reserve ratio (quote per base) at `P_SCALE` fixed point — used both as the
+/// cold-start/garbage-state fallback anchor and, at `k=1`, as the warm anchor update itself
+/// (§ A runaway anchor, found and fixed in NOTES.md).
+#[inline]
+fn raw_ratio_price(rx: u128, ry: u128) -> u128 {
+    ry.saturating_mul(P_SCALE) / rx
+}
+
 /// Reads the stored anchor price, falling back to the live reserve ratio for cold start and
 /// garbage state (magic-sentinel check, docs/DESIGN.md §2.9 cross-cutting findings #4/#5) —
 /// the initial reserves encode the initial price exactly, so this is correct at t=0 too.
@@ -371,7 +379,7 @@ fn anchor_price(storage: &[u8], rx_c: u128, ry_c: u128) -> u128 {
             return rd16(storage, OFF_ANCHOR_PRICE);
         }
     }
-    ry_c.saturating_mul(P_SCALE) / rx_c
+    raw_ratio_price(rx_c, ry_c)
 }
 
 /// R_f's denominator, K_DEN-scaled so the caller's multiply-by-`i_old` stays in u128:
@@ -442,9 +450,8 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
         // from. Initialize at R=ONE with the current (post-trade) reserve ratio — the
         // faithful cold-start reading, since the initial reserves encode the initial price
         // exactly (cross-cutting §4/§5).
-        let price = ry_post.saturating_mul(P_SCALE) / rx_post;
         wr_u64(storage, OFF_MAGIC, MAGIC);
-        wr16(storage, OFF_ANCHOR_PRICE, price);
+        wr16(storage, OFF_ANCHOR_PRICE, raw_ratio_price(rx_post, ry_post));
         return;
     }
 
@@ -459,10 +466,12 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
     // arbitrageur's trade does) can compound that rounding into a persistent, self-widening
     // mispricing. Anchoring to the raw ratio every time is self-correcting by construction:
     // each update depends only on the CURRENT reserves, never on the previous anchor, so no
-    // error has anything to accumulate onto. This does not need `rx_pre`/`ry_pre` at all.
+    // error has anything to accumulate onto. This does not need `rx_pre`/`ry_pre` at all —
+    // and, since it always agrees with `anchor_price`'s own cold-start fallback computed
+    // from the same live reserves, the stored anchor never actually diverges from the raw
+    // ratio at k=1 (the storage round-trip is a no-op here — see NOTES.md's note on this).
     if K_BPS >= K_DEN {
-        let price = ry_post.saturating_mul(P_SCALE) / rx_post;
-        wr16(storage, OFF_ANCHOR_PRICE, price);
+        wr16(storage, OFF_ANCHOR_PRICE, raw_ratio_price(rx_post, ry_post));
         return;
     }
 

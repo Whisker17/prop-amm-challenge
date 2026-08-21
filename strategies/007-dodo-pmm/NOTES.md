@@ -271,7 +271,7 @@ periodic or continuous re-grounding to the raw ratio.)
 | Seed 1,000,231 alone | -12,402.58 | -378.69 (vs. `001`'s -381.55 — now in line) |
 | `train` paired mean diff (`bench compare`, n=1000) | -9.80, 95% CI `[-33.37, 13.77]` (includes 0) | **+1.40, 95% CI `[1.25, 1.56]`** (excludes 0) |
 | `train` regime slices | 1 of 27 bins wildly negative, wide CI | **all 27 bins positive or CI-straddling-0-near-zero** |
-| screening / train / validation / observation | +2.02 / -9.80 / -10.06 / +2.08 (sign-inconsistent) | **+1.23 / +1.41 / +1.46 / +1.31** (consistent) |
+| screening / train / validation / observation | +2.02 / -9.80 / -10.06 / +2.08 (sign-inconsistent) | **+1.23 / +1.40 / +1.46 / +1.31** (consistent) |
 
 The fixed numbers replace every occurrence below. This also means the containment
 demonstration's originally-measured "sign flip" (screening positive, train/validation
@@ -290,6 +290,16 @@ collapsed to one rate); the anchor rule (full re-anchor to the post-trade mid on
 executed trade — a partial/EWMA anchor is a `007b` variant, its weight an invented
 parameter this port declines to add); `RESERVE_CLAMP = 2^59` and `INPUT_CAP_MULT = 16`
 (engineering guards, never binding in real regimes).
+
+**Warning for any future reader of this range table (`007b` or otherwise): only
+`K_BPS=10_000` (this port's committed point) is fixed.** Every other value in `25..=9,999`
+still runs `after_swap`'s general, *recursive* anchor update — the same non-self-correcting
+structure that produced § A runaway anchor, found and fixed at `k=1`, just not special-cased
+away there. This did not change this issue's own decision (the concentration probe below
+independently rejects `k<1` on its economic merits, and § Step 0.5 #4's own re-check found
+that rejection is not primarily an artifact of the bug) — but a `007b` variant that revisits
+any interior `K_BPS` would need to fix the recursive anchor generally, not just re-read this
+file's k=1 special case as "already handled."
 
 **No special-casing to `001`'s exact ceil-div arithmetic.** The issue's own "if
 bit-exactness is preferred" callout is optional; this port keeps the general `k=1` closed
@@ -349,9 +359,13 @@ magnitude reads as implementation-detail noise around a genuinely near-zero effe
 | Segment | n | `007` avg edge | `001` avg edge | diff | 95% CI (paired, where measured) |
 | --- | --- | --- | --- | --- | --- |
 | screening | 200 | 386.05 | 384.82 | +1.23 | not measured (point estimate only, per `bench fit`) |
-| train | 1,000 | 407.55 | 406.14 | +1.41 | `[1.25, 1.56]` (`bench compare`, excludes 0) |
+| train | 1,000 | 407.55 | 406.14 | +1.40 | `[1.25, 1.56]` (`bench compare`, excludes 0) |
 | validation | 1,000 | 403.26 | 401.80 | +1.46 | not measured (`bench fit`'s re-evaluation step) |
 | observation (leaderboard-comparable) | 1,000 | 401.28 | 399.97 | +1.31 | see § Parity gate |
+
+(`train`'s diff is the exact paired mean from `bench compare` — `1.401555`, rounds to
+`+1.40` — not `407.55 - 406.14 = 1.41`, which differs in the second decimal only because it
+subtracts two independently-rounded averages instead of using the unrounded per-seed pairs.)
 
 All four segments now agree in **both sign and magnitude** (a tight `+1.2` to `+1.5`
 band) — the pre-fix sign flip between screening/observation and train/validation (§ A
@@ -371,17 +385,21 @@ Three points on screening, same degenerate-range method:
 net-harmful at every tested concentration, the family's whole thesis is dead — record a
 negative result and close **without** running the 300-point search."
 
-These three points were measured *before* § A runaway anchor, found and fixed was
-diagnosed, and use the general `k<1` anchor path (`post_trade_mid_divide`/`_multiply`),
-which keeps the same recursive structure that caused that bug — not re-measured after the
-fix, since the fix only special-cased `k=1` (the only point this port ships) and
-re-verifying three already-catastrophically-negative points was not judged worth the budget.
-It is possible a fraction of this loss is the same runaway-anchor artifact rather than
-"genuine" `1/k`-amplified adverse selection; it is not plausible that fixing it would flip
-these three points positive given the sheer magnitude (a `-5,535` gap has a lot of room to
-still be net-harmful even after removing a bug-driven component) — but the mechanistic
-story below should be read as directionally right, not numerically precise down to the
-last edge unit.
+These three points use the general `k<1` anchor path (`post_trade_mid_divide`/`_multiply`),
+which keeps the same recursive structure that caused the `k=1` bug above — so before
+trusting the least-negative of the three (`K_BPS=2500`, the point closest to a plausible
+sign flip and therefore the one actually worth checking), this port re-ran it with a
+per-seed breakdown (same technique as § A runaway anchor, found and fixed): of the 200
+screening seeds, **112 are individually negative**, the median seed's own diff is
+**-55.76** (deeply negative on its own, not just dragged down by outliers), and **excluding
+the single worst seed drops the mean only from -215.76 to -181.89** (excluding the worst 5,
+to -157.28) — nothing close to what a one-seed runaway-anchor artifact would look like (the
+`k=1` bug's own seed alone accounted for *more than the entire* pooled deficit; removing it
+flipped the sign). This is a broadly-distributed effect across the sample, not a
+single-outlier artifact, so `K_BPS=2500`'s rejection is trustworthy as measured. `K_BPS=400`
+and `K_BPS=100` are an order of magnitude more negative still and were not re-checked the
+same way — if concentration's rejection holds at the mildest, closest-to-viable point, it
+holds a fortiori at the more extreme ones.
 
 ## Negative result — the concentration axis does not pay in this harness
 
@@ -401,8 +419,9 @@ minority of typical trade sizes); at `k=0.04`/`0.01` (`K_BPS in {400, 100}`) the
 amplification (25x-100x) overwhelms any plausible retail-side benefit, producing the
 catastrophic (-1,733, -5,151) screening losses measured. The probe's monotone-looking
 collapse (169 -> -1,733 -> -5,151 as `k` shrinks) is consistent with this single mechanism
-dominating at every tested concentration — plausibly compounded, at the low-`k` end, by the
-same recursive-anchor fragility documented above (see the caveat in Step 0.5 #4).
+dominating at every tested concentration — confirmed, at the `K_BPS=2500` end, not to be
+primarily an artifact of the recursive-anchor fragility documented above (Step 0.5 #4's own
+per-seed re-check).
 
 **The family's best point is its own upper boundary (`k=1`), which is not a tie — it is a
 small, consistent edge win over `001-cpmm-fee`.** Per the parity gate below, the
@@ -410,9 +429,18 @@ committed `(K_BPS=10_000, FEE_BPS=66)` point measures **avg edge 401.28** on the
 `observation` segment (seeds `0..=999`) against `001-cpmm-fee`'s own **399.97**
 (`strategies/001-cpmm-fee/NOTES.md`) — a **+1.31 (+0.3%)** improvement, consistent with the
 consolidated segment table above. The 27-cell grid (§ Grid mode below) shows the *same
-sign* in every one of 27 cells (25 positive, 2 statistically indistinguishable from 0) — a
-small, structurally consistent win from the fee-on-output/anchor-drift differences
-documented in § Fidelity self-assessment, not sampling noise.
+sign* in every one of 27 cells (24 positive with a CI excluding 0, 3 statistically
+indistinguishable from 0) — a small, structurally consistent win, not sampling noise.
+
+**The win is entirely the fee convention, not "anchor drift."** At `k=1` post-fix,
+`after_swap` writes `raw_ratio_price(rx_post, ry_post)` on every trade, and
+`compute_swap`'s own cold-start fallback (`anchor_price`) computes the *identical* value
+from the *identical* live reserves whenever it's invoked — so the stored anchor never
+actually differs from what a stateless "just read the current reserves" computation would
+give. The storage round-trip is a no-op at the committed point: there is no drift left to
+attribute anything to. The `+1.31` is fully explained by `001` fee-ing the input and this
+port fee-ing the output at the same nominal `FEE_BPS` (§ Nested 0-line) plus the
+consequences of that on the exact reserve trajectory a 10,000-step simulation takes.
 
 **Committed value: `(K_BPS=10_000, FEE_BPS=66)`** — the boundary the pre-registered stop
 rule closes the family at, per the `WHI-1209` boundary-hit precedent this issue's own
@@ -443,7 +471,7 @@ point. Full table: `results/2026-08-21-grid-007-dodo-pmm.md`.
 | 13 | 55 | 1.0 | 0.0010 | 547.93 | 546.96 | +0.97 |
 | 14 | 55 | 1.0 | 0.0070 | 33.92 | 32.09 | +1.83 |
 | 15 | 55 | 2.0 | 0.0001 | 348.58 | 348.19 | +0.39 |
-| 16 | 55 | 2.0 | 0.0010 | 341.11 | 341.02 | +0.09 |
+| 16 | 55 | 2.0 | 0.0010 | 341.11 | 341.02 | +0.09 (CI includes 0) |
 | 17 | 55 | 2.0 | 0.0070 | -158.54 | -159.57 | +1.03 |
 | 18 | 80 | 0.4 | 0.0001 | 1033.51 | 1030.48 | +3.02 |
 | 19 | 80 | 0.4 | 0.0010 | 1022.27 | 1018.67 | +3.60 |
@@ -455,9 +483,9 @@ point. Full table: `results/2026-08-21-grid-007-dodo-pmm.md`.
 | 25 | 80 | 2.0 | 0.0010 | 666.15 | 665.90 | +0.25 |
 | 26 | 80 | 2.0 | 0.0070 | 153.30 | 152.43 | +0.87 |
 
-**25 of 27 cells favor `007` with a CI excluding 0; 2 (cells 7, 24) are statistical ties**
-(95% CIs `[-0.01, 0.68]` and `[-0.04, 0.46]`, both barely straddling 0 — the only two cells
-where this is true; every other cell's CI excludes 0, per
+**24 of 27 cells favor `007` with a CI excluding 0; 3 (cells 7, 16, 24) are statistical
+ties** (95% CIs `[-0.01, 0.68]`, `[-0.16, 0.34]`, and `[-0.04, 0.46]`, all barely straddling
+0 — the only three cells where this is true; every other cell's CI excludes 0, per
 `results/2026-08-21-grid-007-dodo-pmm.md`). The pattern is consistent with the
 fee-on-output vs. fee-on-input distinction: the effect is *largest* in the thinnest,
 cheapest-opponent cells (0-2, 9-11, 18-20, where flow volume and hence total fee revenue is
