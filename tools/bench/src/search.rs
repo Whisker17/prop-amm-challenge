@@ -276,6 +276,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_budget_rejects_zero() {
+        let err = validate_budget(0, "some budget").unwrap_err();
+        assert!(err.to_string().contains("some budget must be at least 1"));
+    }
+
+    #[test]
+    fn validate_budget_rejects_above_the_cap() {
+        let err = validate_budget(MAX_SEARCH_POINTS + 1, "some budget").unwrap_err();
+        assert!(err.to_string().contains("exceeds the protocol's hard cap"));
+    }
+
+    #[test]
+    fn validate_budget_allows_the_full_range() {
+        assert!(validate_budget(1, "some budget").is_ok());
+        assert!(validate_budget(MAX_SEARCH_POINTS, "some budget").is_ok());
+    }
+
+    #[test]
     fn finds_the_peak_of_a_clean_1d_quadratic() {
         let specs = vec![spec("x", 0, 500)];
         let outcome =
@@ -336,6 +354,18 @@ mod tests {
         let specs = vec![spec("x", 0, 500)];
         let err = coarse_grid_then_coordinate_descent(&specs, 0, |_| Ok(0.0)).unwrap_err();
         assert!(err.to_string().contains("at least 1"));
+    }
+
+    #[test]
+    fn budget_above_the_protocol_cap_is_rejected() {
+        // This entry point's own bound-checking widened from zero-only to the full
+        // `validate_budget` range (WHI-1205's shared check) — covered separately by
+        // `validate_budget`'s own tests, but this confirms the widening actually reached
+        // this call site too.
+        let specs = vec![spec("x", 0, 500)];
+        let err = coarse_grid_then_coordinate_descent(&specs, MAX_SEARCH_POINTS + 1, |_| Ok(0.0))
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds the protocol's hard cap"));
     }
 
     #[test]

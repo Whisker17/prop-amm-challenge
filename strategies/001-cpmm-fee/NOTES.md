@@ -97,6 +97,12 @@ candidate structural causes named in that follow-up issue:
   `dlopen`-ing the resulting dylib (a fresh tempfile copy each time). Instrumented
   separately: build ≈0.11-0.13s, load (copy + `dlopen`) ≈0.14-0.22s — real and previously
   unaccounted-for, but nowhere near the missing ~0.75s needed to explain WHI-1194's mean.
+  On the narrower sub-question — cargo's own process overhead (spawn, lock acquisition,
+  manifest re-parse) rather than the actual compile — that overhead is inherent to any
+  `cargo build` invocation, including WHI-1193's own bare-cargo-build control (also
+  measured as a full process invocation, not an in-process compile). Since the control and
+  the fast path pay the same per-invocation overhead, it cannot be the source of a gap
+  *between* them.
 
 None of the four explains the 9x magnitude — the fast path's own mechanism is not at
 fault. A fresh, bounded re-measurement on this same machine — `bench fit --strategy

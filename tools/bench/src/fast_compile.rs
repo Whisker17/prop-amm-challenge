@@ -39,6 +39,12 @@ const NATIVE_AFTER_SWAP_SYMBOL: &[u8] = b"__prop_amm_after_swap_export";
 /// worktree (`.claude/worktrees/<name>/`) — the resolved path is still correct there, but
 /// whether it's isolated from the *outer* workspace's `[profile.release]` is a separate
 /// question `CARGO_TOML`'s own `[workspace]` table (below) answers unconditionally.
+///
+/// Caveat baked in by this fix: `CARGO_MANIFEST_DIR` is a compile-time constant, so a
+/// `bench` binary is tied to the source tree it was built from — copying or installing
+/// the binary elsewhere still writes to *that build's* `.build/fast`, not a directory
+/// relative to wherever the binary now lives. Acceptable here: `bench` is always built
+/// and run in place from within its own workspace checkout, never distributed.
 fn fast_build_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.build/fast")
 }

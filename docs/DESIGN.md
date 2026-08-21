@@ -194,9 +194,9 @@ number is no longer an honest estimate.
   out: a ranking that reflects effort spent rather than curve quality. `bench fit
   --max-points <N>` (WHI-1205) can *lower* this for a quick, uncommitted check of the fast
   path itself (e.g. its compile timing) — it is not a way to fit a strategy on a smaller
-  budget, and `run` refuses it without `--no-report`: a bounded run can never produce
-  `results/` evidence, so this equal-budget invariant still holds for every committed
-  point.
+  budget, and `bench fit` refuses it without `--no-report`: a bounded run can never
+  produce `results/` evidence, so this equal-budget invariant still holds for every
+  committed point.
 - **Known and accepted consequence:** an equal point budget favours low-dimensional
   families. A 4-parameter family is covered far less densely by 300 points than a
   1-parameter one. This is not a defect to correct — being hard to tune is a real drawback
@@ -222,10 +222,13 @@ Two compile paths exist, with different jobs:
   verification) came in at **7 warm compiles: min=0.320s, mean=0.327s, max=0.343s**,
   meeting the original estimate's order of magnitude once the build's `dlopen`/tempfile
   load step is counted alongside the `cargo build` itself. The 9x gap did not reproduce
-  on the same machine; the fast path's design was never at fault — it never rebuilds
-  `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the directory's first use, only
-  `user_program` itself relinks per point. Either figure is a large improvement over the
-  reference path below.
+  on the same machine, and none of the four candidates implicated the fast path's own
+  design — it never rebuilds `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the
+  directory's first use, only `user_program` itself relinks per point. That is as far as
+  this evidence goes: non-reproduction rules out the four named causes, it does not prove
+  WHI-1194's specific session-environment explanation was the correct one (see
+  `strategies/001-cpmm-fee/NOTES.md`'s "What this does and does not establish"). Either
+  figure is a large improvement over the reference path below.
 - **Reference path (reporting).** The upstream CLI, `crates/cli/src/commands/compile.rs`.
   Measured: **7–10 s and ~51 MB per point**, because `ensure_build_dir`
   (`compile.rs:36`) keys an isolated build directory by source hash, so `pinocchio`,

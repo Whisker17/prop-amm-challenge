@@ -21,26 +21,18 @@ pub struct FitArgs {
     #[arg(long)]
     strategy: String,
     // WHI-1205: an escape hatch for cheap, uncommitted smoke-testing (e.g. of the fast
-    // path's compile timing) — never for a committed run, so `run` requires --no-report
-    // whenever this is set (docs/DESIGN.md §2.5's 300-point budget stays the only value
-    // that ever produces committed evidence).
-    /// Bound this run to fewer search points than the configured budget, for a quick,
-    /// uncommitted check (must be paired with `--no-report`). Same 1..=300 range
-    /// `config/bench.toml`'s `[search] max_points` is validated against.
+    // path's compile timing) — never for a committed run, so `bench fit` requires
+    // --no-report whenever this is set (docs/DESIGN.md §2.5's 300-point budget stays the
+    // only value that ever produces committed evidence).
+    /// Override the search budget for a quick, uncommitted check (must be paired with
+    /// `--no-report`) — independent of `config/bench.toml`'s `[search] max_points`, only
+    /// the protocol's own 1..=300 range.
     #[arg(long)]
     max_points: Option<usize>,
     /// Skip writing a `results/` snapshot — required alongside `--max-points`, since a
     /// bounded run doesn't represent the protocol's full search budget.
     #[arg(long)]
     no_report: bool,
-}
-
-/// Validates a `--max-points` override against the same bound `config/bench.toml`'s
-/// `[search] max_points` is checked against — both route through
-/// `search::validate_budget`, so the bound lives in one place.
-fn validate_max_points(max_points: usize) -> anyhow::Result<usize> {
-    search::validate_budget(max_points, "--max-points")?;
-    Ok(max_points)
 }
 
 /// `--max-points` is only for uncommitted smoke-testing — docs/DESIGN.md §2.5's 300-point
@@ -170,8 +162,10 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     // its required --no-report (a bounded run must never produce committed evidence at a
     // non-protocol budget — docs/DESIGN.md §2.5's 300-point budget is what `results/`
     // reports represent), or (unless --no-report) an already-taken report slot.
-    let max_points = args.max_points.map(validate_max_points).transpose()?;
-    validate_max_points_requires_no_report(max_points, args.no_report)?;
+    if let Some(n) = args.max_points {
+        search::validate_budget(n, "--max-points")?;
+    }
+    validate_max_points_requires_no_report(args.max_points, args.no_report)?;
     if !args.no_report {
         report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
     }
@@ -183,7 +177,9 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let screening = bench_config.segment("screening")?;
     let train = bench_config.segment("train")?;
     let validation = bench_config.segment("validation")?;
-    let budget = max_points.unwrap_or_else(|| bench_config.search_max_points());
+    let budget = args
+        .max_points
+        .unwrap_or_else(|| bench_config.search_max_points());
 
     let lib_path = strategy_dir.join("lib.rs");
     let source = std::fs::read_to_string(&lib_path)
@@ -472,31 +468,6 @@ mod tests {
         let summary = timings.summary();
         assert!(summary.contains("cold start"));
         assert!(summary.contains("no warm samples recorded"));
-    }
-
-    #[test]
-    fn zero_max_points_is_rejected() {
-        let err = validate_max_points(0).unwrap_err();
-        assert!(err.to_string().contains("at least 1"));
-    }
-
-    #[test]
-    fn max_points_above_the_protocol_cap_is_rejected() {
-        let err = validate_max_points(search::MAX_SEARCH_POINTS + 1).unwrap_err();
-        assert!(err.to_string().contains("exceeds the protocol's hard cap"));
-    }
-
-    #[test]
-    fn max_points_at_the_protocol_cap_is_allowed() {
-        assert_eq!(
-            validate_max_points(search::MAX_SEARCH_POINTS).unwrap(),
-            search::MAX_SEARCH_POINTS
-        );
-    }
-
-    #[test]
-    fn max_points_of_one_is_allowed() {
-        assert_eq!(validate_max_points(1).unwrap(), 1);
     }
 
     #[test]
