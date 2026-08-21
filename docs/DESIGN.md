@@ -222,13 +222,13 @@ number is no longer an honest estimate.
   this: probabilistic across seeds, not just across parameter values) — and an invalid
   re-evaluation blocks the run the same way a failed single-peak check does (§2.8): the
   evidence gathered so far is still written, but the point is not entered into the ranking
-  un-flagged. If a future fuzz-coverage gate (WHI-1212, not yet built) passes for a family
-  but a search point still panics, that gap is itself the signal the gate's corner set is
-  incomplete — the failing parameter vector recorded here is exactly the input needed to
-  extend it. If *every* point the coarse grid evaluates panics there is no fitted point and
-  the run fails, but the snapshot is still written first (same rule as above): those vectors
-  are the whole basis for the two calls that case forces — extending that corner set, or
-  routing the family to §2.9's `wontfix` (§8 risk 7).
+  un-flagged. If `bench fuzz` (§2.9's pre-search shape-fuzz gate, WHI-1212) already passed
+  for a family but a search point still panics, that gap is itself a signal the gate's
+  corner set is incomplete — the failing parameter vector recorded here is exactly the
+  input needed to extend it. If *every* point the coarse grid evaluates panics there is no
+  fitted point and the run fails, but the snapshot is still written first (same rule as
+  above): those vectors are the whole basis for the two calls that case forces — extending
+  that corner set, or routing the family to §2.9's `wontfix` (§8 risk 7).
 
 ### 2.6 Compile paths and the parity gate
 
