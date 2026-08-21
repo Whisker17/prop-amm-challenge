@@ -9,7 +9,7 @@ This replaces an earlier design where the tracker was markdown files committed u
 `.scratch/`. That design's one structural advantage — "moving an issue's state is a
 commit, so it lands in the same PR as the work" — does **not** carry over: Linear and git
 are now two independently-updatable systems that can disagree. § Decisions below records
-that explicitly, with the mitigation. `.scratch/` itself is untouched by this move — see
+that explicitly, with the mitigation. `.scratch/` itself was deleted by WHI-1199 — see
 § What happened to `.scratch/` (and other non-carve-out stale references).
 
 ## Reading and writing issues
@@ -60,15 +60,16 @@ These three were explicitly called out as decisions to make and record, not inve
 here they are, with the reasoning.
 
 **1. Is the in-repo tracker deleted, or kept as a read-only archive?**
-Neither, exactly. `.scratch/` was **never actually populated** — `NEXT_ID` was still `001`,
-no issue file was ever created, `releases/` held only `.gitkeep`. There is no real *issue
-data* to lose by deleting it or to preserve by archiving it. That does **not** mean
-`.scratch/` is harmless as-is: `.scratch/README.md` still asserts "This directory **is**
-the issue tracker for this repo," which is now false and is exactly the kind of second
-authority Decision 1 was framed to avoid — it just isn't a *data* authority, since there's
-no issue content behind the claim. It is left in place, stale text and all, because
-deleting or correcting it is outside this PR's carve-out-only scope — see § What happened
-to `.scratch/` (and other non-carve-out stale references).
+Deleted, eventually — but not by this PR (WHI-1196). `.scratch/` was **never actually
+populated** — `NEXT_ID` was still `001`, no issue file was ever created, `releases/` held
+only `.gitkeep`. There was no real *issue data* to lose by deleting it or to preserve by
+archiving it. That did **not** mean `.scratch/` was harmless as-is: `.scratch/README.md`
+still asserted "This directory **is** the issue tracker for this repo," which was false
+and was exactly the kind of second authority Decision 1 was framed to avoid — it just
+wasn't a *data* authority, since there was no issue content behind the claim. This PR left
+it in place, stale text and all, because deleting or correcting it was outside its
+carve-out-only scope; WHI-1199 later deleted `.scratch/` outright — see § What happened to
+`.scratch/` (and other non-carve-out stale references).
 
 **2. What replaces "state change is a commit"?**
 Nothing does — this is accepted explicitly, not papered over. The old tracker's structural
@@ -100,37 +101,39 @@ repo and could never serve as a version signal.
 
 ## What happened to `.scratch/` (and other non-carve-out stale references)
 
-`.scratch/` is untouched. This PR touches only the governance carve-out file list
-(`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out), and `.scratch/` is not on that
-list — deleting or correcting it here would violate this same issue's own scope
-constraint ("the diff contains carve-out paths only"). Since it holds no real issue data
-(Decision 1), this doesn't block anything today, but its `README.md` is now factually
-wrong and stays that way until a follow-up chore issue removes or corrects it.
+`.scratch/` was untouched by this PR (WHI-1196) — it touched only the governance carve-out
+file list (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out), and `.scratch/` was
+not on that list, so deleting or correcting it in this PR would have violated this same
+issue's own scope constraint ("the diff contains carve-out paths only"). Since it held no
+real issue data (Decision 1), this didn't block anything at the time, but its `README.md`
+was factually wrong until WHI-1199 — the follow-up chore issue this section anticipated —
+deleted `.scratch/` outright (`b459d61`).
 
-The same reasoning covers `docs/DEFERRED_ISSUES.md`, also outside the carve-out, which
-carries **two** now-affected entries: the `WHI-1192` entry still describes the tracker as
-in-repo and says the naming inconsistency "resolves when WHI-1196 lands" (this PR is
+The same reasoning covered `docs/DEFERRED_ISSUES.md`, also outside the carve-out, which at
+the time carried **two** affected entries: the `WHI-1192` entry described the tracker as
+in-repo and said the naming inconsistency "resolves when WHI-1196 lands" (this PR is
 WHI-1196); the "`Done` state flip cannot ride its own PR" entry's whole deferral reason —
-"the alternative (an external tracker) is what we deliberately traded away" — is now
-inverted, since an external tracker is exactly what this PR adopts. Resolving either means
-editing `docs/DEFERRED_ISSUES.md`, which is not a carve-out path — left for the same
-follow-up.
+"the alternative (an external tracker) is what we deliberately traded away" — was inverted
+the moment this PR adopted an external tracker. Resolving either meant editing
+`docs/DEFERRED_ISSUES.md`, which was not a carve-out path — WHI-1199 moved both entries to
+*Resolved*.
 
-**Why this isn't recorded in `docs/DEFERRED_ISSUES.md` per the usual rule.** `AGENTS.md` §
+**Why this wasn't recorded in `docs/DEFERRED_ISSUES.md` per the usual rule.** `AGENTS.md` §
 Git workflow says a review finding left unfixed goes there *in this PR*. That rule
-presumes the PR can touch that file; this one can't without breaking its own carve-out-only
-constraint. Recording it here instead — the tracker-specific home for exactly this
-situation — is the compensating move, not a skipped step.
+presumed the PR could touch that file; this one couldn't without breaking its own
+carve-out-only constraint. Recording it here instead — the tracker-specific home for
+exactly this situation — was the compensating move, not a skipped step.
 
 This repo's live governance path (`AGENTS.md`, `docs/GIT_WORKFLOW.md`, this file,
 `docs/agents/issue-template.md`, `docs/agents/triage-labels.md`, and
-`.claude/skills/implement/SKILL.md`) no longer asserts the tracker is in-repo markdown as
-of this PR. `.scratch/README.md` and `docs/DEFERRED_ISSUES.md` are known, out-of-scope
-exceptions (above), not overlooked ones. `.claude/skills/setup-matt-pocock-skills/` is a
-different case: its `issue-tracker-{local,github,gitlab}.md` files are option templates
-copied into this very file when `/setup-matt-pocock-skills` runs, not live guidance any
-skill reads today — each now says so explicitly rather than reading as a live claim about
-this repo. Its `SKILL.md` (e.g. "Local markdown — issues live as files under
+`.claude/skills/implement/SKILL.md`) no longer asserts the tracker is in-repo markdown, as
+of this PR (WHI-1196). `.scratch/README.md` and `docs/DEFERRED_ISSUES.md` were known,
+out-of-scope exceptions at the time, not overlooked ones — both have since been closed, as
+detailed above. `.claude/skills/setup-matt-pocock-skills/` is, and remains, a different
+case: its `issue-tracker-{local,github,gitlab}.md` files are option templates copied into
+this very file when `/setup-matt-pocock-skills` runs, not live guidance any skill reads —
+each says so explicitly rather than reading as a live claim about this repo. Its
+`SKILL.md` (e.g. "Local markdown — issues live as files under
 `.scratch/<feature>/` in this repo") is the same kind of template prose describing what
 picking that option means, not a claim about which option is picked today. Separately,
 `.claude/skills/{to-tickets,ask-matt,code-review}/SKILL.md` mention `.scratch/` only as
