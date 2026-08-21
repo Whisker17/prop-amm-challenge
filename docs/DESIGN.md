@@ -218,8 +218,9 @@ number is no longer an honest estimate.
   listed by parameter vector and panic message in the `results/` snapshot. The search winner
   is re-evaluated the same way on the full train/validation segments (this section's "final
   point evaluation") — a point valid on `screening`'s seeds is not guaranteed valid on a
-  different, larger seed set (the Orbic family's quantization jitter, WHI-1206, is exactly
-  this: probabilistic across seeds, not just across parameter values) — and an invalid
+  different, larger seed set (the Orbic family's quantization jitter, WHI-1206 — now
+  Canceled, §6.2; the phenomenon is general, the example is retained — is exactly this:
+  probabilistic across seeds, not just across parameter values) — and an invalid
   re-evaluation blocks the run the same way a failed single-peak check does (§2.8): the
   evidence gathered so far is still written, but the point is not entered into the ranking
   un-flagged. If `bench fuzz` (§2.9's pre-search shape-fuzz gate, WHI-1212) already passed
