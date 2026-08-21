@@ -1,10 +1,9 @@
 use std::path::Path;
-use std::process::Command;
 
 use clap::Args;
 use prop_amm_shared::config::SimulationConfig;
 
-use crate::commands::note_if_not_decision_input;
+use crate::commands::{edges_agree, note_if_not_decision_input, run_prop_amm};
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
@@ -25,13 +24,6 @@ pub struct AnchorArgs {
     file: String,
     #[command(flatten)]
     segment_selector: SegmentSelector,
-}
-
-/// The upstream CLI only ever prints edge at 2 decimal places (`crates/cli/src/output.rs`),
-/// so "agreement" below means bench's own full-precision number rounds to the same string —
-/// the maximum the existing tooling can prove without editing upstream-owned code.
-fn edges_agree(a: f64, b: f64) -> bool {
-    format!("{a:.2}") == format!("{b:.2}")
 }
 
 struct SeedCheck {
@@ -196,73 +188,6 @@ fn sample_seeds(seeds: &[u64], n: usize) -> Vec<u64> {
     (0..n).map(|i| seeds[i * stride]).collect()
 }
 
-struct CliEdgeReport {
-    avg: f64,
-    total: f64,
-}
-
-fn run_prop_amm(
-    file: &str,
-    simulations: u32,
-    steps: u32,
-    seed_start: u64,
-    seed_stride: u64,
-) -> anyhow::Result<CliEdgeReport> {
-    let output = Command::new("cargo")
-        .args([
-            "run",
-            "--release",
-            "-p",
-            "prop-amm",
-            "--",
-            "run",
-            file,
-            "--simulations",
-            &simulations.to_string(),
-            "--steps",
-            &steps.to_string(),
-            "--seed-start",
-            &seed_start.to_string(),
-            "--seed-stride",
-            &seed_stride.to_string(),
-        ])
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run `prop-amm run {file}`: {e}"))?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "`prop-amm run {file}` failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut avg = None;
-    let mut total = None;
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("Avg edge:") {
-            avg = Some(parse_edge(value)?);
-        } else if let Some(value) = trimmed.strip_prefix("Total edge:") {
-            total = Some(parse_edge(value)?);
-        }
-    }
-
-    match (avg, total) {
-        (Some(avg), Some(total)) => Ok(CliEdgeReport { avg, total }),
-        _ => anyhow::bail!(
-            "`prop-amm run {file}` did not print both `Avg edge:`/`Total edge:` lines:\n{stdout}"
-        ),
-    }
-}
-
-fn parse_edge(value: &str) -> anyhow::Result<f64> {
-    value
-        .trim()
-        .parse::<f64>()
-        .map_err(|e| anyhow::anyhow!("failed to parse edge `{value}`: {e}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,12 +206,6 @@ mod tests {
     fn sample_seeds_returns_all_when_fewer_than_requested() {
         let seeds: Vec<u64> = (0..5).collect();
         assert_eq!(sample_seeds(&seeds, 20), seeds);
-    }
-
-    #[test]
-    fn edges_agree_compares_at_cli_precision() {
-        assert!(edges_agree(210.501, 210.499));
-        assert!(!edges_agree(210.50, 210.51));
     }
 
     #[test]

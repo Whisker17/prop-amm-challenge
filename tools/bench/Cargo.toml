@@ -22,6 +22,13 @@ rayon = { workspace = true }
 # upstream-owned Cargo.toml is renegotiated at the next upstream sync.
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
-
-[dev-dependencies]
+# Same versions crates/cli pins, so the fast path's duplicated safety/shim logic
+# (docs/DESIGN.md §2.6) parses source text identically to the reference path.
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
+# Pairs with `syn` to render a parsed `syn::Type` back to source text (tools/bench/src/params.rs).
+quote = "1"
+# A regular dependency (not dev-only): the fast path copies each built dylib to a fresh
+# temp file before loading it, so reloading the same build-dir output path never races a
+# still-mapped previous load (tools/bench/src/fast_compile.rs).
 tempfile = "3"

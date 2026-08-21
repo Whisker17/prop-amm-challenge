@@ -5,6 +5,8 @@ use clap::Args;
 use prop_amm_shared::config::{HyperparameterVariance, SimulationConfig};
 use serde::Deserialize;
 
+use crate::search::MAX_SEARCH_POINTS;
+
 /// The checked-in config every command loads by default. `config/README.md`'s per-machine
 /// override (`<name>.local.toml`, gitignored) takes precedence when present.
 pub const DEFAULT_CONFIG_PATH: &str = "config/bench.toml";
@@ -51,9 +53,17 @@ struct RawGridConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawSearchConfig {
+    max_points: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawBenchConfig {
     #[serde(default)]
     segments: HashMap<String, RawSegment>,
+    #[serde(default)]
+    search: Option<RawSearchConfig>,
     grid: Option<RawGridConfig>,
 }
 
@@ -100,6 +110,7 @@ pub struct GridConfig {
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
     segments: HashMap<String, Segment>,
+    search_max_points: usize,
     grid: Option<GridConfig>,
 }
 
@@ -174,9 +185,34 @@ impl BenchConfig {
 
         validate_disjoint(&segments)?;
 
+        let search = raw
+            .search
+            .ok_or_else(|| anyhow::anyhow!("bench config declares no [search] section"))?;
+        if search.max_points == 0 {
+            anyhow::bail!("[search] max_points must be at least 1");
+        }
+        if search.max_points > MAX_SEARCH_POINTS {
+            anyhow::bail!(
+                "[search] max_points ({}) exceeds the protocol's hard cap of {MAX_SEARCH_POINTS} \
+                 (docs/DESIGN.md §2.5, §3.4)",
+                search.max_points
+            );
+        }
+
         let grid = raw.grid.map(|g| validate_grid(&g)).transpose()?;
 
-        Ok(Self { segments, grid })
+        Ok(Self {
+            segments,
+            search_max_points: search.max_points,
+            grid,
+        })
+    }
+
+    /// The evaluation-point budget a search may spend (docs/DESIGN.md §2.5), as configured
+    /// in `config/bench.toml`'s `[search]` section — always `1..=MAX_SEARCH_POINTS`, enforced
+    /// at load time in `parse`.
+    pub fn search_max_points(&self) -> usize {
+        self.search_max_points
     }
 
     pub fn segment(&self, name: &str) -> anyhow::Result<&Segment> {
@@ -328,6 +364,9 @@ start = 3000
 count = 10
 single_use = true
 decision_input = true
+
+[search]
+max_points = 300
 "#
     }
 
@@ -521,6 +560,75 @@ singel_use = true
         assert_eq!(test.start, 3_000_000);
         assert_eq!(test.count, 1000);
         assert!(test.single_use);
+
+        assert_eq!(cfg.search_max_points(), 300);
+    }
+
+    #[test]
+    fn missing_search_section_fails() {
+        let text = r#"
+[segments.a]
+start = 0
+count = 5
+"#;
+        let err = BenchConfig::parse(text).unwrap_err();
+        assert!(
+            err.to_string().contains("no [search] section"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_max_points_fails() {
+        let text = r#"
+[segments.a]
+start = 0
+count = 5
+
+[search]
+max_points = 0
+"#;
+        let err = BenchConfig::parse(text).unwrap_err();
+        assert!(
+            err.to_string().contains("at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn max_points_above_the_protocol_cap_fails() {
+        let text = format!(
+            r#"
+[segments.a]
+start = 0
+count = 5
+
+[search]
+max_points = {}
+"#,
+            MAX_SEARCH_POINTS + 1
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds the protocol's hard cap"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn max_points_at_the_protocol_cap_is_allowed() {
+        let text = format!(
+            r#"
+[segments.a]
+start = 0
+count = 5
+
+[search]
+max_points = {MAX_SEARCH_POINTS}
+"#
+        );
+        let cfg = BenchConfig::parse(&text).unwrap();
+        assert_eq!(cfg.search_max_points(), MAX_SEARCH_POINTS);
     }
 
     /// Loads the actual shipped `config/bench.toml`'s `[grid]` table and checks it against

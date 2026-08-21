@@ -87,12 +87,6 @@ soon — anything touching a declared high-risk path defaults to at least High),
   non-carve-out only — touching it here would mix scopes, which WHI-1199's own acceptance
   criteria forbid. Fix: WHI-1200 (governance-scoped, carve-out paths only) updates all
   three sites to past tense.
-- **`tools/bench`'s fast-path timing (`0.11–0.57 s`/point) has no measurement to cite**
-  (Low, WHI-1192). `docs/DESIGN.md` §2.6 — the number describes `tools/bench`'s search
-  fast path, which does not exist in the repo yet (WHI-1193 stands up `tools/bench` with
-  no search; WHI-1194 adds the fast path this number describes), so it can't be
-  re-measured. Fix: once WHI-1194 adds the fast path, re-measure and cite via a `results/`
-  snapshot per §3.3.
 - **`telemetry.rs`'s recorder-dispatch mechanism duplicates `compile.rs`'s `Slot`/
   `LOADED_AFTER_SWAP` shape** (Low, WHI-1195). `tools/bench/src/telemetry.rs::AmmSlot` /
   `REAL_AFTER_SWAP` / `record_and_delegate` reproduce `compile.rs`'s `Slot` /
@@ -149,3 +143,16 @@ soon — anything touching a declared high-risk path defaults to at least High),
   already-accepted debt, that Linear and git are now separate systems with no shared
   commit boundary and can drift — real and ongoing, mitigated by operational discipline
   only, not eliminated by this entry's closure. Entry moved here by WHI-1199.
+- **`tools/bench`'s fast-path timing (`0.11–0.57 s`/point) has no measurement to cite**
+  (Low, WHI-1192). `docs/DESIGN.md` §2.6 — the number described `tools/bench`'s search
+  fast path, which didn't exist in the repo yet. Resolved by WHI-1194, which added the
+  fast path and re-measured it (`strategies/001-cpmm-fee/NOTES.md`,
+  `results/2026-08-20-fit-001-cpmm-fee.md`) — the original estimate was **not**
+  reproduced: 160 warm compiles measured min=0.472s, mean=1.000s, max=1.311s in the
+  measuring session's environment, re-confirmed under lower system load with no
+  improvement, and attributed to that environment rather than the fast path's design
+  (which never rebuilds `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the
+  directory's first use). §2.6 now cites the real figures instead of the estimate. This
+  closes the "no measurement to cite" defect; it does not claim the `< 1s` figure a
+  future WHI-1194 acceptance check named — that's a live, disclosed gap in
+  `strategies/001-cpmm-fee/NOTES.md`, not a re-opening of this entry.
