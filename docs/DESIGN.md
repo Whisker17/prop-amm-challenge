@@ -385,6 +385,13 @@ The freeze point is the mechanism, not the good intentions. Without it the list 
 growing — every strategy can spawn a variant — validation gets consumed indefinitely, and
 sooner or later someone peeks at test. Only a declared "stop adding now" prevents that.
 
+**Removal is not an addition, but it is not silent either.** An entry may leave the frozen
+list after the freeze only by owner decision, and only by being marked Canceled in its
+§6.2 row with a reason and a pointer to the issue that decided it — never by deleting the
+row. §1.4's "every strategy on the frozen list has reached a terminal state" is otherwise
+unfalsifiable: a row that just isn't there can't be checked against it. This rule governs
+removals only; it does not reopen the freeze for new entries.
+
 ## 3. Cross-cutting Policies
 
 ### 3.1 Parameter provenance
@@ -586,7 +593,7 @@ that governs if the two ever drift, since it is what's actually frozen before se
 
 | Id | Name | Source form | Original material | Known parameters (starting point, not frozen — §2.4) |
 | --- | --- | --- | --- | --- |
-| `002` | Orbic | Solidity (to port) | `docs/references/002-orbic-flashbots/` — Flashbots' `ExamplePropAmm.sol` | `concentration ∈ [1, 2000)`; oracle-published `multX`/`multY`; 5% lock threshold |
+| `002` | Orbic — **Canceled (WHI-1206)** | Solidity (to port) | `docs/references/002-orbic-flashbots/` — Flashbots' `ExamplePropAmm.sol` | `concentration ∈ [1, 2000)`; oracle-published `multX`/`multY`; 5% lock threshold |
 | `003` | Piecewise Linear | source (Rust) + prose (blog) | `docs/references/003-piecewise-linear/` — `benedictbrady/prop-amm`'s on-chain program | `NUM_PRICE_POINTS = 7` / `NUM_SEGMENTS = 6` per side; per-segment liquidity is derived, not free |
 | `004` | EWMA Dynamic Fee + Shock-Decay | source (Rust) + Solidity (richer port) + source (v3 extension) | `docs/references/004-ewma-shock-decay-fee/` — `lilaclilac09/pamm-a`'s own past competition submission | `SHOCK_THRESHOLD_1E9 = 5_000_000` (0.5%); vol EWMA α = 0.20; fee cap 100bps; `VOL_MULT`/`SHOCK_FEE_PER_STEP`/`SHOCK_DECAY_STEPS`/`BASE` per source |
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
@@ -595,6 +602,18 @@ that governs if the two ever drift, since it is what's actually frozen before se
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
 is measured against, not additional candidates.
+
+**`002` is Canceled**, per §2.10's removal clause: struck by owner decision rather than
+carried to a measured negative result (`WHI-1206`). The mechanism depends on top-of-block
+parameter republication via Flashbots' `PrioUpdateRegistry`; this harness exposes no
+pre-arbitrage surface (four instruction tags, `after_swap` fires only on executed trades,
+and a `sol_set_storage` call inside `compute_swap` is silently discarded). Post-hoc
+re-anchoring is therefore a **no-op** for a symmetric zero-fee curve, not merely late — and
+the family has no fee axis at all, so the revenue model stays broken even granting the
+primitive. `WHI-1206` carries the full argument, the per-sigma bleed table, and a recorded
+dissent. The surviving idea — virtual-reserve amplification at a real spread, i.e. `001`
+plus a concentration knob — is a **v0.2.0 candidate**, not part of this list (§2.10 forbids
+opening it while the v0.2.0 list is unfrozen).
 
 Two entries carry an explicit provenance caveat, read before porting:
 
