@@ -95,7 +95,7 @@ the estimator adapts more reliably upward (high sigma) than downward (low sigma)
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting finding #3)
 
 Stated verbatim, per the finding's own instruction: inside `compute_swap`, the fee — **and
-every other curve parameter** — may be a function of **storage bytes and compile-time
+every other curve parameter** — **is** a function of **storage bytes and compile-time
 constants only. Never of `input_amount`.** `fee_from_storage` takes only `storage`;
 `compute_swap` computes the fee once per call before touching `input`, and no other curve
 parameter exists in this mechanism. This holds unchanged from the source. `step` is not
@@ -113,8 +113,8 @@ available in `compute_swap` — it is not read anywhere in that function, only i
 - **Garbage state.** `crates/cli/src/commands/validate.rs`'s randomized probe fills
   `storage[0..32]` (all four state fields) with pseudo-random bytes and calls
   `compute_swap` only (never `after_swap`). Every read in `fee_from_storage` flows through
-  `saturating_mul`/`saturating_add` and a final `.min(MAX_FEE_1E9).min(FEE_HARD_MAX_1E9)`
-  clamp — an arbitrary `u64` `ewma_vol` (up to `u64::MAX`) or `shock_steps` (clamped to
+  `saturating_mul`/`saturating_add` and a final `.min(MAX_FEE_1E9)` clamp — an arbitrary
+  `u64` `ewma_vol` (up to `u64::MAX`) or `shock_steps` (clamped to
   `SHOCK_DECAY_STEPS` before use) can only saturate the fee at its ceiling, never panic or
   produce an out-of-range value. Confirmed by `prop-amm validate`'s "Randomized reserve/
   storage checks" passing with no arithmetic error (see § Parity gate below).
@@ -248,8 +248,9 @@ curve shows the widened cap helps somewhat over 233bps, not specifically over th
 (the winning point vs. `001`, not an ablation of this cap specifically) and should not be
 read as confirming the same claim more strongly than this direct sensitivity does.
 
-**Compile timing:** 139 warm compiles, min=0.257s, mean=0.686s, max=2.554s during this run
-— exceeds `docs/DESIGN.md` §2.6's `<1s` target on the mean and max samples. Consistent with
+**Compile timing:** 139 warm compiles, min=0.198s, mean=0.762s, max=3.342s during this run
+— exceeds `docs/DESIGN.md` §2.6's `<1s` target on the max sample only (mean stays under it).
+Consistent with
 the standing conclusion `strategies/001-cpmm-fee/NOTES.md` and WHI-1205 already reached (a
 session/system-load effect, not a fast-path regression) — not re-investigated here for the
 same reason `005`'s NOTES.md gave: a single run cannot establish a fresh recurrence
