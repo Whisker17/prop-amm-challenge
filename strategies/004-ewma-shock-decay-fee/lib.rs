@@ -49,11 +49,6 @@ const ONE_M_ALPHA_1E9: u128 = 1_000_000_000 - ALPHA_1E9; // derived, not indepen
 const SHOCK_THRESHOLD_1E9: u64 = 5_000_000; // 0.5% price move re-arms the shock
 const SHOCK_DECAY_STEPS: u64 = 8;
 
-// Hard guard so `1_000_000_000 - fee_1e9` can never underflow even if a future edit feeds
-// fee_from_storage an out-of-range fee. fee_from_storage already clamps to MAX_FEE_1E9
-// (<= 400bps * 100_000 = 40_000_000, far below 1e9), so this is belt-and-suspenders.
-const FEE_HARD_MAX_1E9: u64 = 900_000_000;
-
 // ---- storage byte layout (1024 bytes total, little-endian) ------------------
 //   [0..8]   ewma_vol     u64 — EWMA of |delta price / price|, scaled 1e9
 //   [8..16]  last_rx      u64 — reserve_x saved after previous swap
@@ -186,8 +181,7 @@ fn fee_from_storage(storage: &[u8]) -> u128 {
     let fee_1e9 = BASE_FEE_1E9
         .saturating_add(vol_fee)
         .saturating_add(shock_fee)
-        .min(MAX_FEE_1E9)
-        .min(FEE_HARD_MAX_1E9);
+        .min(MAX_FEE_1E9);
     fee_1e9 as u128
 }
 

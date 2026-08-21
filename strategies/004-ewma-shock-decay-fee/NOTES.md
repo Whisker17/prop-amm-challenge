@@ -52,13 +52,32 @@ during porting to fold either in, so they stay candidate `004b`/`004c` variant m
   - The source's hardcoded 100bps (`MAX_FEE_1E9 = 10_000_000`) fee cap became the searched
     `MAX_FEE_BPS`, per the issue's own review amendment (extending the cap is this
     strategy's central hypothesis, not an incidental change — see § Frozen parameter space).
-  - Added `FEE_HARD_MAX_1E9` (belt-and-suspenders, never binds within the frozen range —
-    see § Error-path saturation) and a defensive `saturating_sub` in `compute_swap`'s
-    `keep` calculation. Neither changes behavior for any value the frozen space can
-    produce; both are the same "additional safety margin, unchanged normal-path behavior"
-    class of change `005`'s `FEE_HARD_MAX` was.
+  - Added a defensive `saturating_sub` in `compute_swap`'s `keep` calculation (the
+    consumer of the fee value) — never binds within the frozen range, since
+    `fee_from_storage` already clamps to `MAX_FEE_1E9 <= 40,000,000`, far below
+    `1,000,000,000`; unchanged normal-path behavior, same class of change `005`'s
+    `FEE_HARD_MAX` was. An earlier draft of this port also added a second clamp
+    (`FEE_HARD_MAX_1E9`) *inside* `fee_from_storage` itself — removed after review: unlike
+    `005`'s guard (which sits in `cp_out`, a function that takes an arbitrary caller-
+    supplied `fee_bps`), `fee_from_storage` is the sole *producer* of the fee, so a second
+    ceiling there had no caller-supplied value to guard against and was provably dead
+    (900,000,000 vs. a maximum possible output of 40,000,000). `.min(MAX_FEE_1E9)` alone
+    is the correct and complete guard for a producer.
   - Renamed the source's inline fee/output logic into `fee_from_storage`/`ceil_div` helper
     functions for readability; no arithmetic changed.
+  - `after_swap`'s length guard is `data.len() < 42 || storage.len() < STATE_END` (42, not
+    the source's `34`) — stricter than the source needs, since neither this function nor
+    the source reads past offset 34 (`cur_ry`'s `read_u64(data, 26)` needs only 34 bytes).
+    The extra 8 bytes account for the payload's unused `step` field (offset 34..42) for
+    readability against `crates/shared/src/instruction.rs`'s documented `AFTER_SWAP_SIZE`
+    boundary; harmless in practice since `encode_after_swap` always emits the full
+    1,066-byte payload, but flagged here since it is a behavioral delta from the source
+    the earlier draft of this list omitted.
+  - `fee_from_storage`'s `if storage.len() < STATE_END { return BASE_FEE_1E9 }` branch has
+    no source counterpart (the source's `fee_from_state`-equivalent logic assumed a
+    full-length storage slice). Never triggered by this harness (storage is always exactly
+    1024 bytes), but added as defense-in-depth consistent with finding #5's spirit and
+    flagged here for the same reason as the guard above.
 
 ## Signal reinterpretation (cross-cutting finding #11, per-strategy review amendment)
 
@@ -75,11 +94,13 @@ the estimator adapts more reliably upward (high sigma) than downward (low sigma)
 
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting finding #3)
 
-Inside `compute_swap`, the fee is a function of **storage bytes and compile-time constants
-only, never of `input_amount`**. `fee_from_storage` takes only `storage`; `compute_swap`
-computes the fee once per call before touching `input`. This holds unchanged from the
-source. `step` is not read anywhere in `compute_swap` (only in `after_swap`'s payload,
-offset 34).
+Stated verbatim, per the finding's own instruction: inside `compute_swap`, the fee — **and
+every other curve parameter** — may be a function of **storage bytes and compile-time
+constants only. Never of `input_amount`.** `fee_from_storage` takes only `storage`;
+`compute_swap` computes the fee once per call before touching `input`, and no other curve
+parameter exists in this mechanism. This holds unchanged from the source. `step` is not
+available in `compute_swap` — it is not read anywhere in that function, only in
+`after_swap`'s payload (offset 34).
 
 ## Cold start and garbage-state handling (findings #4, #5)
 
@@ -214,11 +235,18 @@ EWMA-vol term (`VOL_MULT=1`) and the widened `MAX_FEE_BPS` cap, not from the sho
 half of the mechanism its own name advertises.
 
 **`MAX_FEE_BPS` converged to 391, near but not at its own upper bound (400).** An interior
-point (not a boundary hit): the widened cap the review amendment argued for is doing real
-work (see § Grid mode below, where the high-sigma cells that most exercise this cap are
-exactly where the candidate gains the most), but the search did not run all the way to the
-edge of the range, so this is not a "the frozen space is too narrow" signal the way `005`'s
-own `FEE_LO` boundary hit was.
+point (not a boundary hit), so this is not a "the frozen space is too narrow" signal the
+way `005`'s own `FEE_LO` boundary hit was. The evaluated curve shows the cap's value is
+real but modest and diminishing in this region: at `[BASE_BPS=49, VOL_MULT=1,
+SHOCK_FEE_PER_STEP_BPS=5]`, raising `MAX_FEE_BPS` from 233 to 390 gains **+4.03** screening
+edge, while 390 to 400 gains essentially nothing (**-0.03**, noise-scale) — a plateau, not
+a boundary the search is straining against. This is weaker evidence than a clean ablation
+against the source's original 100bps cap would be: no evaluated point in the committed
+curve pins `MAX_FEE_BPS <= 100` at the winning `(BASE_BPS, VOL_MULT)` region, so this
+curve shows the widened cap helps somewhat over 233bps, not specifically over the source's
+100bps ceiling. § Grid mode's high-sigma cells are a separate, indirect line of evidence
+(the winning point vs. `001`, not an ablation of this cap specifically) and should not be
+read as confirming the same claim more strongly than this direct sensitivity does.
 
 **Compile timing:** 139 warm compiles, min=0.257s, mean=0.686s, max=2.554s during this run
 — exceeds `docs/DESIGN.md` §2.6's `<1s` target on the mean and max samples. Consistent with
@@ -341,6 +369,17 @@ improvement, and against `005-vol-adaptive-cpmm-fee`'s own **422.93** on the sam
 a further **+20.82 (+4.9%)** improvement, making `004` the current leader among ranked M1
 candidates on this measure (docs/DESIGN.md §2.10 ranks on validation, not this observation
 row — see § Search above for the validation number the actual ranking will use: 446.30).
+
+## Verification (docs/DESIGN.md §4.4 acceptance criterion, `AGENTS.md`)
+
+- `cargo test --workspace`: **214 passed, 0 failed, 1 ignored** (no regression against the
+  green baseline `AGENTS.md` records).
+- `rustfmt` applied to `strategies/004-ewma-shock-decay-fee/lib.rs` (the only touched
+  source file); `cargo fmt --all` deliberately not run, per the repo's own caveat that it
+  reformats inherited upstream files outside this issue's scope.
+- No new `clippy`-worthy issues in the touched files; `strategies/**` is outside the cargo
+  workspace (`Cargo.toml`'s `members`/`exclude` lists), so `cargo clippy --workspace` does
+  not lint it directly, matching `001`/`005`'s own precedent.
 
 ## Note on the environmental build workaround used while producing this record
 
