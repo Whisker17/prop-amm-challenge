@@ -20,7 +20,10 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 11
     }
 
@@ -75,10 +78,10 @@ fn targets_move_only_on_an_r_state_transition_and_only_on_the_traded_side() {
             // Mix small, medium and large trades so the inventory repeatedly
             // crosses the balance point and exercises every R transition.
             let magnitude = match rng.range(4) {
-                0 => 1_000_000_000_000_000u64,      // ~0.001
-                1 => 100_000_000_000_000_000,       // ~0.1
-                2 => 2_000_000_000_000_000_000,     // ~2
-                _ => 9_000_000_000_000_000_000,     // ~9
+                0 => 1_000_000_000_000_000u64,  // ~0.001
+                1 => 100_000_000_000_000_000,   // ~0.1
+                2 => 2_000_000_000_000_000_000, // ~2
+                _ => 9_000_000_000_000_000_000, // ~9
             };
             let amount_in = if sell_base {
                 U256::from_u128(1 + rng.range(magnitude) as u128)
@@ -138,7 +141,10 @@ fn targets_move_only_on_an_r_state_transition_and_only_on_the_traded_side() {
         }
     }
 
-    assert!(transitions > 50, "expected many R transitions, saw {transitions}");
+    assert!(
+        transitions > 50,
+        "expected many R transitions, saw {transitions}"
+    );
     assert!(
         non_transitions > 50,
         "expected many non-transitions, saw {non_transitions}"
@@ -178,7 +184,11 @@ fn the_exact_return_to_one_amount_lands_on_state_one() {
     let result = pool
         .quote(base, quote, true, back_to_one)
         .expect("exact boundary quote");
-    assert_eq!(result.new_r, RState::One, "exact boundary must return to ONE");
+    assert_eq!(
+        result.new_r,
+        RState::One,
+        "exact boundary must return to ONE"
+    );
     assert_eq!(
         result.amount_out,
         quote.checked_sub(adjusted_q0).unwrap(),
@@ -187,8 +197,15 @@ fn the_exact_return_to_one_amount_lands_on_state_one() {
 
     pool.commit(true, &result);
     assert_eq!(pool.r_state, RState::One);
-    assert_eq!(pool.target_base, adjusted_b0, "sell-base writes the base target");
-    assert_eq!(pool.target_quote, wad(10_000), "sell-base leaves the quote target");
+    assert_eq!(
+        pool.target_base, adjusted_b0,
+        "sell-base writes the base target"
+    );
+    assert_eq!(
+        pool.target_quote,
+        wad(10_000),
+        "sell-base leaves the quote target"
+    );
 }
 
 #[test]
@@ -239,8 +256,14 @@ fn adjusted_target_is_idempotent() {
             let Some((second_b0, second_q0)) = second.adjusted_target() else {
                 panic!("second adjustedTarget reverted");
             };
-            assert_eq!(first_b0, second_b0, "adjustedTarget is not idempotent on B0");
-            assert_eq!(first_q0, second_q0, "adjustedTarget is not idempotent on Q0");
+            assert_eq!(
+                first_b0, second_b0,
+                "adjustedTarget is not idempotent on B0"
+            );
+            assert_eq!(
+                first_q0, second_q0,
+                "adjustedTarget is not idempotent on Q0"
+            );
         }
     }
 }

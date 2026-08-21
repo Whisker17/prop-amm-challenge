@@ -254,7 +254,11 @@ pub fn flashbots_initial_storage(
     let mut storage = vec![0u8; STORAGE_SIZE];
     write_u256(&mut storage, flashbots_storage::MULT_X, price_wad);
     write_u256(&mut storage, flashbots_storage::MULT_Y, mult_y);
-    write_u256(&mut storage, flashbots_storage::CONCENTRATION, concentration);
+    write_u256(
+        &mut storage,
+        flashbots_storage::CONCENTRATION,
+        concentration,
+    );
     write_u256(&mut storage, flashbots_storage::TARGET_X, target_x_wad);
     storage
 }
@@ -402,7 +406,11 @@ mod tests {
 
         let pool = dodo_pool_from_storage(&storage).unwrap();
         assert_eq!(pool.r_state, RState::BelowOne, "R must fall below one");
-        assert_eq!(pool.target_base, wad(100), "sell-base leaves the base target");
+        assert_eq!(
+            pool.target_base,
+            wad(100),
+            "sell-base leaves the base target"
+        );
         assert_eq!(
             read_u256(&storage, dodo_storage::RESERVE_BASE_COMMITTED),
             nano_to_wad(post_rx)
@@ -468,7 +476,13 @@ mod tests {
         let storage = dodo_storage_blob(ONE);
         assert_eq!(dodo_compute_swap(&[0u8; 10]), 0);
         assert_eq!(
-            dodo_compute_swap(&encode_swap_instruction(1, 0, 100 * NANO, 100 * NANO, &storage)),
+            dodo_compute_swap(&encode_swap_instruction(
+                1,
+                0,
+                100 * NANO,
+                100 * NANO,
+                &storage
+            )),
             0
         );
         assert_eq!(
@@ -479,6 +493,9 @@ mod tests {
             dodo_compute_swap(&encode_swap_instruction(9, NANO, NANO, NANO, &storage)),
             0
         );
-        assert_eq!(null_compute_swap(&encode_swap_instruction(1, NANO, NANO, NANO, &storage)), 0);
+        assert_eq!(
+            null_compute_swap(&encode_swap_instruction(1, NANO, NANO, NANO, &storage)),
+            0
+        );
     }
 }

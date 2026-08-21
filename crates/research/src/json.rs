@@ -107,10 +107,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             Ok(())
         } else {
-            Err(format!(
-                "expected '{}' at byte {}",
-                c as char, self.pos
-            ))
+            Err(format!("expected '{}' at byte {}", c as char, self.pos))
         }
     }
 
@@ -230,8 +227,7 @@ impl<'a> Parser<'a> {
                                 .get(self.pos..self.pos + 4)
                                 .ok_or_else(|| "truncated \\u escape".to_string())?;
                             let hex = std::str::from_utf8(hex).map_err(|e| e.to_string())?;
-                            let code =
-                                u32::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
+                            let code = u32::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
                             self.pos += 4;
                             out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                         }
@@ -344,7 +340,10 @@ mod tests {
     fn parses_escapes_and_unicode() {
         let text = r#"{"s": "a\"b\\c\ndé中"}"#;
         let json = Json::parse(text).expect("parse");
-        assert_eq!(json.get("s").unwrap().as_str(), Some("a\"b\\c\nd\u{e9}\u{4e2d}"));
+        assert_eq!(
+            json.get("s").unwrap().as_str(),
+            Some("a\"b\\c\nd\u{e9}\u{4e2d}")
+        );
     }
 
     #[test]

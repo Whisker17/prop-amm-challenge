@@ -98,16 +98,25 @@ mod tests {
     fn div_floor_and_div_ceil() {
         assert_eq!(div_floor(u(1), u(3)).unwrap(), u(333_333_333_333_333_333));
         assert_eq!(div_ceil(u(1), u(3)).unwrap(), u(333_333_333_333_333_334));
-        assert_eq!(div_floor(u(2), u(1)).unwrap(), ONE.checked_mul(u(2)).unwrap());
+        assert_eq!(
+            div_floor(u(2), u(1)).unwrap(),
+            ONE.checked_mul(u(2)).unwrap()
+        );
     }
 
     #[test]
     fn reciprocals() {
         assert_eq!(reciprocal_floor(ONE).unwrap(), ONE);
-        assert_eq!(reciprocal_floor(u(3)).unwrap(), ONE2.checked_div(u(3)).unwrap());
+        assert_eq!(
+            reciprocal_floor(u(3)).unwrap(),
+            ONE2.checked_div(u(3)).unwrap()
+        );
         assert_eq!(
             reciprocal_ceil(u(3)).unwrap(),
-            ONE2.checked_div(u(3)).unwrap().checked_add(U256::ONE).unwrap()
+            ONE2.checked_div(u(3))
+                .unwrap()
+                .checked_add(U256::ONE)
+                .unwrap()
         );
     }
 

@@ -46,7 +46,7 @@ pub fn price_to_wad(price: f64) -> Option<U256> {
         scaled.checked_shl(exponent as u32)
     } else {
         // Truncating shift == floor for non-negative values.
-        Some(scaled.shr((-exponent) as u32))
+        Some(scaled.shift_right((-exponent) as u32))
     }
 }
 
@@ -74,10 +74,19 @@ mod tests {
 
     #[test]
     fn dyadic_prices_quantise_exactly() {
-        assert_eq!(price_to_wad(100.0).unwrap(), U256::from_u128(100_000_000_000_000_000_000));
+        assert_eq!(
+            price_to_wad(100.0).unwrap(),
+            U256::from_u128(100_000_000_000_000_000_000)
+        );
         assert_eq!(price_to_wad(1.0).unwrap(), WAD);
-        assert_eq!(price_to_wad(0.5).unwrap(), U256::from_u128(500_000_000_000_000_000));
-        assert_eq!(price_to_wad(1024.0).unwrap(), WAD.checked_mul(U256::from_u64(1024)).unwrap());
+        assert_eq!(
+            price_to_wad(0.5).unwrap(),
+            U256::from_u128(500_000_000_000_000_000)
+        );
+        assert_eq!(
+            price_to_wad(1024.0).unwrap(),
+            WAD.checked_mul(U256::from_u64(1024)).unwrap()
+        );
     }
 
     #[test]

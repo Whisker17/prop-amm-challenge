@@ -22,6 +22,7 @@ pub mod experiment;
 pub mod flashbots;
 pub mod json;
 pub mod metrics;
+pub mod paired;
 pub mod probe;
 pub mod report;
 pub mod strategies;

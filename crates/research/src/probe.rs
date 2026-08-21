@@ -22,7 +22,12 @@ use crate::wad::{nano_to_wad, price_to_wad};
 /// * Flashbots: the marginal price of the curve, `(K / base) / base`, expressed
 ///   in WAD. At `reserveX == targetX` this is exactly `multX / multY`.
 /// * Uniswap V2: `reserveY / reserveX` in WAD.
-pub fn mid_price_wad(strategy: &Strategy, price: f64, reserve_x: f64, reserve_y: f64) -> Option<U256> {
+pub fn mid_price_wad(
+    strategy: &Strategy,
+    price: f64,
+    reserve_x: f64,
+    reserve_y: f64,
+) -> Option<U256> {
     let price_wad = price_to_wad(price)?;
     let base_wad = nano_to_wad(f64_to_nano(reserve_x));
     let quote_wad = nano_to_wad(f64_to_nano(reserve_y));
@@ -256,8 +261,14 @@ mod tests {
             &[100.0],
             &[1.0],
         );
-        let flat_buy = rows.iter().find(|r| r.strategy_id == flat.id && r.side == "buy_x").unwrap();
-        let tight_buy = rows.iter().find(|r| r.strategy_id == tight.id && r.side == "buy_x").unwrap();
+        let flat_buy = rows
+            .iter()
+            .find(|r| r.strategy_id == flat.id && r.side == "buy_x")
+            .unwrap();
+        let tight_buy = rows
+            .iter()
+            .find(|r| r.strategy_id == tight.id && r.side == "buy_x")
+            .unwrap();
         assert!(tight_buy.output > flat_buy.output);
 
         let k_big = strategy_by_id("dodo-k1000000000000000000").unwrap();
@@ -270,8 +281,14 @@ mod tests {
             &[100.0],
             &[1.0],
         );
-        let big = rows.iter().find(|r| r.strategy_id == k_big.id && r.side == "buy_x").unwrap();
-        let small = rows.iter().find(|r| r.strategy_id == k_small.id && r.side == "buy_x").unwrap();
+        let big = rows
+            .iter()
+            .find(|r| r.strategy_id == k_big.id && r.side == "buy_x")
+            .unwrap();
+        let small = rows
+            .iter()
+            .find(|r| r.strategy_id == k_small.id && r.side == "buy_x")
+            .unwrap();
         assert!(small.output > big.output, "smaller K must slip less");
     }
 }

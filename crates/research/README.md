@@ -38,9 +38,24 @@ offline build of the submission toolchain.
 | Flashbots prop AMM | `flashbots/priority-update-registry` — `src/ExamplePropAmm.sol` | `da53117870c7bec96d71caebe1b3f94370aba3d6` |
 | Uniswap V2 | `UniswapV2Library.getAmountOut` | fee numerator `997 -> 1000` (zero fee); nothing else changed |
 
-DODO state persistence follows `mantle-propamm-contracts/src/MantlePropAmmPool.sol`.
-Fixture provenance is recorded in `tests/fixtures/dodo/SOURCES.md` and
-`tests/fixtures/flashbots/SOURCES.md`.
+DODO state persistence follows the read-only Mantle reference implementation,
+pinned as follows (also recorded in every `summary.json`):
+
+| Item | Pin |
+| --- | --- |
+| repository | `mantle-propamm-contracts`, branch `feature/v2-dodo-curve`, commit `07f6797` |
+| `src/MantlePropAmmPool.sol` | sha256 `28bd3d2fa70481ffa0ab61b2d0ff1a7914406fdeeb5814643eb5d8b12e9530c4` (last modified there by `5e4071b`) |
+| `src/MantlePropAmmTypes.sol` | sha256 `bee141418f90a91e3f76f291468e47ba39d7865be27fb4ff172fe308149517c8` |
+| design document | `docs/[TD] mantle PropAmm 合约设计.md`, sha256 `c395caa6eb5c68595274bf1c1af29882c23c1228fdf7a2dda019961fb7e52b3a` |
+| vendored DODO | `DecimalMath` `27d9d19a…6352`, `DODOMath` `90f688a2…c448a`, `PMMPricing` `093b9ada…807e` |
+
+Those files are byte-identical between `01a556a` (when they were read) and
+`07f6797`; only deployment scripts and docs moved in between. Every result set
+also records the **benchmark repository commit** that produced it, plus whether
+the working tree was dirty at run time.
+
+Fixture provenance is recorded in `tests/fixtures/dodo/SOURCES.md`,
+`tests/fixtures/flashbots/SOURCES.md` and `tests/fixtures/u256/SOURCES.md`.
 
 The read-only `mantle-propamm-contracts` checkout is never modified. The
 Flashbots vector generator copies the pinned library into a temporary directory
@@ -59,6 +74,7 @@ src/strategies.rs       strategy catalogue and the K <-> concentration table
 src/probe.rs            equilibrium mid prices and the quote matrix
 src/experiment.rs       the research simulation loop and batch runner
 src/metrics.rs          per-run records, percentiles, per-strategy summaries
+src/paired.rs           per-seed paired differences, 95% CI, oracle/shape attribution
 src/report.rs           JSON / CSV / Chinese Markdown output
 src/bin/research.rs     the research CLI (separate binary from `prop-amm`)
 solidity/flashbots-golden/  the Solidity golden-vector generator
@@ -137,8 +153,16 @@ cargo run --release -p prop-amm-research --bin research -- \
   bench --simulations 1000 --steps 10000 --mode solo --out research-out/full-solo
 ```
 
-Outputs per run directory: `summary.json`, `summary.csv`, `runs.csv` (one row per
-strategy per seed) and `REPORT.zh-CN.md`.
+Outputs per run directory:
+
+| File | Contents |
+| --- | --- |
+| `REPORT.zh-CN.md` | Chinese report: setup, provenance, scope, health check, rankings, splits, paired statistics |
+| `summary.json` / `summary.csv` | per-strategy distributions (mean, P5/P50/P95, min, max) and `curve_reverts` |
+| `runs.csv` | one row per strategy per seed |
+| `paired-stats.json` / `paired-deltas.csv` | per-seed paired differences with 95% CI, t, paired win rate, significance |
+| `attribution.csv` | oracle-system vs curve-shape split of each strategy's advantage over Uniswap V2 |
+| `quote-matrix.csv` / `.json`, `mid-price.json` | static probes at the opening inventory |
 
 ### Modes
 
@@ -166,7 +190,58 @@ profit:
 * `retailFlowShare` = the curve's retail notional / total retail notional
 * `arbCount`, `arbNotional`
 * `finalInventoryDeviation`, `maxInventoryDeviation`, both `(reserveX - initialX) / initialX`
-* P5 / P50 / P95, mean, min, max and win rate for each of the above
+* P5 / P50 / P95, mean, min and max for each of the above
+* `positiveNetRate` — the share of seeds on which *this* strategy's `netEdge` was
+  positive. It is a marginal rate, **not** a comparison against another curve.
+
+### Paired statistics
+
+Every strategy sees the same seeds, so cross-curve claims are made on **per-seed
+differences**, which cancel the shared price path and order flow:
+
+* `Flashbots - DODO` on every row of the pairing table
+* every strategy against the zero-fee Uniswap V2 baseline
+
+each with mean, P5/P50/P95, standard error, a 95% confidence interval (normal
+approximation, `mean ± 1.96 · SE`), the t statistic, and the **paired win rate**
+— the share of seeds on which the treatment beat the baseline. A ~50% paired win
+rate with |t| < 2 means the two curves are indistinguishable, no matter how their
+marginal means happen to rank.
+
+### Oracle advantage vs curve shape
+
+`attribution.csv` splits each strategy's advantage over zero-fee Uniswap V2 into:
+
+* **oracle-system advantage** = `mean(anchor - univ2)`
+* **curve-shape effect** = `mean(strategy - anchor)`
+
+where the anchor is the oracle-aware strategy in the same family whose curve
+shape coincides with a zero-fee constant product at the opening inventory:
+`DODO K = 1e18` (the constant-product case of the PMM) and
+`Flashbots concentration = 1` (its virtual quote reserve equals the real one when
+`reserveX == targetX`). The quote matrix shows both quoting bit-identically to
+Uniswap V2 at that point. The two components sum exactly to
+`mean(strategy - univ2)`.
+
+The split is anchored at the opening inventory. It is not a claim that an
+oracle-aware curve equals constant product elsewhere — once the oracle moves, the
+anchor reprices and a passive constant product does not. Only means decompose;
+percentiles are not split.
+
+## Scope: curve-only
+
+This benchmark compares **quote functions**. Pool-level admission and risk
+control are out of scope and are not implemented:
+
+* Flashbots `_isTargetYLocked` (the targetY emergency lock). It guards the swap
+  path only; upstream `quoteXtoY` / `quoteYtoX` do not pass through it either.
+* The Mantle pool's notional / reserve / inventory-deviation caps, which are
+  Mantle policy rather than DODO pricing.
+* Balance, allowance and transfer checks.
+
+Consequently `curve_reverts = 0` means **the ported pricing maths never hit a
+revert branch** (overflow, underflow, division by zero) across the whole run. It
+is *not* a claim that a full on-chain swap would have succeeded.
 
 ## Fidelity notes
 
@@ -191,10 +266,9 @@ Things that are deliberately preserved or explicitly bounded:
 * **Runtime shape checks are not involved.** `prop-amm-sim`'s monotonicity /
   concavity guard only applies to an AMM named `submission`; research strategies
   carry their own ids, so the guard is inert here. It was not modified.
-* **Mantle risk overlays are not part of the curve.** The notional, reserve and
-  inventory-deviation caps in `MantlePropAmmPool` are Mantle policy, not DODO
-  pricing, so they are not applied. Output-exceeds-reserve is still rejected
-  (a zero quote), which is what the on-chain revert amounts to.
+* **Mantle risk overlays are not part of the curve** (see *Scope* above).
+  Output-exceeds-reserve is still rejected with a zero quote, which is what the
+  simulation already does for any curve.
 
 ## Phase 2: Uniswap V3
 

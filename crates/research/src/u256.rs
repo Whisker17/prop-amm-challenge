@@ -18,8 +18,12 @@ pub struct U256 {
 }
 
 impl U256 {
-    pub const ZERO: U256 = U256 { limbs: [0, 0, 0, 0] };
-    pub const ONE: U256 = U256 { limbs: [1, 0, 0, 0] };
+    pub const ZERO: U256 = U256 {
+        limbs: [0, 0, 0, 0],
+    };
+    pub const ONE: U256 = U256 {
+        limbs: [1, 0, 0, 0],
+    };
     pub const MAX: U256 = U256 {
         limbs: [u64::MAX; 4],
     };
@@ -102,10 +106,10 @@ impl U256 {
     pub fn overflowing_add(self, other: U256) -> (U256, bool) {
         let mut out = [0u64; 4];
         let mut carry = 0u64;
-        for i in 0..4 {
+        for (i, limb) in out.iter_mut().enumerate() {
             let (sum, c1) = self.limbs[i].overflowing_add(other.limbs[i]);
             let (sum, c2) = sum.overflowing_add(carry);
-            out[i] = sum;
+            *limb = sum;
             carry = (c1 as u64) + (c2 as u64);
         }
         (U256 { limbs: out }, carry != 0)
@@ -130,10 +134,10 @@ impl U256 {
     pub fn overflowing_sub(self, other: U256) -> (U256, bool) {
         let mut out = [0u64; 4];
         let mut borrow = 0u64;
-        for i in 0..4 {
+        for (i, limb) in out.iter_mut().enumerate() {
             let (diff, b1) = self.limbs[i].overflowing_sub(other.limbs[i]);
             let (diff, b2) = diff.overflowing_sub(borrow);
-            out[i] = diff;
+            *limb = diff;
             borrow = (b1 as u64) + (b2 as u64);
         }
         (U256 { limbs: out }, borrow != 0)
@@ -166,9 +170,8 @@ impl U256 {
             let mut carry = 0u128;
             for j in 0..4 {
                 let idx = i + j;
-                let cur = out[idx] as u128
-                    + (self.limbs[i] as u128) * (other.limbs[j] as u128)
-                    + carry;
+                let cur =
+                    out[idx] as u128 + (self.limbs[i] as u128) * (other.limbs[j] as u128) + carry;
                 out[idx] = cur as u64;
                 carry = cur >> 64;
             }
@@ -210,7 +213,11 @@ impl U256 {
             return Some(self);
         }
         if shift >= 256 {
-            return if self.is_zero() { Some(U256::ZERO) } else { None };
+            return if self.is_zero() {
+                Some(U256::ZERO)
+            } else {
+                None
+            };
         }
         if self.bit_len() + shift > 256 {
             return None;
@@ -240,7 +247,10 @@ impl U256 {
         U256 { limbs: out }
     }
 
-    pub fn shr(self, shift: u32) -> U256 {
+    /// Logical right shift. Named `shift_right` rather than `shr` so it cannot
+    /// be mistaken for `std::ops::Shr`, which this type deliberately does not
+    /// implement (every operation here is explicit).
+    pub fn shift_right(self, shift: u32) -> U256 {
         if shift == 0 {
             return self;
         }
@@ -250,7 +260,7 @@ impl U256 {
         let limb_shift = (shift / 64) as usize;
         let bit_shift = shift % 64;
         let mut out = [0u64; 4];
-        for i in 0..4 {
+        for (i, limb) in out.iter_mut().enumerate() {
             let src = i + limb_shift;
             if src >= 4 {
                 break;
@@ -259,7 +269,7 @@ impl U256 {
             if bit_shift > 0 && src + 1 < 4 {
                 value |= self.limbs[src + 1] << (64 - bit_shift);
             }
-            out[i] = value;
+            *limb = value;
         }
         U256 { limbs: out }
     }
@@ -360,7 +370,10 @@ impl U256 {
     }
 
     pub fn from_hex_str(text: &str) -> Option<U256> {
-        let body = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")).unwrap_or(text);
+        let body = text
+            .strip_prefix("0x")
+            .or_else(|| text.strip_prefix("0X"))
+            .unwrap_or(text);
         if body.is_empty() {
             return None;
         }
@@ -509,9 +522,7 @@ fn div_rem_knuth(dividend: U256, divisor: U256) -> (U256, U256) {
         let mut rhat = numerator % (vn[n - 1] as u64);
 
         loop {
-            if qhat >= BASE
-                || qhat * (vn[n - 2] as u64) > (rhat << 32) + (un[j + n - 2] as u64)
-            {
+            if qhat >= BASE || qhat * (vn[n - 2] as u64) > (rhat << 32) + (un[j + n - 2] as u64) {
                 qhat -= 1;
                 rhat += vn[n - 1] as u64;
                 if rhat < BASE {
@@ -585,9 +596,14 @@ mod tests {
     #[test]
     fn mul_edges() {
         assert_eq!(U256::MAX.checked_mul(U256::from_u64(2)), None);
-        assert_eq!(U256::MAX.wrapping_mul(U256::from_u64(2)), U256::MAX.wrapping_sub(U256::ONE));
         assert_eq!(
-            dec("1000000000000000000").checked_mul(dec("1000000000000000000")).unwrap(),
+            U256::MAX.wrapping_mul(U256::from_u64(2)),
+            U256::MAX.wrapping_sub(U256::ONE)
+        );
+        assert_eq!(
+            dec("1000000000000000000")
+                .checked_mul(dec("1000000000000000000"))
+                .unwrap(),
             dec("1000000000000000000000000000000000000")
         );
     }
@@ -609,9 +625,13 @@ mod tests {
             dec("18446744073709551615")
         );
         // Knuth path: 256-bit dividend, >64-bit divisor.
-        let a = dec("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+        let a =
+            dec("115792089237316195423570985008687907853269984665640564039457584007913129639935");
         let b = dec("340282366920938463463374607431768211455");
-        assert_eq!(a.checked_div(b).unwrap(), dec("340282366920938463463374607431768211457"));
+        assert_eq!(
+            a.checked_div(b).unwrap(),
+            dec("340282366920938463463374607431768211457")
+        );
         assert_eq!(a.checked_rem(b).unwrap(), dec("0"));
     }
 
@@ -620,10 +640,13 @@ mod tests {
         assert_eq!(U256::ONE.checked_shl(255).unwrap().bit_len(), 256);
         assert_eq!(U256::ONE.checked_shl(256), None);
         assert_eq!(U256::MAX.checked_shl(1), None);
-        assert_eq!(U256::ONE.checked_shl(64).unwrap(), dec("18446744073709551616"));
-        assert_eq!(dec("18446744073709551616").shr(64), U256::ONE);
-        assert_eq!(U256::MAX.shr(255), U256::ONE);
-        assert_eq!(U256::MAX.shr(256), U256::ZERO);
+        assert_eq!(
+            U256::ONE.checked_shl(64).unwrap(),
+            dec("18446744073709551616")
+        );
+        assert_eq!(dec("18446744073709551616").shift_right(64), U256::ONE);
+        assert_eq!(U256::MAX.shift_right(255), U256::ONE);
+        assert_eq!(U256::MAX.shift_right(256), U256::ZERO);
     }
 
     #[test]

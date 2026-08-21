@@ -98,8 +98,10 @@ impl Default for BatchConfig {
 /// generates them, so the market environment is the repository's own baseline.
 pub fn seed_configs(batch: &BatchConfig) -> Vec<SimulationConfig> {
     let variance = HyperparameterVariance::default();
-    let mut base = SimulationConfig::default();
-    base.n_steps = batch.steps;
+    let base = SimulationConfig {
+        n_steps: batch.steps,
+        ..SimulationConfig::default()
+    };
     (0..batch.simulations)
         .map(|i| {
             variance.apply(
@@ -233,7 +235,8 @@ pub fn run_single_traced(
 
         let orders = retail.generate_orders();
         for order in &orders {
-            let trades = router.route_order(order, &mut amm_strategy, &mut amm_competitor, fair_price);
+            let trades =
+                router.route_order(order, &mut amm_strategy, &mut amm_competitor, fair_price);
             for trade in trades {
                 let notional = if trade.amm_buys_x {
                     trade.amount_x * fair_price
@@ -401,7 +404,12 @@ mod tests {
 
         let mut dodo_trace = Vec::new();
         let mut flashbots_trace = Vec::new();
-        run_single_traced(&dodo, Competitor::Normalizer, &configs[1], Some(&mut dodo_trace));
+        run_single_traced(
+            &dodo,
+            Competitor::Normalizer,
+            &configs[1],
+            Some(&mut dodo_trace),
+        );
         run_single_traced(
             &flashbots,
             Competitor::Normalizer,

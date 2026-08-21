@@ -78,16 +78,30 @@ fn port_matches_every_pinned_upstream_vector_exactly() {
             field(vector, "lpFeeAmount"),
             "{name}: lpFeeAmount"
         );
-        assert_eq!(result.amount_out, field(vector, "amountOut"), "{name}: amountOut");
+        assert_eq!(
+            result.amount_out,
+            field(vector, "amountOut"),
+            "{name}: amountOut"
+        );
         assert_eq!(
             U256::from_u64(result.new_r.as_u8() as u64),
             field(vector, "newR"),
             "{name}: newR"
         );
-        assert_eq!(result.adjusted_b0, field(vector, "adjustedB0"), "{name}: adjustedB0");
-        assert_eq!(result.adjusted_q0, field(vector, "adjustedQ0"), "{name}: adjustedQ0");
         assert_eq!(
-            input.mid_price().unwrap_or_else(|| panic!("{name}: midPrice reverted")),
+            result.adjusted_b0,
+            field(vector, "adjustedB0"),
+            "{name}: adjustedB0"
+        );
+        assert_eq!(
+            result.adjusted_q0,
+            field(vector, "adjustedQ0"),
+            "{name}: adjustedQ0"
+        );
+        assert_eq!(
+            input
+                .mid_price()
+                .unwrap_or_else(|| panic!("{name}: midPrice reverted")),
             field(vector, "midPrice"),
             "{name}: midPrice"
         );
@@ -149,16 +163,25 @@ fn fixture_still_covers_every_required_branch() {
         saw_adjusted_q0 |= field(vector, "Q0") != field(vector, "adjustedQ0");
         saw_one_unit |= vector.get("oneUnit").unwrap().as_bool().unwrap();
         saw_zero_fee |= lp_fee_rate.is_zero();
-        saw_interior_fee |= !lp_fee_rate.is_zero() && lp_fee_rate < ONE.checked_sub(U256::ONE).unwrap();
+        saw_interior_fee |=
+            !lp_fee_rate.is_zero() && lp_fee_rate < ONE.checked_sub(U256::ONE).unwrap();
         saw_max_fee |= lp_fee_rate == ONE.checked_sub(U256::ONE).unwrap();
         saw_one_unit_fee_rounding |=
             gross == U256::ONE && !lp_fee_rate.is_zero() && fee.is_zero() && net == U256::ONE;
-        saw_above_sell_base_k_zero |=
-            r_state == RState::AboveOne.as_u8() as u32 && sell_base && k.is_zero() && new_r == r_state;
-        saw_below_sell_quote_k_zero |=
-            r_state == RState::BelowOne.as_u8() as u32 && !sell_base && k.is_zero() && new_r == r_state;
+        saw_above_sell_base_k_zero |= r_state == RState::AboveOne.as_u8() as u32
+            && sell_base
+            && k.is_zero()
+            && new_r == r_state;
+        saw_below_sell_quote_k_zero |= r_state == RState::BelowOne.as_u8() as u32
+            && !sell_base
+            && k.is_zero()
+            && new_r == r_state;
 
-        assert_eq!(net, gross.checked_sub(fee).unwrap(), "amountOut = gross - fee");
+        assert_eq!(
+            net,
+            gross.checked_sub(fee).unwrap(),
+            "amountOut = gross - fee"
+        );
     }
 
     assert_eq!(r_state_mask, 7, "all three R states");
@@ -175,8 +198,14 @@ fn fixture_still_covers_every_required_branch() {
     assert!(saw_interior_fee, "interior fee");
     assert!(saw_max_fee, "maximum-valid fee boundary");
     assert!(saw_one_unit_fee_rounding, "one-unit fee rounding");
-    assert!(saw_above_sell_base_k_zero, "ABOVE_ONE sell-base K=0 GeneralIntegrate");
-    assert!(saw_below_sell_quote_k_zero, "BELOW_ONE sell-quote K=0 GeneralIntegrate");
+    assert!(
+        saw_above_sell_base_k_zero,
+        "ABOVE_ONE sell-base K=0 GeneralIntegrate"
+    );
+    assert!(
+        saw_below_sell_quote_k_zero,
+        "BELOW_ONE sell-quote K=0 GeneralIntegrate"
+    );
 }
 
 #[test]
@@ -191,14 +220,22 @@ fn boundary_vectors_transition_exactly_as_the_solidity_state_machine() {
         let sell_base = vector.get("sellBase").unwrap().as_bool().unwrap();
         let r_state = u64_field(vector, "R") as u8;
         let expected = if sell_base {
-            assert_eq!(r_state, RState::AboveOne.as_u8(), "{name}: sell-base boundary starts ABOVE_ONE");
+            assert_eq!(
+                r_state,
+                RState::AboveOne.as_u8(),
+                "{name}: sell-base boundary starts ABOVE_ONE"
+            );
             match boundary {
                 1 => RState::AboveOne,
                 2 => RState::One,
                 _ => RState::BelowOne,
             }
         } else {
-            assert_eq!(r_state, RState::BelowOne.as_u8(), "{name}: sell-quote boundary starts BELOW_ONE");
+            assert_eq!(
+                r_state,
+                RState::BelowOne.as_u8(),
+                "{name}: sell-quote boundary starts BELOW_ONE"
+            );
             match boundary {
                 1 => RState::BelowOne,
                 2 => RState::One,

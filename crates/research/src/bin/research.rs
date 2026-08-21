@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 
 use prop_amm_research::experiment::{self, BatchConfig, Competitor};
 use prop_amm_research::metrics::StrategySummary;
+use prop_amm_research::paired;
 use prop_amm_research::probe;
 use prop_amm_research::report::{self, RunMeta};
 use prop_amm_research::strategies::{self, Strategy};
@@ -137,11 +138,11 @@ fn equilibrium(
     reserve_y: f64,
     out: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let expected = price_to_wad(price)
-        .ok_or_else(|| anyhow::anyhow!("price {price} cannot be quantised"))?;
+    let expected =
+        price_to_wad(price).ok_or_else(|| anyhow::anyhow!("price {price} cannot be quantised"))?;
     println!("published price (WAD): {expected}");
     println!("inventory: reserveX = {reserve_x}, reserveY = {reserve_y}\n");
-    println!("{:<28} {:<12} {}", "strategy", "parameter", "mid price (WAD)");
+    println!("{:<28} {:<12} mid price (WAD)", "strategy", "parameter");
 
     let mut rows = Vec::new();
     let mut all_equal = true;
@@ -178,10 +179,21 @@ fn quote_matrix(
     let strategies = strategies::all_strategies();
     let buy_sizes = probe::default_buy_sizes_y();
     let sell_sizes = probe::default_sell_sizes_x();
-    let rows = probe::quote_matrix(&strategies, price, reserve_x, reserve_y, &buy_sizes, &sell_sizes);
+    let rows = probe::quote_matrix(
+        &strategies,
+        price,
+        reserve_x,
+        reserve_y,
+        &buy_sizes,
+        &sell_sizes,
+    );
 
     for side in ["buy_x", "sell_x"] {
-        let sizes: &[f64] = if side == "buy_x" { &buy_sizes } else { &sell_sizes };
+        let sizes: &[f64] = if side == "buy_x" {
+            &buy_sizes
+        } else {
+            &sell_sizes
+        };
         println!(
             "\n=== {} (fair price {price}, reserveX {reserve_x}, reserveY {reserve_y}) ===",
             if side == "buy_x" {
@@ -279,8 +291,20 @@ fn bench(
         all_runs.extend(runs.iter().cloned());
     }
 
+    let flashbots_minus_dodo = paired::flashbots_minus_dodo(&results);
+    let versus_univ2 = paired::versus_univ2(&results);
+    let attributions = paired::attribute_versus_univ2(&results);
+
     let meta = RunMeta::from_batch(&batch, elapsed);
-    let mut written = report::write_all(&out, &meta, &summaries, &all_runs)?;
+    let mut written = report::write_all(
+        &out,
+        &meta,
+        &summaries,
+        &all_runs,
+        &flashbots_minus_dodo,
+        &versus_univ2,
+        &attributions,
+    )?;
 
     // Keep each result directory self-contained: the static probes describe the
     // curves the numbers came from.
@@ -310,11 +334,19 @@ fn bench(
     let path = out.join("quote-matrix.json");
     std::fs::write(
         &path,
-        report::quote_matrix_json(&quote_rows, meta.initial_price, meta.initial_x, meta.initial_y),
+        report::quote_matrix_json(
+            &quote_rows,
+            meta.initial_price,
+            meta.initial_x,
+            meta.initial_y,
+        ),
     )?;
     written.push(path);
 
-    println!("\n{:<28} {:>14} {:>14} {:>14} {:>10}", "strategy", "netEdge mean", "retailEdge", "arbEdge", "win rate");
+    println!(
+        "\n{:<28} {:>14} {:>14} {:>14} {:>10}",
+        "strategy", "netEdge mean", "retailEdge", "arbEdge", "net>0 rate"
+    );
     let mut ranked: Vec<&StrategySummary> = summaries.iter().collect();
     ranked.sort_by(|a, b| {
         b.net_edge
@@ -329,12 +361,48 @@ fn bench(
             summary.net_edge.mean,
             summary.retail_edge.mean,
             summary.arbitrage_edge.mean,
-            summary.win_rate * 100.0
+            summary.positive_net_rate * 100.0
         );
     }
+    let net_deltas: Vec<&paired::PairedDelta> = flashbots_minus_dodo
+        .iter()
+        .filter(|d| d.metric == "netEdge")
+        .collect();
+    if !net_deltas.is_empty() {
+        println!(
+            "\npaired netEdge delta (Flashbots - DODO), per pairing row, 95% CI on per-seed differences:"
+        );
+        println!(
+            "{:<10} {:>12} {:>26} {:>8} {:>10} verdict",
+            "pairing", "mean", "95% CI", "t", "win rate"
+        );
+        for delta in net_deltas {
+            println!(
+                "{:<10} {:>12.5} {:>12.5} {:>12.5} {:>8.2} {:>9.1}% {}",
+                delta
+                    .pairing_index
+                    .map(|i| format!("#{i}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                delta.mean,
+                delta.ci95_low,
+                delta.ci95_high,
+                delta.t_stat,
+                delta.paired_win_rate * 100.0,
+                if delta.is_significant() {
+                    "significant"
+                } else {
+                    "not distinguishable"
+                }
+            );
+        }
+    }
+
     let total_reverts: u64 = summaries.iter().map(|s| s.total_curve_reverts).sum();
     if total_reverts == 0 {
-        println!("\ncurve reverts: 0 (all curve calls stayed inside on-chain semantics)");
+        println!(
+            "\ncurve reverts: 0 (the ported pricing functions never hit a revert branch; \
+this is not a claim that a full on-chain swap would succeed \u{2014} pool-level guards are out of scope)"
+        );
     } else {
         println!(
             "\nWARNING: {total_reverts} curve reverts — the ledger and a curve's integer state disagreed; \

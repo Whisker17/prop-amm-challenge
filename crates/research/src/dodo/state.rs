@@ -200,7 +200,10 @@ mod tests {
             adjusted_q0: wad(4321),
         };
         pool.commit(true, &result);
-        assert_eq!(pool, before, "targets must not move without an R transition");
+        assert_eq!(
+            pool, before,
+            "targets must not move without an R transition"
+        );
     }
 
     #[test]
@@ -216,7 +219,11 @@ mod tests {
         };
         pool.commit(true, &result);
         assert_eq!(pool.target_base, wad(1234), "sellBase writes targetBase");
-        assert_eq!(pool.target_quote, wad(10_000), "sellBase leaves targetQuote");
+        assert_eq!(
+            pool.target_quote,
+            wad(10_000),
+            "sellBase leaves targetQuote"
+        );
         assert_eq!(pool.r_state, RState::BelowOne);
 
         let mut pool = self::pool();

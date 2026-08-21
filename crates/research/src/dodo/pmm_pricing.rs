@@ -218,13 +218,19 @@ pub fn adjusted_target(state: &mut PmmState) -> Option<()> {
 
 pub fn get_mid_price(state: &PmmState) -> Option<U256> {
     if state.r == RState::BelowOne {
-        let r = decimal_math::div_floor(state.q0.checked_mul(state.q0)?.checked_div(state.q)?, state.q)?;
+        let r = decimal_math::div_floor(
+            state.q0.checked_mul(state.q0)?.checked_div(state.q)?,
+            state.q,
+        )?;
         let r = ONE
             .checked_sub(state.k)?
             .checked_add(decimal_math::mul_floor(state.k, r)?)?;
         decimal_math::div_floor(state.i, r)
     } else {
-        let r = decimal_math::div_floor(state.b0.checked_mul(state.b0)?.checked_div(state.b)?, state.b)?;
+        let r = decimal_math::div_floor(
+            state.b0.checked_mul(state.b0)?.checked_div(state.b)?,
+            state.b,
+        )?;
         let r = ONE
             .checked_sub(state.k)?
             .checked_add(decimal_math::mul_floor(state.k, r)?)?;

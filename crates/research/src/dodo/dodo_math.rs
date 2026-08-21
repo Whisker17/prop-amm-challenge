@@ -165,7 +165,7 @@ pub fn multiplication_does_not_overflow(a: U256, b: U256) -> Option<bool> {
 /// upstream file uses Solidity 0.8 checked arithmetic).
 pub fn sqrt(x: U256) -> U256 {
     let mut z = x
-        .shr(1)
+        .shift_right(1)
         .checked_add(U256::ONE)
         .expect("x / 2 + 1 cannot overflow"); // x / 2 + 1
     let mut y = x;
@@ -177,7 +177,7 @@ pub fn sqrt(x: U256) -> U256 {
             .expect("z is non-zero")
             .checked_add(z)
             .expect("x / z + z cannot overflow for a decreasing z")
-            .shr(1);
+            .shift_right(1);
     }
     y
 }
@@ -212,14 +212,23 @@ mod tests {
     #[test]
     fn general_integrate_k_zero_is_the_linear_branch() {
         // k = 0 collapses to i*delta/1e18.
-        let out = general_integrate(u(100), u(60), u(50), ONE.checked_mul(u(2)).unwrap(), U256::ZERO)
-            .unwrap();
+        let out = general_integrate(
+            u(100),
+            u(60),
+            u(50),
+            ONE.checked_mul(u(2)).unwrap(),
+            U256::ZERO,
+        )
+        .unwrap();
         assert_eq!(out, u(20));
     }
 
     #[test]
     fn general_integrate_requires_non_zero_target() {
-        assert_eq!(general_integrate(U256::ZERO, u(2), u(1), ONE, U256::ZERO), None);
+        assert_eq!(
+            general_integrate(U256::ZERO, u(2), u(1), ONE, U256::ZERO),
+            None
+        );
     }
 
     #[test]
@@ -240,9 +249,13 @@ mod tests {
 
     #[test]
     fn solve_for_target_k_zero_is_additive() {
-        let out =
-            solve_quadratic_function_for_target(u(100), u(10), ONE.checked_mul(u(3)).unwrap(), U256::ZERO)
-                .unwrap();
+        let out = solve_quadratic_function_for_target(
+            u(100),
+            u(10),
+            ONE.checked_mul(u(3)).unwrap(),
+            U256::ZERO,
+        )
+        .unwrap();
         assert_eq!(out, u(130));
     }
 
@@ -257,7 +270,10 @@ mod tests {
     #[test]
     fn multiplication_overflow_probe_matches_solidity_semantics() {
         assert_eq!(multiplication_does_not_overflow(u(2), u(3)), Some(true));
-        assert_eq!(multiplication_does_not_overflow(U256::MAX, u(2)), Some(false));
+        assert_eq!(
+            multiplication_does_not_overflow(U256::MAX, u(2)),
+            Some(false)
+        );
         // a == 0 divides by zero, which reverts even inside `unchecked`.
         assert_eq!(multiplication_does_not_overflow(U256::ZERO, u(3)), None);
     }

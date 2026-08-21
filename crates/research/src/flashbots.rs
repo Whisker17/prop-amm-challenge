@@ -75,9 +75,7 @@ impl FlashbotsPool {
     pub fn quote_y_to_x(&self, reserve_x: U256, amount_y_in: U256) -> Option<U256> {
         let k = self.k()?;
         let base = self.base(reserve_x)?;
-        base.checked_sub(
-            k.checked_div(k.checked_div(base)?.checked_add(amount_y_in)?)?,
-        )
+        base.checked_sub(k.checked_div(k.checked_div(base)?.checked_add(amount_y_in)?)?)
     }
 }
 
@@ -131,7 +129,10 @@ mod tests {
         let flat = pool(1, 100).quote_x_to_y(wad(100), wad(1)).unwrap();
         let tight = pool(1000, 100).quote_x_to_y(wad(100), wad(1)).unwrap();
         assert!(tight > flat, "concentration should reduce slippage");
-        assert!(tight < wad(100), "output stays below the mid-price notional");
+        assert!(
+            tight < wad(100),
+            "output stays below the mid-price notional"
+        );
     }
 
     #[test]

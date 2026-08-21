@@ -39,17 +39,42 @@ fn matches_python_bigint_reference_for_every_operation() {
         let b = hex(case.get("b").unwrap());
         let ctx = |op: &str| format!("case {idx} ({op}): a={a} b={b}");
 
-        assert_eq!(a.checked_add(b), opt_hex(case.get("add").unwrap()), "{}", ctx("add"));
-        assert_eq!(a.checked_sub(b), opt_hex(case.get("sub").unwrap()), "{}", ctx("sub"));
-        assert_eq!(a.checked_mul(b), opt_hex(case.get("mul").unwrap()), "{}", ctx("mul"));
+        assert_eq!(
+            a.checked_add(b),
+            opt_hex(case.get("add").unwrap()),
+            "{}",
+            ctx("add")
+        );
+        assert_eq!(
+            a.checked_sub(b),
+            opt_hex(case.get("sub").unwrap()),
+            "{}",
+            ctx("sub")
+        );
+        assert_eq!(
+            a.checked_mul(b),
+            opt_hex(case.get("mul").unwrap()),
+            "{}",
+            ctx("mul")
+        );
         assert_eq!(
             a.wrapping_mul(b),
             hex(case.get("wmul").unwrap()),
             "{}",
             ctx("wrapping_mul")
         );
-        assert_eq!(a.checked_div(b), opt_hex(case.get("div").unwrap()), "{}", ctx("div"));
-        assert_eq!(a.checked_rem(b), opt_hex(case.get("rem").unwrap()), "{}", ctx("rem"));
+        assert_eq!(
+            a.checked_div(b),
+            opt_hex(case.get("div").unwrap()),
+            "{}",
+            ctx("div")
+        );
+        assert_eq!(
+            a.checked_rem(b),
+            opt_hex(case.get("rem").unwrap()),
+            "{}",
+            ctx("rem")
+        );
 
         // The DODO `_sqrt` Babylonian loop agrees with floor(sqrt(a)) for every
         // input except a = 2, where the upstream loop never executes and
@@ -75,7 +100,11 @@ fn decimal_round_trip_is_exact() {
     for case in cases.iter().take(400) {
         let a = hex(case.get("a").unwrap());
         let text = a.to_string();
-        assert_eq!(U256::from_dec_str(&text).unwrap(), a, "decimal round-trip {text}");
+        assert_eq!(
+            U256::from_dec_str(&text).unwrap(),
+            a,
+            "decimal round-trip {text}"
+        );
     }
     assert_eq!(U256::from_dec_str("0").unwrap(), U256::ZERO);
     assert_eq!(

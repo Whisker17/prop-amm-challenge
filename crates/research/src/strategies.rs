@@ -210,19 +210,32 @@ mod tests {
         let strategies = all_strategies();
         assert_eq!(strategies.len(), 8 * 2 + 1);
         assert_eq!(
-            strategies.iter().filter(|s| s.family == Family::Dodo).count(),
+            strategies
+                .iter()
+                .filter(|s| s.family == Family::Dodo)
+                .count(),
             8
         );
         assert_eq!(
-            strategies.iter().filter(|s| s.family == Family::Flashbots).count(),
+            strategies
+                .iter()
+                .filter(|s| s.family == Family::Flashbots)
+                .count(),
             8
         );
         assert_eq!(
-            strategies.iter().filter(|s| s.family == Family::UniV2).count(),
+            strategies
+                .iter()
+                .filter(|s| s.family == Family::UniV2)
+                .count(),
             1
         );
         for strategy in &strategies {
-            assert!(strategy_by_id(&strategy.id).is_some(), "{} lookup", strategy.id);
+            assert!(
+                strategy_by_id(&strategy.id).is_some(),
+                "{} lookup",
+                strategy.id
+            );
         }
     }
 
@@ -244,7 +257,8 @@ mod tests {
         );
         assert_eq!(
             U256::from_le_bytes(
-                &storage[curves::dodo_storage::TARGET_QUOTE..curves::dodo_storage::TARGET_QUOTE + 32]
+                &storage
+                    [curves::dodo_storage::TARGET_QUOTE..curves::dodo_storage::TARGET_QUOTE + 32]
             ),
             U256::from_u128(10_000).checked_mul(ONE).unwrap()
         );
@@ -268,7 +282,8 @@ mod tests {
         );
         assert_eq!(
             U256::from_le_bytes(
-                &storage[curves::flashbots_storage::TARGET_X..curves::flashbots_storage::TARGET_X + 32]
+                &storage
+                    [curves::flashbots_storage::TARGET_X..curves::flashbots_storage::TARGET_X + 32]
             ),
             U256::from_u128(100).checked_mul(ONE).unwrap()
         );

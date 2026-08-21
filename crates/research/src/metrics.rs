@@ -120,8 +120,10 @@ pub struct StrategySummary {
     pub final_inventory_deviation: Distribution,
     pub max_inventory_deviation: Distribution,
 
-    /// Fraction of seeds with a positive net edge.
-    pub win_rate: f64,
+    /// Fraction of seeds with a positive net edge. This is a marginal rate, not
+    /// a comparison against another strategy — see [`crate::paired`] for
+    /// per-seed paired win rates between two strategies.
+    pub positive_net_rate: f64,
     pub total_net_edge: f64,
     /// Total curve reverts across the batch. Must be zero for a valid result.
     pub total_curve_reverts: u64,
@@ -157,7 +159,7 @@ impl StrategySummary {
             max_inventory_deviation: Distribution::from_samples(&collect(|r| {
                 r.max_inventory_deviation
             })),
-            win_rate: if runs.is_empty() {
+            positive_net_rate: if runs.is_empty() {
                 f64::NAN
             } else {
                 positive as f64 / runs.len() as f64
@@ -224,11 +226,11 @@ mod tests {
     }
 
     #[test]
-    fn summary_counts_win_rate_and_totals() {
+    fn summary_counts_positive_net_rate_and_totals() {
         let runs = vec![run(1.0), run(-2.0), run(3.0), run(0.0)];
         let summary = StrategySummary::from_runs("s", "dodo", "K=1e18", &runs);
         assert_eq!(summary.simulations, 4);
-        assert_eq!(summary.win_rate, 0.5);
+        assert_eq!(summary.positive_net_rate, 0.5);
         assert_eq!(summary.total_net_edge, 2.0);
         assert_eq!(summary.total_curve_reverts, 0);
         assert_eq!(summary.net_edge.min, -2.0);
