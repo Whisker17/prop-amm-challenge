@@ -103,9 +103,10 @@ const MIN_GAP_BPS: u128 = NUM_SEGMENTS;
 // STRICTLY increasing output across every pair, with no tolerance for a flat/exhausted
 // plateau (unlike `crates/sim/src/curve_checks.rs`'s runtime check, which explicitly
 // tolerates a flat tail beyond book exhaustion — cross-cutting finding #6). At `DELTA_PCT`'s
-// bare reading (a fraction of the live reserve, <=100%), the book exhausts at <=100 tokens —
-// inside that 200-token probe range — for EVERY value in `DELTA_PCT`'s frozen range, so
-// `validate` would fail regardless of what the search picks.
+// bare reading (a fraction of the live reserve, up to its own frozen max of 10%), the book
+// exhausts at <=10 tokens at the default state — inside that 200-token probe range — for
+// EVERY value in `DELTA_PCT`'s frozen range, so `validate` would fail regardless of what the
+// search picks.
 //
 // An earlier version of this port "fixed" this by multiplying the whole book depth by 10x —
 // technically satisfies `validate`, but catastrophic in the real 10,000-step simulation

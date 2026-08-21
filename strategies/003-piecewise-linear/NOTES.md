@@ -111,8 +111,6 @@ of this section), not merely argued from reading the code.
   positive value — but a `None` here is a property of the *reserves themselves*, so every
   input at that same state returns `0` uniformly, which is flat (trivially monotone), not a
   regression relative to another point in the same curve.
-  the same structural guarantee `001-cpmm-fee`/`005-vol-adaptive-cpmm-fee` carry via
-  `reserve.saturating_sub(...)`.
 - **Overflow short-circuit** (mandatory, this port's own naming for the issue's requirement):
   `buy_base_with_quote` computes `full_cost` — the cost to buy the *entire* primary book —
   from bounded, reserve-derived values *before* ever comparing it against `input`, which can
@@ -251,6 +249,14 @@ mistake; that was a process error caught in review, not a second, independent fi
 | 10 | -4600.40 | 0.834 |
 | 50 (the amendment's own midpoint) | -20012.46 | 0.145 |
 
+Two rows of this table are committed as their own `results/` snapshots (docs/DESIGN.md §3.3)
+rather than resting on this table alone: `DELTA_PCT=3` (the eventual winning value) at
+`results/2026-08-21-l1-003-piecewise-linear-delta3-train.md`, and `DELTA_PCT=50` (the
+amendment's own midpoint, the worst-affected row) at
+`results/2026-08-21-l1-003-piecewise-linear-delta50-train.md`. `bench l1` writes one report
+per day per stage slot, so the other five rows above are reproducible with the same command
+(swap the `DELTA_PCT` value) but are not separately committed.
+
 (For cross-check only, not as a second decision input: the same sweep on `observation`
 lands within a few edge-units of every `train` row above — e.g. `DELTA_PCT=50`: -20014.61
 vs. -20012.46 — the same conclusion, from a segment that correctly played no part in
@@ -292,7 +298,7 @@ across 324 states x 2 sides (dense sweeps and golden-section-shaped sample sets,
 `[grid]` regime corner in both a zeroed- and random-byte-storage variant, plus states reached
 only after a full-length GBM drift) — run before the frozen search below, per §2.9's own
 requirement that this gate clear before a search is allowed to spend paired-seed budget on a
-candidate. Re-run and re-confirmed PASS after the `DELTA_PCT` range correction (below) landed,
+candidate. Re-run and re-confirmed PASS after the `DELTA_PCT` range correction (above) landed,
 since narrowing that range changes the actual book depth the fuzz gate exercises. A PASS
 writes no report (the gate is meant to run repeatedly, before every search, by design — see
 `tools/bench/src/commands/fuzz.rs`'s own module doc comment).
@@ -381,11 +387,14 @@ result must be reported against honestly.
 **`S0_BPS` and `DELTA_PCT` both converged to interior points** (`56` of `5..=200`, `3` of
 `1..=10`) — not resting on either bound, unlike `W_BPS` above.
 
-**Compile timing:** 151 warm compiles, min=0.420s, mean=0.674s, max=2.895s during this run —
-exceeds `docs/DESIGN.md` §2.6's `<1s` target on the max sample, consistent with the same
-session-load explanation `strategies/001-cpmm-fee/NOTES.md` (WHI-1205) and
-`strategies/005-vol-adaptive-cpmm-fee/NOTES.md` both already document as a standing,
-previously-investigated non-issue with the fast path's own mechanism.
+**Compile timing:** 150 warm compiles, min=0.666s, mean=1.302s, max=8.076s during this run
+(`results/2026-08-21-fit-003-piecewise-linear.md` — regenerated from a detached git worktree
+so the committed report would carry a real commit sha, per round-1 review; timing is a fresh
+measurement from that run, not the original one) — exceeds `docs/DESIGN.md` §2.6's `<1s`
+target on the max sample, consistent with the same session-load explanation
+`strategies/001-cpmm-fee/NOTES.md` (WHI-1205) and `strategies/005-vol-adaptive-cpmm-fee/
+NOTES.md` both already document as a standing, previously-investigated non-issue with the
+fast path's own mechanism.
 
 ## Grid mode: 27-cell fragility matrix (docs/DESIGN.md §2.3)
 
