@@ -326,6 +326,17 @@ construction. An issue that establishes this records the reason and closes as `w
 **Provenance is mandatory.** Prose-only strategies may be second-hand or simply wrong.
 `NOTES.md` records the source, its form, and a fidelity self-assessment.
 
+**The pre-search shape-fuzz gate.** `prop-amm validate` alone probes far too little of a
+candidate's input/state space to make "passed validation" mean "won't panic mid-search" —
+10 sizes at one fixed reserve state, versus the ~10^7 instances a real 1000-sim run
+exercises. `bench fuzz --strategy <dir>` (WHI-1212) closes that gap: dense sweeps and
+golden-section-shaped sample sets, run against every `[grid]` regime corner (including
+states only reachable after a full-length GBM drift) in both a zeroed- and a
+random-byte-storage variant, mirroring `curve_checks.rs`'s own check. Every M1 strategy
+issue runs this gate before a `bench fit` search is allowed to spend paired-seed budget on
+that candidate; a violation here is filed the same way a runtime panic would be (this
+section's `wontfix` path, or a fix, not a note).
+
 ### 2.10 Convergence
 
 1. Freeze the strategy list (§6.2). Nothing is added to v1 after this point.

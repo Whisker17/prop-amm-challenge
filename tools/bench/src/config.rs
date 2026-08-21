@@ -57,6 +57,18 @@ struct RawSearchConfig {
     max_points: usize,
 }
 
+// `bench fuzz`'s own sample counts (WHI-1212, docs/DESIGN.md §2.9's fidelity contract) —
+// "ours, protocol-level" for the same reason grid's own axis levels are: a future change to
+// how hard the gate hammers a candidate is a config edit, not a recompile.
+// `deny_unknown_fields` for the same fail-fast reason as `RawSegment`/`RawGridConfig`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFuzzConfig {
+    dense_sweep_points: usize,
+    seeds_per_regime: u64,
+    golden_price_multipliers: Vec<f64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBenchConfig {
@@ -65,6 +77,7 @@ struct RawBenchConfig {
     #[serde(default)]
     search: Option<RawSearchConfig>,
     grid: Option<RawGridConfig>,
+    fuzz: Option<RawFuzzConfig>,
 }
 
 /// A named, contiguous-stride block of seeds, plus the protocol flags that govern how it
@@ -107,11 +120,21 @@ pub struct GridConfig {
     pub seeds_per_cell: u64,
 }
 
+/// `bench fuzz`'s sample counts (WHI-1212), loaded from `config/bench.toml`'s `[fuzz]`
+/// table.
+#[derive(Debug, Clone)]
+pub struct FuzzConfig {
+    pub dense_sweep_points: usize,
+    pub seeds_per_regime: u64,
+    pub golden_price_multipliers: Vec<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
     segments: HashMap<String, Segment>,
     search_max_points: usize,
     grid: Option<GridConfig>,
+    fuzz: Option<FuzzConfig>,
 }
 
 impl BenchConfig {
@@ -191,11 +214,13 @@ impl BenchConfig {
         validate_budget(search.max_points, "[search] max_points")?;
 
         let grid = raw.grid.map(|g| validate_grid(&g)).transpose()?;
+        let fuzz = raw.fuzz.map(|f| validate_fuzz(&f)).transpose()?;
 
         Ok(Self {
             segments,
             search_max_points: search.max_points,
             grid,
+            fuzz,
         })
     }
 
@@ -222,6 +247,14 @@ impl BenchConfig {
         self.grid
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("bench config declares no [grid] table"))
+    }
+
+    /// `bench fuzz`'s config, if `config/bench.toml` declares a `[fuzz]` table. Fails only
+    /// when a caller actually needs it (`bench fuzz` itself), same rationale as `grid()`.
+    pub fn fuzz(&self) -> anyhow::Result<&FuzzConfig> {
+        self.fuzz
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("bench config declares no [fuzz] table"))
     }
 
     fn segment_names(&self) -> String {
@@ -324,6 +357,31 @@ fn validate_grid(raw: &RawGridConfig) -> anyhow::Result<GridConfig> {
         norm_liquidity_mult_levels: raw.norm_liquidity_mult_levels.clone(),
         gbm_sigma_levels: raw.gbm_sigma_levels.clone(),
         seeds_per_cell: raw.seeds_per_cell,
+    })
+}
+
+fn validate_fuzz(raw: &RawFuzzConfig) -> anyhow::Result<FuzzConfig> {
+    if raw.dense_sweep_points < 2 {
+        anyhow::bail!("fuzz config's dense_sweep_points must be at least 2");
+    }
+    if raw.seeds_per_regime == 0 {
+        anyhow::bail!("fuzz config's seeds_per_regime is 0");
+    }
+    if raw.golden_price_multipliers.is_empty() {
+        anyhow::bail!("fuzz config's golden_price_multipliers is empty");
+    }
+    if raw
+        .golden_price_multipliers
+        .iter()
+        .any(|m| *m <= 0.0 || !m.is_finite())
+    {
+        anyhow::bail!("fuzz config's golden_price_multipliers must all be finite and positive");
+    }
+
+    Ok(FuzzConfig {
+        dense_sweep_points: raw.dense_sweep_points,
+        seeds_per_regime: raw.seeds_per_regime,
+        golden_price_multipliers: raw.golden_price_multipliers.clone(),
     })
 }
 
@@ -664,6 +722,98 @@ max_points = {MAX_SEARCH_POINTS}
         let err = cfg.grid().unwrap_err();
         assert!(
             err.to_string().contains("no [grid] table"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Loads the actual shipped `config/bench.toml`'s `[fuzz]` table (WHI-1212).
+    #[test]
+    fn shipped_config_declares_fuzz_table() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cfg = BenchConfig::load(&repo_root.join(DEFAULT_CONFIG_PATH)).unwrap();
+        let fuzz = cfg.fuzz().unwrap();
+
+        assert!(fuzz.dense_sweep_points >= 2);
+        assert!(fuzz.seeds_per_regime >= 1);
+        assert!(!fuzz.golden_price_multipliers.is_empty());
+        assert!(fuzz
+            .golden_price_multipliers
+            .iter()
+            .all(|m| m.is_finite() && *m > 0.0));
+    }
+
+    #[test]
+    fn fuzz_accessor_fails_when_no_fuzz_table_declared() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let err = cfg.fuzz().unwrap_err();
+        assert!(
+            err.to_string().contains("no [fuzz] table"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_table_parses_and_validates() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [0.5, 1.0, 2.0]\n",
+            sample_valid()
+        );
+        let cfg = BenchConfig::parse(&text).unwrap();
+        let fuzz = cfg.fuzz().unwrap();
+        assert_eq!(fuzz.dense_sweep_points, 200);
+        assert_eq!(fuzz.seeds_per_regime, 3);
+        assert_eq!(fuzz.golden_price_multipliers, vec![0.5, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn fuzz_table_rejects_too_few_dense_sweep_points() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 1\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0]\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("dense_sweep_points"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_table_rejects_zero_seeds_per_regime() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 0\ngolden_price_multipliers = [1.0]\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("seeds_per_regime is 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_table_rejects_empty_golden_price_multipliers() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = []\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("golden_price_multipliers is empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_table_rejects_non_positive_golden_price_multiplier() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0, 0.0]\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("finite and positive"),
             "unexpected error: {err}"
         );
     }
