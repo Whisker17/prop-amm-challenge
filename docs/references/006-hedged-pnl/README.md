@@ -22,13 +22,20 @@ section links `https://www.ammchallenge.com/prop-amm` and
 `https://github.com/benedictbrady/prop-amm-challenge` — i.e. it claims to describe *this*
 challenge.
 
-**That scoring/volatility description does not match this repo's measured configuration.**
-This challenge's own simulator (`crates/shared/src/config.rs`, `AGENTS.md`) scores on
-**average edge** (`SimResult`'s `submission_edge`, `docs/DESIGN.md` §2.1), not a
-"Hedged PnL" formula, and this doc's own volatility range differs from what this repo
-samples. Per `docs/DESIGN.md` §2.9, "Provenance is mandatory. Prose-only strategies may be
-second-hand or simply wrong" — this is exactly that case, flagged rather than silently
-resolved. Two readings are possible and this freeze does **not** pick between them:
+**The scoring description does not match this repo's measured configuration — the
+volatility range does.** Checked directly against `crates/shared/src/config.rs`:
+`gbm_sigma_min = 0.0001` (0.01%), `gbm_sigma_max = 0.007` (0.7%), sampled per simulation —
+an exact match for the doc's `U[0.01%, 0.70%]`, and actually the strongest evidence that
+this document really does describe *this* challenge's simulator. The mismatch is narrower
+than it first looks: this challenge's own simulator (`crates/shared/src/config.rs`,
+`AGENTS.md`) scores on **average edge** (`SimResult`'s `submission_edge`, `docs/DESIGN.md`
+§2.1) — a per-trade accumulated quantity — not the doc's own `HPnL = (Σ Δx_t)·p_T + (Σ
+Δy_t)` terminal-inventory formula, and the doc itself names that exact distinction ("Edge
+effectively assumes hedging at every individual step, HPnL accounts for cumulative
+inventory risk held until the end of the simulation"). Per `docs/DESIGN.md` §2.9,
+"Provenance is mandatory. Prose-only strategies may be second-hand or simply wrong" — the
+scoring-metric mismatch is exactly that case, flagged rather than silently resolved. Two
+readings are possible and this freeze does **not** pick between them:
 
 1. The doc describes an earlier draft, or a different variant, of the challenge rules that
    never shipped as this repo's actual simulator.
@@ -72,8 +79,8 @@ before any search runs; there is no original-material anchor point to start from
 
 ## Fidelity note
 
-Source form is prose-only and, per the flag above, its own framing (scoring metric,
-volatility range) is not directly usable — only the linear-price-impact mechanism itself
-should be treated as frozen here, not the doc's claimed scoring rule. This is the
-lowest-fidelity, highest-provenance-risk entry in this freeze; the porting issue's
+Source form is prose-only and, per the flag above, its claimed **scoring metric** is not
+directly usable (this repo scores on average edge, not HPnL) — only the linear-price-impact
+mechanism itself should be treated as frozen here, not the doc's claimed scoring rule. This
+is the lowest-fidelity, highest-provenance-risk entry in this freeze; the porting issue's
 `NOTES.md` fidelity self-assessment should say so explicitly (§2.9).

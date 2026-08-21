@@ -110,6 +110,21 @@ soon — anything touching a declared high-risk path defaults to at least High),
   just an unusual filename for one report. Fix: none needed; `2026-08-20-compare.md` stays
   WHI-1193's, and any future same-day rerun of `compare` needs its own distinctly-named file
   the same way.
+- **`AGENTS.md`'s Status section still describes §6.2 as owner-input-blocked, present
+  tense** (Low, WHI-1197). `AGENTS.md:34-36` (**Landed**/**Not written yet**) reads
+  "the *frozen strategy list* M1 iterates over is an owner input that has not been
+  supplied yet, tracked as WHI-1197. Do not pick up an M1 issue until that list is
+  frozen" — this PR (WHI-1197) supplied that list, filed the material under
+  `docs/references/`, froze `docs/DESIGN.md` §6.2, and opened the five M1 issues
+  (`WHI-1206`–`WHI-1210`) it names, so the section is now stale the moment this PR
+  lands. Left unfixed here because `AGENTS.md` is a repo-wide governance carve-out path
+  (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and this PR's diff is
+  version-scoped, not carve-out-only — touching it here would mix scopes, exactly the
+  case `AGENTS.md` § Git workflow itself calls out ("A mixed PR ... must be split").
+  Fix: a follow-up governance-scoped PR (carve-out paths only, base `dev`) updates
+  `AGENTS.md:30-36` to record §6.2 as frozen and M0+the freeze as landed, past tense —
+  same shape as WHI-1200's fix for the analogous `docs/agents/issue-tracker.md` staleness
+  above.
 - **`commands/l1.rs` bakes `strategies/000-normalizer/lib.rs` into generic measurement
   infrastructure's `--file` default** (Low, WHI-1195). `tools/bench/src/commands/l1.rs::
   DEFAULT_NORMALIZER_AS_SUBMISSION` — a specific strategy id is now a default in a command

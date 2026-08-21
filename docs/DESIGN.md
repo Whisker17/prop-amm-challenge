@@ -510,7 +510,10 @@ nothing is added to v1 after this point. Each entry's original material is filed
 `docs/references/<id>-<slug>/`, one directory per strategy (a directory rather than a
 single file, since several entries are multi-file source trees); each directory carries
 its own `README.md` with the four fields below plus a mechanism summary, known parameters,
-and a fidelity note.
+and a fidelity note. That `README.md` is a **snapshot fixed at freeze time** — it does not
+change once the porting issue starts. `NOTES.md` (§2.4, §2.9) is the living record after
+that: it re-declares the parameter space in the porting issue's own words and is the one
+that governs if the two ever drift, since it is what's actually frozen before search runs.
 
 | Id | Name | Source form | Original material | Known parameters (starting point, not frozen — §2.4) |
 | --- | --- | --- | --- | --- |
@@ -532,15 +535,17 @@ Two entries carry an explicit provenance caveat, read before porting:
   own blog post describing it as an unimplemented, exploratory mock-up with no formula
   given. Treat the curve as the faithful port; treat staleness backoff as, at most, a
   `003b` variant (§2.9).
-- **`006`** — the source document titled itself as describing *this* challenge, but its
-  stated scoring metric ("Hedged PnL") and volatility range do not match this repo's
-  actual measured configuration (`crates/shared/src/config.rs`). Per §2.9's provenance
-  contract, this is filed as-is rather than silently corrected; the porting issue treats
-  the doc's linear-price-impact mechanism as the thing to port, not its claimed scoring
-  rule.
+- **`006`** — the source document titled itself as describing *this* challenge, and its
+  stated volatility range (`U[0.01%, 0.70%]`) matches `crates/shared/src/config.rs`'s
+  `gbm_sigma_min`/`gbm_sigma_max` exactly — but its stated **scoring metric** ("Hedged
+  PnL", a terminal-inventory formula) does not match this repo's actual per-trade
+  average-edge metric (§2.1). Per §2.9's provenance contract, this is filed as-is rather
+  than silently corrected; the porting issue treats the doc's linear-price-impact
+  mechanism as the thing to port, not its claimed scoring rule.
 
-M1 issues are opened per `docs/agents/issue-template.md`, one per strategy above, each
-`blockedBy` the last M0 issue (`WHI-1195`).
+One M1 issue per strategy above is opened per `docs/agents/issue-template.md`, each
+`blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`), `WHI-1207` (`003`),
+`WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
 
 ## 7. Rejected Alternatives
 

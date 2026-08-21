@@ -4,15 +4,18 @@
 | --- | --- |
 | **Name** | Piecewise Linear |
 | **Source form** | source (Rust, Solana/pinocchio-shaped) + prose (blog) |
-| **Original material** | this directory's `.rs` files (unmodified) + `upstream-README.md` |
+| **Original material** | this directory's `.rs` files (unmodified) + `upstream-README.md` + the blog excerpts below |
 | **Known parameters** | see below |
 
 ## Original material location
 
 Repository: <https://github.com/benedictbrady/prop-amm>, pinned at commit
-`47dd714c50c57e9da8f433f71ecc5b7c8a1c7c9a`. Blog writeup:
-<https://www.benedict.dev/prop-amm> (prose only, not fetchable verbatim — summarized below,
-with the one unconfirmed detail flagged explicitly).
+`47dd714c50c57e9da8f433f71ecc5b7c8a1c7c9a`. No repo-level license is declared (GitHub's
+repository API reports none at this commit). Blog writeup:
+<https://www.benedict.dev/prop-amm>, published 2026-01-08 — fetched and committed here as
+`blog-benedict-dev-prop-amm.html` (byte-exact page snapshot) and
+`blog-benedict-dev-prop-amm.md` (verbatim excerpts transcribed from that snapshot's
+server-rendered content, quoted rather than paraphrased).
 
 Files copied byte-for-byte from `programs/prop-amm/src/` at that commit:
 
@@ -74,14 +77,15 @@ since the last oracle update. **This mechanism was not found in the fetched sour
 `programs/prop-amm/src/` (`instructions/swap.rs` and `instructions/update_oracle.rs` were
 both grepped for staleness/backoff/decay logic — none present at this commit).
 
-Fetching the blog post (<https://www.benedict.dev/prop-amm>) confirms the *idea* is real
-but was an **exploratory mock-up**, not the deployed mechanism: the author describes asking
-Claude to sketch "inventory skew, depth placement, and oracle staleness backoff" as three
-possible improvements, and characterizes all three as "competent but not exceptional." The
-post gives only a qualitative chart (spreads widen from ~5% to ~20% over 0–60s since the
-last update; widening starts ~30s; quotes are pulled entirely ~45s) and **no formula** —
-per `docs/DESIGN.md` §2.9, "Provenance is mandatory. Prose-only strategies may be
-second-hand or simply wrong": this detail is exactly that. The porting issue should treat
-the 7-point/6-segment self-replenishing curve (confirmed in source) as the strategy to
-port faithfully, and treat staleness backoff as, at most, an explicit `003b`-style variant
-(§2.9) if pursued at all — not part of the faithful port.
+The blog post confirms the *idea* is real but was an **exploratory mock-up**, not the
+deployed mechanism — quoting `blog-benedict-dev-prop-amm.md` verbatim: it is one of three
+"axes of improvement" (the other two: inventory skew, depth placement) the author asked
+Claude to "mock up," and the author's own verdict is that "they are not terrible but they
+are not above the level of a competent market maker." The post gives only a qualitative
+chart (spread % vs. seconds since the last oracle update; widening begins at 30s; quotes
+are pulled entirely at 45s) and **no formula** — per `docs/DESIGN.md` §2.9, "Provenance is
+mandatory. Prose-only strategies may be second-hand or simply wrong": this detail is
+exactly that. The porting issue should treat the 7-point/6-segment self-replenishing curve
+(confirmed both in source and in the blog's own account of what was actually shipped) as
+the strategy to port faithfully, and treat staleness backoff as, at most, an explicit
+`003b`-style variant (§2.9) if pursued at all — not part of the faithful port.

@@ -10,7 +10,8 @@
 ## Original material location
 
 Repository: <https://github.com/lilaclilac09/pamm-a>, pinned at commit
-`b2899305f8d91cf0df03858ca6515682493bece5`. This is a research/experimentation monorepo
+`b2899305f8d91cf0df03858ca6515682493bece5`. No repo-level license is declared (GitHub's
+repository API reports none at this commit). This is a research/experimentation monorepo
 ("Research and implementation sandbox for prop AMM, market making, and simulation on
 Solana") with several unrelated sub-projects; only the files below pertain to this
 strategy.
@@ -21,7 +22,7 @@ strategy.
 | `v2-ethereum-Strategy.sol` | `references/ethereum/Strategy.sol` | Repo's own "Solidity port of the strategy, for EVM comparison" — a **richer** variant (adds momentum + inventory-skew terms on top of the base EWMA-vol/shock-decay mechanism). |
 | `v3-flow-aware-strategy.rs` | `flow-aware-ewma/strategy.rs` | A v3 extension of `v2-solana-lib.rs` adding an off-chain "flow pressure" signal (competitor-activity based). Repo's own README: "not the competition submission — `src/` stays locked." |
 | `v3-flow-aware-README.md` | `flow-aware-ewma/README.md` | Describes the v3 signal and its wire-up. |
-| `upstream-repo-README.md` | `README.md` (repo root) | Top-level map of the monorepo, for provenance context. |
+| `upstream-README.md` | `README.md` (repo root) | Top-level map of the monorepo, for provenance context. |
 
 **Not copied**, and not part of this strategy: `pinocchio-prop-amm/` (a separate, unrelated
 "PMM" — proactive market maker, DODO-style — AMM in the same monorepo; its `swap`
