@@ -3,14 +3,12 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::note_if_not_decision_input;
+use crate::commands::{note_if_not_decision_input, slug_from_source_path};
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
 use crate::regime;
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::stats;
-
-const STAGE: &str = "compare";
 
 /// `bench compare` — the headline paired-by-seed comparison (docs/DESIGN.md §2.1, §2.6).
 #[derive(Args, Debug)]
@@ -31,8 +29,19 @@ pub struct CompareArgs {
 }
 
 pub fn run(args: CompareArgs) -> anyhow::Result<()> {
+    // WHI-1215: unlike `grid`/`l1`, `compare`'s two sides are both first-class comparison
+    // subjects — its own report tables "Candidate" and "Reference" side by side as equal
+    // participants, not one target measured against a fixed opponent — so naming only one
+    // side would still collide the day two different `compare` runs share just a candidate
+    // or just a reference. `compare-<candidate>-vs-<reference>` disambiguates on both
+    // deterministically from the two paths already being passed, so no extra
+    // `--stage-suffix` flag is needed the way an ambiguous case might require.
+    let candidate_slug = slug_from_source_path(&args.candidate)?;
+    let reference_slug = slug_from_source_path(&args.reference)?;
+    let stage = format!("compare-{candidate_slug}-vs-{reference_slug}");
+
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), STAGE)?;
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
 
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;
@@ -96,7 +105,7 @@ pub fn run(args: CompareArgs) -> anyhow::Result<()> {
     let slice_body = format_regime_slices(&slices);
 
     let meta = ReportMeta {
-        stage: STAGE.to_string(),
+        stage,
         segment: segment_name.to_string(),
         n_sims: stat.n,
         n_steps: args.steps,

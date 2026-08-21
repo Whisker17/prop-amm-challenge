@@ -3,13 +3,12 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
+use crate::commands::slug_from_source_path;
 use crate::compile::{self, Slot};
 use crate::config::BenchConfig;
 use crate::grid::{self, GridCell};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::stats::{self, PairedStat};
-
-const STAGE: &str = "grid";
 
 /// `bench grid` — the 27-cell fragility matrix (docs/DESIGN.md §2.3). Paired by seed against
 /// an operator-chosen reference, exactly like `compare`, but over grid mode's own balanced
@@ -37,8 +36,18 @@ struct CellResult {
 }
 
 pub fn run(args: GridArgs) -> anyhow::Result<()> {
+    // WHI-1215: the stage names only the candidate under test, not the reference — unlike
+    // `compare`'s two interchangeable comparison subjects, grid's own report already reads
+    // as "one candidate's fragility, measured against an operator-chosen reference" (the
+    // table below has one "candidate avg" column and one "reference avg" column, not a
+    // symmetric pairing), and it's the candidate that varies day to day across strategies
+    // (docs/DESIGN.md's own collision scenario: two different candidates gridded against
+    // the same fixed reference on the same day).
+    let candidate_slug = slug_from_source_path(&args.candidate)?;
+    let stage = format!("grid-{candidate_slug}");
+
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), STAGE)?;
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
 
     let bench_config = BenchConfig::load_default()?;
     let grid_config = bench_config.grid()?;
@@ -95,7 +104,7 @@ pub fn run(args: GridArgs) -> anyhow::Result<()> {
 
     let body = format_cell_table(&args.candidate, &args.reference, &results);
     let meta = ReportMeta {
-        stage: STAGE.to_string(),
+        stage,
         segment: "grid (not a config/bench.toml segment)".to_string(),
         n_sims: results.iter().map(|r| r.stat.n).sum(),
         n_steps: args.steps,

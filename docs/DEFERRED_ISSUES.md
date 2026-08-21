@@ -100,16 +100,6 @@ soon — anything touching a declared high-risk path defaults to at least High),
   trampoline" would need its own abstraction over that difference, for a net gain of maybe a
   dozen lines. Fix: revisit if a third call site needs the same shape — two duplicates is a
   pattern worth naming, three is worth extracting.
-- **A committed `compare` report with a regime-slice table needed a non-standard filename**
-  (Low, WHI-1195). `results/2026-08-20-compare-with-regime-slices.md` — `report.rs`'s
-  one-report-per-`(day, stage)` rule means today's `2026-08-20-compare.md` slot was already
-  spent by WHI-1193's own compare run, committed before regime slicing existed; regenerating
-  it would either silently clobber that evidence (`report.rs` itself refuses this) or require
-  deleting it first (destroying committed evidence, also against §3.3). Deferred: no code
-  change, since this is `report.rs`'s existing, intentional protection working as designed —
-  just an unusual filename for one report. Fix: none needed; `2026-08-20-compare.md` stays
-  WHI-1193's, and any future same-day rerun of `compare` needs its own distinctly-named file
-  the same way.
 - **`AGENTS.md`'s Status section still describes §6.2 as owner-input-blocked, present
   tense** (Low, WHI-1197). `AGENTS.md:36-38` (**Not written yet**) reads "the *frozen
   strategy list* M1 iterates over is an owner input that has not been supplied yet,
@@ -224,3 +214,16 @@ soon — anything touching a declared high-risk path defaults to at least High),
   target (see `strategies/001-cpmm-fee/NOTES.md` and `docs/DESIGN.md` §2.6 for the full
   accounting — WHI-1194's own session-specific numbers remain unexplained, not
   reproduced).
+- **A committed `compare` report with a regime-slice table needed a non-standard filename**
+  (Low, WHI-1195). `results/2026-08-20-compare-with-regime-slices.md` — `report.rs`'s
+  one-report-per-`(day, stage)` rule meant `2026-08-20-compare.md`'s slot, already spent by
+  WHI-1193's own compare run, forced a hand-named file for the second same-day `compare`
+  report. Resolved by WHI-1215: `compare`'s stage is now
+  `compare-<candidate-slug>-vs-<reference-slug>` (`tools/bench/src/commands/compare.rs::run`),
+  so two different `compare` pairs on the same day get distinct filenames automatically —
+  no manual rename needed the way this entry's case required. `grid` and `l1` got the same
+  per-target treatment (`grid-<candidate-slug>`, `l1-<primary-file-slug>`), closing the
+  `grid.rs`/`l1.rs`/`compare.rs` constant-`STAGE` collision this whole entry, and WHI-1215's
+  own issue, were about. `results/2026-08-20-compare-with-regime-slices.md` and every other
+  pre-existing `results/*.md` file are left untouched (docs/DESIGN.md §3.3: committed
+  evidence is never renamed after the fact) — only new reports use the new naming.

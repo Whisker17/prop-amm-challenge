@@ -26,6 +26,27 @@ pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, Path
     Ok((slug, strategy_dir.join("lib.rs")))
 }
 
+/// Derives a short, filesystem-safe identifier for a `.rs` source file path — the
+/// `grid`/`l1`/`compare` equivalent of [`resolve_strategy_lib_path`]'s slug, for the
+/// subcommands that take the source file directly (`--candidate`/`--reference`/`--file`)
+/// rather than a `--strategy <dir>`. Strips a trailing `lib.rs`, and then a `src` above it,
+/// so both `strategies/<slug>/lib.rs` and `programs/<name>/src/lib.rs` resolve to their
+/// meaningful directory name (`<slug>`, `<name>`) instead of the uninformative `lib`/`src`
+/// a plain `file_stem()`/immediate-parent lookup would give.
+pub fn slug_from_source_path(path: &str) -> anyhow::Result<String> {
+    let mut p = Path::new(path);
+    if p.file_name().and_then(|n| n.to_str()) == Some("lib.rs") {
+        p = p.parent().unwrap_or(p);
+    }
+    if p.file_name().and_then(|n| n.to_str()) == Some("src") {
+        p = p.parent().unwrap_or(p);
+    }
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("could not derive a slug from source path `{path}`"))
+}
+
 /// Printed once when a resolved segment isn't a decision input (docs/DESIGN.md §2.2) —
 /// shared so every segment-taking subcommand says the same thing instead of repeating it.
 pub fn note_if_not_decision_input(name: &str, segment: &Segment) {
@@ -152,5 +173,39 @@ mod tests {
     #[test]
     fn resolve_strategy_lib_path_rejects_a_path_with_no_final_component() {
         assert!(resolve_strategy_lib_path("").is_err());
+    }
+
+    #[test]
+    fn slug_from_source_path_strips_lib_rs_under_a_strategy_dir() {
+        assert_eq!(
+            slug_from_source_path("strategies/001-cpmm-fee/lib.rs").unwrap(),
+            "001-cpmm-fee"
+        );
+        assert_eq!(
+            slug_from_source_path("strategies/000-normalizer/lib.rs").unwrap(),
+            "000-normalizer"
+        );
+    }
+
+    #[test]
+    fn slug_from_source_path_strips_src_lib_rs_under_a_program_dir() {
+        assert_eq!(
+            slug_from_source_path("programs/starter/src/lib.rs").unwrap(),
+            "starter"
+        );
+    }
+
+    #[test]
+    fn slug_from_source_path_gives_distinct_slugs_for_distinct_strategies() {
+        // The mechanism that actually prevents WHI-1215's collision: two different
+        // candidates must never derive the same stage.
+        let a = slug_from_source_path("strategies/001-cpmm-fee/lib.rs").unwrap();
+        let b = slug_from_source_path("strategies/002-other/lib.rs").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn slug_from_source_path_rejects_an_empty_path() {
+        assert!(slug_from_source_path("").is_err());
     }
 }
