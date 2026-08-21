@@ -58,7 +58,9 @@ liquidity sampling, step count, the edge formula — come from the challenge and
 - **No automated CI gate on bench numbers.** `results/` snapshots are produced and reviewed
   by hand; wiring them into CI is not v1.
 - **No new strategy ideas of our own** beyond the one-variant-per-finalist rule (§2.9).
-  Original designs are v0.2.0 work.
+  Original designs are v0.2.0 work. This excludes designs of our own invention, not ports
+  of published, source-available math — a port's provenance is §2.9's fidelity contract to
+  satisfy, not this clause (§6.2's `007` is one, added post-freeze by exception per §2.10).
 
 ### 1.4 Success criteria
 
@@ -393,6 +395,15 @@ row. §1.4's "every strategy on the frozen list has reached a terminal state" is
 unfalsifiable: a row that just isn't there can't be checked against it. This rule governs
 removals only; it does not reopen the freeze for new entries.
 
+**Addition is the mirror case, and it is likewise not a reopening.** An entry may be added
+to the frozen list after the freeze only by owner decision, recorded in a new §6.2 row
+marked "added post-freeze by exception" with the reason, and only **while the test segment
+is still unspent** — the same protection the freeze exists to preserve. Once the test
+segment is spent, no addition is possible without a fresh test segment, which by
+definition makes the entry v0.2.0 work (§1.3) rather than a v1 addition. This rule governs
+one deliberate, recorded addition at a time, not an open door: §6.2's `007` is the single
+exception exercised so far.
+
 ## 3. Cross-cutting Policies
 
 ### 3.1 Parameter provenance
@@ -599,6 +610,7 @@ that governs if the two ever drift, since it is what's actually frozen before se
 | `004` | EWMA Dynamic Fee + Shock-Decay | source (Rust) + Solidity (richer port) + source (v3 extension) | `docs/references/004-ewma-shock-decay-fee/` — `lilaclilac09/pamm-a`'s own past competition submission | `SHOCK_THRESHOLD_1E9 = 5_000_000` (0.5%); vol EWMA α = 0.20; fee cap 100bps; `VOL_MULT`/`SHOCK_FEE_PER_STEP`/`SHOCK_DECAY_STEPS`/`BASE` per source |
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
 | `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
+| `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219)** | Solidity (to port) | `docs/references/007-dodo-pmm/` — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
 
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
@@ -615,7 +627,20 @@ the time any re-anchor could run, so post-hoc re-anchoring is a **no-op**, not j
 and the family has no fee axis at all, so the revenue model stays broken even granting the
 primitive. `WHI-1206` carries the full argument, the per-sigma bleed table, and a recorded
 dissent. The surviving idea — virtual-reserve amplification at a real spread, i.e. `001`
-plus a concentration knob — is a **v0.2.0 candidate**, not part of this list.
+plus a concentration knob — was filed as a **v0.2.0 candidate**; that earmark is now
+**superseded by `007`** (immediately below), which is that same idea ported as an M1 entry
+rather than reopened as v0.2.0 work.
+
+**`007` was added post-freeze by exception** (`WHI-1219`, recorded in `WHI-1220`). The
+freeze's purpose was still served at the time: the test segment (§2.2) was unspent, and
+going from four surviving candidates to five is a small increase in selection bias, not a
+list that keeps growing. It is admissible under the freeze because **provenance**, not
+mechanism, is what §1.3's "no new strategy ideas of our own" actually excludes — a port of
+published, source-available math is governed by §2.9's fidelity contract, not by that
+non-goal. This is the deliberate, single, recorded exception §2.10 describes, not a general
+reopening: it **supersedes** the v0.2.0 earmark above — "virtual-reserve amplification at a
+real spread, i.e. `001` plus a concentration knob" is exactly DODO PMM collapsed to
+`R = ONE` — so that mechanism is no longer open for a future v0.2.0 issue.
 
 Two entries carry an explicit provenance caveat, read before porting:
 
@@ -635,7 +660,9 @@ Two entries carry an explicit provenance caveat, read before porting:
 
 One M1 issue per strategy above is opened per `docs/agents/issue-template.md`, each
 `blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`, **Canceled** — see above),
-`WHI-1207` (`003`), `WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
+`WHI-1207` (`003`), `WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`). `007`'s
+issue is `WHI-1219` — opened post-freeze, per the exception recorded above and in
+`WHI-1220`.
 
 ## 7. Rejected Alternatives
 
