@@ -159,22 +159,31 @@ was needed once this construction was implemented.
   not strictly increasing at every single nano step — a run of consecutive inputs can floor to
   the same output whenever the tail's true slope there rounds below one output-nano per
   input-nano (this is common in practice: e.g. deep in the tail, `d/w` can stay flat across
-  dozens of consecutive nano-inputs before ticking up by 1). Non-decreasing is exactly what
-  every gate in this repo actually requires (`validate.rs`'s check only fails on a *decrease*,
-  and `curve_checks.rs` merges inputs within `INPUT_MERGE_EPS_NANO = 4` of each other), so this
-  is not a gap against either gate — but "strictly increasing" was too strong a claim for the
-  integer form and is corrected here.
+  dozens of consecutive nano-inputs before ticking up by 1). This is not a gap against
+  `curve_checks.rs` (the *runtime* check), which merges inputs within
+  `INPUT_MERGE_EPS_NANO = 4` of each other before comparing, so it never sees two
+  sub-4-nano-apart samples as a plateau in the first place. It is a real, narrower claim
+  against `prop-amm validate`'s own monotonicity check
+  (`crates/cli/src/commands/validate.rs:111`, `if output <= prev_output && prev_output > 0`),
+  which fails on equality too, not only a decrease — a plateau *would* fail it. What actually
+  saves the committed point is that `validate.rs` samples only 10 sizes, `0.1..200` real
+  tokens apart (huge relative to a single nano), so no two consecutive samples ever land close
+  enough together to observe a same-nano-output plateau. This is a property of the *gate's own
+  coarseness*, not a guarantee this port's tail provides on its own — a future strategy
+  relying on this same construction at a much finer sample spacing should not assume plateaus
+  are automatically safe.
 - The *raw* branch's `invert_buy` is monotone in real-valued arithmetic (§ Fidelity
   self-assessment's calculus), but its integer form can additionally tick **down** by exactly 1
   nano right where `isqrt`'s floor crosses to the next integer while the denominator also
   grows — a finite-precision artefact of truncating division, not a sign error. Finding #7's
   own bisection fallback exists for when this kind of error *exceeds* the runtime check's
-  `QUOTE_DELTA_UNCERTAINTY_NANO = 4` tolerance; a 1-nano tick does not.
+  `QUOTE_DELTA_UNCERTAINTY_NANO = 4` tolerance; a 1-nano tick does not, and (per the previous
+  bullet) `validate.rs`'s own coarse sample spacing never lands on one either.
 
-No gate anywhere in this repo (`validate.rs`'s coarse-grained sample sizes, or
-`curve_checks.rs`'s 4-nano-tolerant runtime check) observes either effect, which is exactly
-what the zero-violations result above confirms across 324 states. See `invert_buy`'s own doc
-comment in `lib.rs` for the same note next to the code.
+Neither effect is observed by any gate actually exercised in this repo today, which is exactly
+what the zero-violations result above confirms across 324 fuzzed states — but that is because
+of how coarsely each gate samples, not because either effect is impossible. See `invert_buy`'s
+own doc comment in `lib.rs` for the same note next to the code.
 
 ## Clamping before squaring (finding #7)
 

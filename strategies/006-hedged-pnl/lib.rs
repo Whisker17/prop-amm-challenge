@@ -288,6 +288,9 @@ fn saturating_tail(
     let c = (headroom.saturating_mul(slope_den) / slope_num).max(1);
     let d = c.saturating_mul(headroom);
     let w = v.saturating_sub(switch).saturating_add(c);
+    // `c >= 1` (just above) makes `w >= c >= 1` unconditionally, so this can no longer
+    // trigger — kept as defense-in-depth against a future edit to `c`'s derivation, the same
+    // reasoning this file already applies to its other zero-divisor guards.
     if w == 0 {
         return value_at_switch;
     }
