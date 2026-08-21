@@ -296,6 +296,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prop-amm-research"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "prop-amm-executor",
+ "prop-amm-shared",
+ "prop-amm-sim",
+ "rayon",
+]
+
+[[package]]
 name = "prop-amm-shared"
 version = "0.1.0"
 dependencies = [

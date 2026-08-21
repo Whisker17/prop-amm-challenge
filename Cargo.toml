@@ -5,6 +5,9 @@ members = [
     "crates/executor",
     "crates/sim",
     "crates/cli",
+    # Research-only: oracle-aware curve comparison benchmark. Not part of the
+    # challenge submission path or the `prop-amm` CLI.
+    "crates/research",
 ]
 # Programs are BPF-only, built via `cargo build-sbf`
 exclude = [
