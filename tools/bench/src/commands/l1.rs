@@ -3,13 +3,12 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::note_if_not_decision_input;
+use crate::commands::{note_if_not_decision_input, slug_from_source_path};
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::telemetry::{self, L1Sim};
 
-const STAGE: &str = "l1";
 const DEFAULT_STARTER: &str = "programs/starter/src/lib.rs";
 const DEFAULT_NORMALIZER_AS_SUBMISSION: &str = "strategies/000-normalizer/lib.rs";
 
@@ -129,8 +128,19 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
         anyhow::bail!("bench l1 requires at least one --file");
     }
 
+    // WHI-1215 (see docs/DEFERRED_ISSUES.md's now-resolved WHI-1195 entry for the collision
+    // this fixes): `l1` measures a *list* of files in one report (`files`' own doc comment
+    // above explains why its two defaults share a single stage rather than each colliding
+    // with a `report.rs` slot of their own), so the stage derives from just the primary
+    // (first) file, not every file in the list — that's the file most likely to differ
+    // between two strategies' `l1` runs on the same day, so it alone is what needs to
+    // disambiguate. A caller measuring several non-default files under the same primary on
+    // the same day still collides; accepted for now (docs/DEFERRED_ISSUES.md).
+    let primary_slug = slug_from_source_path(&args.files[0])?;
+    let stage = format!("l1-{primary_slug}");
+
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), STAGE)?;
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
 
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;
@@ -180,7 +190,7 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
     // (docs/DESIGN.md §3.3's provenance rule: a reported number must state what it actually
     // measures).
     let meta = ReportMeta {
-        stage: STAGE.to_string(),
+        stage,
         segment: segment_name.to_string(),
         n_sims: configs.len(),
         n_steps: args.steps,
