@@ -33,20 +33,34 @@ const NATIVE_AFTER_SWAP_SYMBOL: &[u8] = b"__prop_amm_after_swap_export";
 /// The fast build directory, anchored at the workspace root via `CARGO_MANIFEST_DIR`
 /// (resolved at compile time to `<root>/tools/bench`) rather than a bare relative path.
 /// A bare `".build/fast"` resolves against `std::env::current_dir()` at *runtime* — fine
-/// when `bench` is invoked from the workspace root, but wrong (and a hard `cargo` error,
-/// not a silent misbehavior) when invoked from a nested git worktree
-/// (`.claude/worktrees/<name>/`, the git workflow's own mandated layout) or via `cargo
-/// test` (whose cwd is this crate's own directory) — either way the resulting `.build/fast`
-/// lands somewhere the *outer* workspace's `exclude = [".build"]` (a literal top-level-only
-/// pattern) doesn't cover, so cargo tries to fold it into that outer workspace instead of
-/// treating it as its own isolated package (WHI-1205).
+/// when `bench` is invoked from the workspace root, but wrong via `cargo test` (whose cwd
+/// is this crate's own directory: the build dir would land at `tools/bench/.build/fast`
+/// instead). This fixes *that* case (WHI-1205); it does not by itself fix a nested git
+/// worktree (`.claude/worktrees/<name>/`) — the resolved path is still correct there, but
+/// whether it's isolated from the *outer* workspace's `[profile.release]` is a separate
+/// question `CARGO_TOML`'s own `[workspace]` table (below) answers unconditionally.
 fn fast_build_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.build/fast")
 }
 
-/// Identical to `crates/cli/src/commands/compile.rs`'s `CARGO_TOML`, except the
-/// `submission-sdk` path: relative to *this* fixed directory's depth (`.build/fast/` — two
-/// segments — vs. `compile.rs`'s per-hash `.build/runs/<hash>/` — three).
+/// Identical to `crates/cli/src/commands/compile.rs`'s `CARGO_TOML`, except two things:
+/// the `submission-sdk` path (relative to *this* fixed directory's depth —
+/// `.build/fast/`, two segments, vs. `compile.rs`'s per-hash `.build/runs/<hash>/`,
+/// three) and the empty `[workspace]` table below.
+///
+/// That table is load-bearing, not boilerplate (WHI-1205): without it, whether this
+/// package is correctly isolated from the *outer* workspace's `[profile.release]`
+/// (`lto=true`, `codegen-units=1`) depends on the enclosing workspace's own `exclude`
+/// list actually covering wherever `.build/fast` happens to sit — true when
+/// `fast_build_dir()` lands under the workspace root, **false** if it's nested one level
+/// deeper (a git worktree at `.claude/worktrees/<name>/`, this repo's own mandated
+/// layout, sitting inside the *primary clone*, whose `exclude = [".build"]` only matches
+/// a direct child, not `.claude/worktrees/<name>/.build`). In that case cargo doesn't
+/// silently apply the outer profile — it hard-errors trying to fold the package into the
+/// outer workspace (`current package believes it's in a workspace when it's not`). An
+/// empty `[workspace]` table makes this package its own workspace root unconditionally,
+/// independent of nesting depth or any ancestor's `exclude` list — cargo's own suggested
+/// fix for exactly this error.
 const CARGO_TOML: &str = r#"[package]
 name = "user_program"
 version = "0.1.0"
@@ -62,6 +76,8 @@ prop-amm-submission-sdk = { path = "../../crates/submission-sdk" }
 
 [features]
 no-entrypoint = []
+
+[workspace]
 "#;
 
 type FfiSwapFn = unsafe extern "C" fn(*const u8, usize) -> u64;
@@ -388,23 +404,113 @@ mod tests {
     }
 
     #[test]
-    fn fast_build_dir_resolves_to_the_workspace_root_not_the_runtime_cwd() {
-        // Anchored at compile-time CARGO_MANIFEST_DIR, so this must land at
-        // `<repo root>/.build/fast` regardless of `std::env::current_dir()` — the whole
-        // point of WHI-1205's fix (a bare relative path resolved against runtime cwd,
-        // which breaks under a nested worktree or `cargo test`'s crate-dir cwd).
+    fn cargo_toml_declares_its_own_workspace() {
+        // WHI-1205: without this, isolation from the outer workspace's [profile.release]
+        // depends on the outer `exclude` list actually covering wherever `.build/fast`
+        // happens to be nested — see
+        // `a_bare_relative_build_dir_gets_folded_into_an_outer_workspace_when_nested`.
+        assert!(CARGO_TOML.contains("[workspace]"));
+    }
+
+    #[test]
+    fn fast_build_dir_resolves_to_the_real_workspace_root() {
+        // A regression guard against reverting to a bare relative literal (which
+        // `std::env::current_dir()` would make relative, not absolute) — `env!` is a
+        // compile-time constant, so this is absolute regardless of runtime cwd.
         let resolved = fast_build_dir();
         assert!(
-            resolved.ends_with(".build/fast"),
-            "expected a `.build/fast` suffix, got {}",
+            resolved.is_absolute(),
+            "expected an absolute path anchored at CARGO_MANIFEST_DIR, got {}",
             resolved.display()
         );
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Not just a formula match: the grandparent must be the *actual* workspace root
+        // on disk (verified by its own root Cargo.toml declaring `[workspace]`), proving
+        // `fast_build_dir()` really points where it claims to, not merely at some path
+        // shaped like it.
+        let workspace_root = resolved
+            .parent()
+            .and_then(Path::parent)
+            .expect("`.build/fast` should have a grandparent directory");
+        let root_manifest = std::fs::read_to_string(workspace_root.join("Cargo.toml"))
+            .expect("workspace root should have its own Cargo.toml");
         assert!(
-            resolved.starts_with(manifest_dir.join("../..")),
-            "expected `{}` to be anchored under `{}/../..`, independent of cwd",
-            resolved.display(),
-            manifest_dir.display()
+            root_manifest.contains("[workspace]"),
+            "expected {} to be the workspace root",
+            workspace_root.display()
+        );
+    }
+
+    #[test]
+    fn a_bare_relative_build_dir_gets_folded_into_an_outer_workspace_when_nested() {
+        // Reproduces WHI-1205's discovered failure mode directly (not just asserted from
+        // reading cargo's docs): a package excluded from its *immediate* parent workspace
+        // but nested two levels under an *outer* workspace whose `exclude` list only
+        // matches a direct child (exactly this repo's root `exclude = [".build"]` against
+        // `.claude/worktrees/<name>/.build/fast`) gets folded into that outer workspace
+        // instead of standing alone — a hard `cargo build` error, not a silent profile
+        // leak. No real dependencies needed to reproduce this; it's a workspace-discovery
+        // question, not a compilation one.
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path();
+        std::fs::write(
+            outer.join("Cargo.toml"),
+            "[workspace]\nmembers = []\nexclude = [\".build\"]\n",
+        )
+        .unwrap();
+
+        // The "worktree" — same exclude shape as the real repo's own root Cargo.toml.
+        let inner = outer.join("nested-worktree");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(
+            inner.join("Cargo.toml"),
+            "[workspace]\nmembers = []\nexclude = [\".build\"]\n",
+        )
+        .unwrap();
+
+        // The package, nested two levels under `inner` — like `.build/fast` under
+        // `.claude/worktrees/<name>/`. No `[workspace]` table: reproduces the bug.
+        let pkg_dir = inner.join(".build").join("fast");
+        std::fs::create_dir_all(pkg_dir.join("src")).unwrap();
+        std::fs::write(pkg_dir.join("src/lib.rs"), "pub fn ping() -> u32 { 1 }\n").unwrap();
+        std::fs::write(
+            pkg_dir.join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let output = Command::new("cargo")
+            .arg("build")
+            .arg("--manifest-path")
+            .arg(pkg_dir.join("Cargo.toml"))
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "expected the bare-relative-style package (no [workspace] table) nested two \
+             levels deep to fail exactly like `.build/fast` used to"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("believes it's in a workspace when it's not"),
+            "expected cargo's specific workspace-folding error, got: {stderr}"
+        );
+
+        // The fix: an empty `[workspace]` table (exactly what `CARGO_TOML` declares)
+        // makes the same package its own root regardless of nesting depth.
+        std::fs::write(
+            pkg_dir.join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )
+        .unwrap();
+        let status = Command::new("cargo")
+            .arg("build")
+            .arg("--manifest-path")
+            .arg(pkg_dir.join("Cargo.toml"))
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "an empty [workspace] table should isolate the package regardless of nesting"
         );
     }
 

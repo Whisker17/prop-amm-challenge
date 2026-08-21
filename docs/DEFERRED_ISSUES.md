@@ -153,6 +153,11 @@ soon — anything touching a declared high-risk path defaults to at least High),
   improvement, and attributed to that environment rather than the fast path's design
   (which never rebuilds `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the
   directory's first use). §2.6 now cites the real figures instead of the estimate. This
-  closes the "no measurement to cite" defect; it does not claim the `< 1s` figure a
-  future WHI-1194 acceptance check named — that's a live, disclosed gap in
-  `strategies/001-cpmm-fee/NOTES.md`, not a re-opening of this entry.
+  closes the "no measurement to cite" defect; it did not claim the `< 1s` figure a
+  future WHI-1194 acceptance check named — that was a live, disclosed gap in
+  `strategies/001-cpmm-fee/NOTES.md`, not a re-opening of this entry. WHI-1205 settled
+  that gap: none of the four candidate structural causes it checked explained the 9x
+  discrepancy, and a fresh bounded re-measurement on the same machine meets the `< 1s`
+  target (see `strategies/001-cpmm-fee/NOTES.md` and `docs/DESIGN.md` §2.6 for the full
+  accounting — WHI-1194's own session-specific numbers remain unexplained, not
+  reproduced).

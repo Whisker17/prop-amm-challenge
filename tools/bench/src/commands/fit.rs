@@ -20,32 +20,42 @@ pub struct FitArgs {
     /// `lib.rs` with a `// === PARAMS BEGIN/END ===` block.
     #[arg(long)]
     strategy: String,
-    /// Override the search budget (`config/bench.toml`'s `[search] max_points`) for a
-    /// bounded, cheap run — e.g. smoke-testing the fast path's compile timing in seconds
-    /// instead of minutes (WHI-1205). Must be between 1 and the protocol's hard cap
-    /// (`search::MAX_SEARCH_POINTS`), same bound the config file itself is validated
-    /// against.
+    // WHI-1205: an escape hatch for cheap, uncommitted smoke-testing (e.g. of the fast
+    // path's compile timing) — never for a committed run, so `run` requires --no-report
+    // whenever this is set (docs/DESIGN.md §2.5's 300-point budget stays the only value
+    // that ever produces committed evidence).
+    /// Bound this run to fewer search points than the configured budget, for a quick,
+    /// uncommitted check (must be paired with `--no-report`). Same 1..=300 range
+    /// `config/bench.toml`'s `[search] max_points` is validated against.
     #[arg(long)]
     max_points: Option<usize>,
-    /// Skip writing a `results/` snapshot — for bounded/exploratory runs (WHI-1205) that
-    /// shouldn't produce committed evidence.
+    /// Skip writing a `results/` snapshot — required alongside `--max-points`, since a
+    /// bounded run doesn't represent the protocol's full search budget.
     #[arg(long)]
     no_report: bool,
 }
 
 /// Validates a `--max-points` override against the same bound `config/bench.toml`'s
-/// `[search] max_points` is checked against (`config.rs::BenchConfig::load_default`).
+/// `[search] max_points` is checked against — both route through
+/// `search::validate_budget`, so the bound lives in one place.
 fn validate_max_points(max_points: usize) -> anyhow::Result<usize> {
-    if max_points == 0 {
-        anyhow::bail!("--max-points must be at least 1");
-    }
-    if max_points > search::MAX_SEARCH_POINTS {
+    search::validate_budget(max_points, "--max-points")?;
+    Ok(max_points)
+}
+
+/// `--max-points` is only for uncommitted smoke-testing — docs/DESIGN.md §2.5's 300-point
+/// budget is what a `results/` snapshot is supposed to represent, so a bounded run must
+/// never produce one.
+fn validate_max_points_requires_no_report(
+    max_points: Option<usize>,
+    no_report: bool,
+) -> anyhow::Result<()> {
+    if max_points.is_some() && !no_report {
         anyhow::bail!(
-            "--max-points ({max_points}) exceeds the protocol's hard cap of {}",
-            search::MAX_SEARCH_POINTS
+            "--max-points requires --no-report (a bounded run is never committed evidence)"
         );
     }
-    Ok(max_points)
+    Ok(())
 }
 
 /// The acceptance criterion this module measures against: "compiles a parameter point in
@@ -156,9 +166,12 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         })?;
     let stage = format!("fit-{slug}");
 
-    // Fail fast, before any compiling/simulating, on a bad --max-points or (unless
-    // --no-report) an already-taken report slot.
+    // Fail fast, before any compiling/simulating: a bad --max-points, --max-points without
+    // its required --no-report (a bounded run must never produce committed evidence at a
+    // non-protocol budget — docs/DESIGN.md §2.5's 300-point budget is what `results/`
+    // reports represent), or (unless --no-report) an already-taken report slot.
     let max_points = args.max_points.map(validate_max_points).transpose()?;
+    validate_max_points_requires_no_report(max_points, args.no_report)?;
     if !args.no_report {
         report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
     }
@@ -484,5 +497,26 @@ mod tests {
     #[test]
     fn max_points_of_one_is_allowed() {
         assert_eq!(validate_max_points(1).unwrap(), 1);
+    }
+
+    #[test]
+    fn max_points_without_no_report_is_rejected() {
+        let err = validate_max_points_requires_no_report(Some(8), false).unwrap_err();
+        assert!(err.to_string().contains("requires --no-report"));
+    }
+
+    #[test]
+    fn max_points_with_no_report_is_allowed() {
+        assert!(validate_max_points_requires_no_report(Some(8), true).is_ok());
+    }
+
+    #[test]
+    fn no_report_without_max_points_is_allowed() {
+        assert!(validate_max_points_requires_no_report(None, true).is_ok());
+    }
+
+    #[test]
+    fn neither_flag_is_allowed() {
+        assert!(validate_max_points_requires_no_report(None, false).is_ok());
     }
 }

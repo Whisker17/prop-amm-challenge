@@ -12,6 +12,24 @@ use crate::params::ParamSpec;
 /// (`config::BenchConfig::search_max_points`).
 pub const MAX_SEARCH_POINTS: usize = 300;
 
+/// Validates an evaluation-point budget against the protocol's bounds (docs/DESIGN.md
+/// §2.5, §3.4): at least 1, at most [`MAX_SEARCH_POINTS`]. One shared check for every
+/// surface a budget can come from — `config::BenchConfig::parse`'s `[search] max_points`,
+/// `commands/fit.rs`'s `--max-points` CLI override, and this module's own entry point —
+/// so the bound and its wording live in exactly one place (WHI-1205).
+pub fn validate_budget(budget: usize, label: &str) -> anyhow::Result<()> {
+    if budget == 0 {
+        anyhow::bail!("{label} must be at least 1");
+    }
+    if budget > MAX_SEARCH_POINTS {
+        anyhow::bail!(
+            "{label} ({budget}) exceeds the protocol's hard cap of {MAX_SEARCH_POINTS} \
+             (docs/DESIGN.md §2.5, §3.4)"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchOutcome {
     pub best: Vec<i128>,
@@ -49,9 +67,7 @@ pub fn coarse_grid_then_coordinate_descent(
     if specs.is_empty() {
         anyhow::bail!("search requires at least one declared parameter");
     }
-    if budget == 0 {
-        anyhow::bail!("search budget must be at least 1");
-    }
+    validate_budget(budget, "search budget")?;
 
     let mut history: Vec<(Vec<i128>, f64)> = Vec::new();
     let mut points_evaluated = 0usize;

@@ -73,29 +73,47 @@ candidate structural causes named in that follow-up issue:
   `codegen-units=1`)?** No, when invoked from the workspace root — `cargo build -v`
   showed `-C embed-bitcode=no` on `user_program`'s compile (LTO would require
   `embed-bitcode=yes`) and no explicit `-C lto=…`/`-C codegen-units=…` override. Ruled
-  out as an explanation of the gap. **But** this surfaced a real, separate bug fixed as
-  part of this issue: `FAST_BUILD_DIR` was a bare relative path (`.build/fast`), resolved
-  against the runtime working directory rather than the workspace root. Invoked from a
-  nested worktree (`.claude/worktrees/<name>/`, this repo's own mandated git-workflow
-  layout) or via `cargo test` (whose cwd is the crate directory), that resolves somewhere
-  the *outer* workspace's `exclude = [".build"]` doesn't cover, and cargo hard-errors:
-  `current package believes it's in a workspace when it's not`. Fixed by anchoring the
-  build directory at `CARGO_MANIFEST_DIR` (resolved at compile time), independent of
-  runtime cwd.
+  out as an explanation of the gap. **But** this surfaced two real, separate bugs fixed as
+  part of this issue:
+  1. `FAST_BUILD_DIR` was a bare relative path (`.build/fast`), resolved against the
+     runtime working directory rather than the workspace root — invoked via `cargo test`
+     (whose cwd is the crate directory), the build dir would land at
+     `tools/bench/.build/fast` instead of the repo root. Fixed by anchoring at
+     `CARGO_MANIFEST_DIR` (resolved at compile time), independent of runtime cwd.
+  2. Independently of cwd: nested one level under a git worktree
+     (`.claude/worktrees/<name>/`, this repo's own mandated git-workflow layout —
+     confirmed by actually reproducing it there, not just reasoned about), `.build/fast`
+     sits somewhere the *outer* primary clone's `exclude = [".build"]` (a literal
+     top-level-only pattern) doesn't cover, and cargo hard-errors: `current package
+     believes it's in a workspace when it's not`. Fixed the way cargo's own error message
+     suggests: an empty `[workspace]` table in the fast-path `Cargo.toml` template makes
+     the package its own workspace root unconditionally, regardless of nesting depth or
+     any ancestor's `exclude` list. Verified with a regression test that reproduces the
+     exact failure against a synthetic nested-workspace fixture, then confirms the empty
+     table resolves it (`tools/bench/src/fast_compile.rs`'s
+     `a_bare_relative_build_dir_gets_folded_into_an_outer_workspace_when_nested`).
 - **Is the timed window wider than the build itself?** Partially, yes — `compile_timed`
   (`tools/bench/src/commands/fit.rs`) times `cargo build` **plus** locating and
   `dlopen`-ing the resulting dylib (a fresh tempfile copy each time). Instrumented
   separately: build ≈0.11-0.13s, load (copy + `dlopen`) ≈0.14-0.22s — real and previously
   unaccounted-for, but nowhere near the missing ~0.75s needed to explain WHI-1194's mean.
 
-None of the four explains the 9x magnitude. A fresh, bounded re-measurement on this same
-machine — `bench fit --strategy strategies/001-cpmm-fee --max-points 8 --no-report`
-(WHI-1205's new flags; see "Cheap verification" below) — gives **7 warm compiles:
-min=0.320s, mean=0.327s, max=0.343s — MEETS the &lt;1s target**, close to
-`docs/DESIGN.md` §2.6's original 0.11–0.57s estimate once build+load are counted
-together honestly. The 9x gap does not reproduce on this machine today: WHI-1194's
-specific session-environment attribution holds up, now with a control in hand rather
-than an assertion.
+None of the four explains the 9x magnitude — the fast path's own mechanism is not at
+fault. A fresh, bounded re-measurement on this same machine — `bench fit --strategy
+strategies/001-cpmm-fee --max-points 8 --no-report` (WHI-1205's new flags; see "Cheap
+verification" below) — gives **7 warm compiles: min=0.320s, mean=0.327s, max=0.343s —
+MEETS the &lt;1s target**, close to `docs/DESIGN.md` §2.6's original 0.11–0.57s estimate
+once build+load are counted together honestly.
+
+**What this does and does not establish.** The 9x gap does not reproduce on this machine
+today, and that is consistent with WHI-1194's environment attribution — but
+non-reproduction is not confirmation of it: this session ruling out the four named
+structural causes and getting a fast number is not proof that WHI-1194's specific
+session-environment explanation (rather than some other, still-unidentified transient
+factor) was the correct one. What *is* settled: the fast path's code is not the culprit,
+the `<1s` criterion is achievable and now demonstrated on this machine, and there's a
+real, cited control to compare against for any future recurrence — which is what WHI-1194
+lacked. The exact cause of that one session's numbers remains, honestly, unknown.
 
 What *is* demonstrated, regardless of session-to-session variance: the fast path never
 rebuilds `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the first point

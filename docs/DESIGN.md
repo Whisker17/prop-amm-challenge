@@ -191,7 +191,12 @@ number is no longer an honest estimate.
   Resampling seeds per point would leave enough noise to chase a phantom optimum.
 - **Equal budget, hard cap: 300 evaluation points per family.** Recorded in `NOTES.md`.
   Unequal budgets would reintroduce through the back door exactly what §2.9 exists to keep
-  out: a ranking that reflects effort spent rather than curve quality.
+  out: a ranking that reflects effort spent rather than curve quality. `bench fit
+  --max-points <N>` (WHI-1205) can *lower* this for a quick, uncommitted check of the fast
+  path itself (e.g. its compile timing) — it is not a way to fit a strategy on a smaller
+  budget, and `run` refuses it without `--no-report`: a bounded run can never produce
+  `results/` evidence, so this equal-budget invariant still holds for every committed
+  point.
 - **Known and accepted consequence:** an equal point budget favours low-dimensional
   families. A 4-parameter family is covered far less densely by 300 points than a
   1-parameter one. This is not a defect to correct — being hard to tune is a real drawback

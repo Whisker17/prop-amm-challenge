@@ -5,7 +5,7 @@ use clap::Args;
 use prop_amm_shared::config::{HyperparameterVariance, SimulationConfig};
 use serde::Deserialize;
 
-use crate::search::MAX_SEARCH_POINTS;
+use crate::search::validate_budget;
 
 /// The checked-in config every command loads by default. `config/README.md`'s per-machine
 /// override (`<name>.local.toml`, gitignored) takes precedence when present.
@@ -188,16 +188,7 @@ impl BenchConfig {
         let search = raw
             .search
             .ok_or_else(|| anyhow::anyhow!("bench config declares no [search] section"))?;
-        if search.max_points == 0 {
-            anyhow::bail!("[search] max_points must be at least 1");
-        }
-        if search.max_points > MAX_SEARCH_POINTS {
-            anyhow::bail!(
-                "[search] max_points ({}) exceeds the protocol's hard cap of {MAX_SEARCH_POINTS} \
-                 (docs/DESIGN.md §2.5, §3.4)",
-                search.max_points
-            );
-        }
+        validate_budget(search.max_points, "[search] max_points")?;
 
         let grid = raw.grid.map(|g| validate_grid(&g)).transpose()?;
 
@@ -339,6 +330,7 @@ fn validate_grid(raw: &RawGridConfig) -> anyhow::Result<GridConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::MAX_SEARCH_POINTS;
 
     fn sample_valid() -> &'static str {
         r#"
