@@ -69,8 +69,8 @@ v1 is done when all of the following hold:
 2. The **0-line** is established: the CPMM fee family (`strategies/001-*`) is fitted under
    the full protocol, and its fee↔edge response is single-peaked (§2.8).
 3. Every strategy on the frozen list (§6.2) has reached a terminal state: a fitted point
-   with train/validation numbers, or an explicit `wontfix` with a recorded structural
-   reason (§2.9).
+   with train/validation numbers, an explicit `wontfix` with a recorded structural reason
+   (§2.9), or a `Canceled` by owner decision with its reason recorded in §6.2 (§2.10).
 4. A winner is named from a **single** use of the test segment, reported with a paired
    confidence interval and its regime slice table, and the answer to "does it beat the best
    fixed-fee CPMM?" is stated explicitly — including if the answer is no.
@@ -218,8 +218,9 @@ number is no longer an honest estimate.
   listed by parameter vector and panic message in the `results/` snapshot. The search winner
   is re-evaluated the same way on the full train/validation segments (this section's "final
   point evaluation") — a point valid on `screening`'s seeds is not guaranteed valid on a
-  different, larger seed set (the Orbic family's quantization jitter, WHI-1206, is exactly
-  this: probabilistic across seeds, not just across parameter values) — and an invalid
+  different, larger seed set (the Orbic family's quantization jitter, WHI-1206 — now
+  Canceled, §6.2; the phenomenon is general, the example is retained — is exactly this:
+  probabilistic across seeds, not just across parameter values) — and an invalid
   re-evaluation blocks the run the same way a failed single-peak check does (§2.8): the
   evidence gathered so far is still written, but the point is not entered into the ranking
   un-flagged. If `bench fuzz` (§2.9's pre-search shape-fuzz gate, WHI-1212) already passed
@@ -384,6 +385,13 @@ stack trace plays for this section's `wontfix` path.
 The freeze point is the mechanism, not the good intentions. Without it the list keeps
 growing — every strategy can spawn a variant — validation gets consumed indefinitely, and
 sooner or later someone peeks at test. Only a declared "stop adding now" prevents that.
+
+**Removal is not an addition, but it is not silent either.** An entry may leave the frozen
+list after the freeze only by owner decision, and only by being marked Canceled in its
+§6.2 row with a reason and a pointer to the issue that decided it — never by deleting the
+row. §1.4's "every strategy on the frozen list has reached a terminal state" is otherwise
+unfalsifiable: a row that just isn't there can't be checked against it. This rule governs
+removals only; it does not reopen the freeze for new entries.
 
 ## 3. Cross-cutting Policies
 
@@ -563,7 +571,7 @@ so any result is re-derivable by re-running it. The only durable artifacts are t
 | Milestone | Deliverable | Success criterion |
 | --- | --- | --- |
 | **M0** | The measurement layer | bench reproduces `prop-amm run` per seed for starter (210.50 on `0..=999`); the 0-line is fitted and single-peaked; grid mode and L1 report |
-| **M1** | Every listed strategy at a terminal state | each has a fitted point with train/validation/parity numbers, or a recorded `wontfix` |
+| **M1** | Every listed strategy at a terminal state | each has a fitted point with train/validation/parity numbers, a recorded `wontfix`, or a recorded `Canceled` (§2.10) |
 | **M2** | A named winner | one test-segment use; paired interval; regime slices; `results/` snapshot; §1.4 satisfied |
 
 M0 is split into three issues so the measurement layer is validated *before* anything is
@@ -586,7 +594,7 @@ that governs if the two ever drift, since it is what's actually frozen before se
 
 | Id | Name | Source form | Original material | Known parameters (starting point, not frozen — §2.4) |
 | --- | --- | --- | --- | --- |
-| `002` | Orbic | Solidity (to port) | `docs/references/002-orbic-flashbots/` — Flashbots' `ExamplePropAmm.sol` | `concentration ∈ [1, 2000)`; oracle-published `multX`/`multY`; 5% lock threshold |
+| `002` | Orbic — **Canceled (WHI-1206)** | Solidity (to port) | `docs/references/002-orbic-flashbots/` — Flashbots' `ExamplePropAmm.sol` | `concentration ∈ [1, 2000)`; oracle-published `multX`/`multY`; 5% lock threshold |
 | `003` | Piecewise Linear | source (Rust) + prose (blog) | `docs/references/003-piecewise-linear/` — `benedictbrady/prop-amm`'s on-chain program | `NUM_PRICE_POINTS = 7` / `NUM_SEGMENTS = 6` per side; per-segment liquidity is derived, not free |
 | `004` | EWMA Dynamic Fee + Shock-Decay | source (Rust) + Solidity (richer port) + source (v3 extension) | `docs/references/004-ewma-shock-decay-fee/` — `lilaclilac09/pamm-a`'s own past competition submission | `SHOCK_THRESHOLD_1E9 = 5_000_000` (0.5%); vol EWMA α = 0.20; fee cap 100bps; `VOL_MULT`/`SHOCK_FEE_PER_STEP`/`SHOCK_DECAY_STEPS`/`BASE` per source |
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
@@ -595,6 +603,19 @@ that governs if the two ever drift, since it is what's actually frozen before se
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
 is measured against, not additional candidates.
+
+**`002` is Canceled**, per §2.10's removal clause: struck by owner decision rather than
+carried to a measured negative result (`WHI-1206`). The mechanism depends on top-of-block
+parameter republication via Flashbots' `PrioUpdateRegistry`; this harness exposes no
+pre-arbitrage surface (four instruction tags, `after_swap` fires only on executed trades,
+and a `sol_set_storage` call inside `compute_swap` is silently discarded), so re-anchoring
+can only ever happen post-hoc. For a symmetric zero-fee curve that lateness is fatal, not
+merely inconvenient: the arbitrageur has already moved the reserves to the fair price by
+the time any re-anchor could run, so post-hoc re-anchoring is a **no-op**, not just late —
+and the family has no fee axis at all, so the revenue model stays broken even granting the
+primitive. `WHI-1206` carries the full argument, the per-sigma bleed table, and a recorded
+dissent. The surviving idea — virtual-reserve amplification at a real spread, i.e. `001`
+plus a concentration knob — is a **v0.2.0 candidate**, not part of this list.
 
 Two entries carry an explicit provenance caveat, read before porting:
 
@@ -613,8 +634,8 @@ Two entries carry an explicit provenance caveat, read before porting:
   mechanism as the thing to port, not its claimed scoring rule.
 
 One M1 issue per strategy above is opened per `docs/agents/issue-template.md`, each
-`blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`), `WHI-1207` (`003`),
-`WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
+`blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`, **Canceled** — see above),
+`WHI-1207` (`003`), `WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
 
 ## 7. Rejected Alternatives
 
@@ -676,8 +697,9 @@ output contradicts an entry here must flag it explicitly rather than silently ov
 7. **Concavity is a runtime panic, not a score.** Structurally incompatible designs can
    absorb unbounded effort. *Mitigation:* the `wontfix` terminal state (§2.9) for a family
    that panics **everywhere** in its frozen range. A family that panics only in part of its
-   range (three of M1's five families do — WHI-1206/1207/1210) is not this case: `bench
-   fit` handles it per-point via the `Invalid` outcome instead (§2.5, WHI-1213).
+   range (two of M1's four live families do — WHI-1207/1210; `002`/WHI-1206 is Canceled,
+   §6.2) is not this case: `bench fit` handles it per-point via the `Invalid` outcome
+   instead (§2.5, WHI-1213).
 
 **Open questions**
 
