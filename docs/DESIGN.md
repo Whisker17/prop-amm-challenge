@@ -205,14 +205,22 @@ number is no longer an honest estimate.
 Two compile paths exist, with different jobs:
 
 - **Fast path (search).** `tools/bench` maintains a single reused build directory with a
-  shared `target/`, rewriting only `src/lib.rs` per point. Re-measured (WHI-1194,
-  `strategies/001-cpmm-fee/NOTES.md`, `results/2026-08-20-fit-001-cpmm-fee.md`): the original
-  **0.11–0.57 s** estimate was not reproduced — 160 warm compiles measured min=0.472s,
-  mean=1.000s, max=1.311s in the measuring session's execution environment, attributed to
-  that environment (re-measuring under confirmed-lower system load did not change the
-  result) rather than to the fast path's design, which never rebuilds `pinocchio`/`wincode`/
-  `prop-amm-submission-sdk` after the directory's first use — only `user_program` itself
-  relinks per point. Either figure is a large improvement over the reference path below.
+  shared `target/`, rewriting only `src/lib.rs` per point. WHI-1194 measured 160 warm
+  compiles at min=0.472s, mean=1.000s, max=1.311s and, lacking a control, attributed the
+  ~9x gap over the original **0.11–0.57 s** estimate to the measuring session's
+  environment. WHI-1205 checked the four candidate structural causes (Cargo.toml
+  rewritten per point, missing `--features no-entrypoint`, the build silently inheriting
+  the root `[profile.release]`'s `lto=true`/`codegen-units=1`, and the timed window
+  covering more than the build) — all four ruled out as the explanation (see
+  `strategies/001-cpmm-fee/NOTES.md` for the full accounting) — and a fresh, bounded
+  re-measurement (`bench fit --max-points 8 --no-report`, WHI-1205's own flags for cheap
+  verification) came in at **7 warm compiles: min=0.320s, mean=0.327s, max=0.343s**,
+  meeting the original estimate's order of magnitude once the build's `dlopen`/tempfile
+  load step is counted alongside the `cargo build` itself. The 9x gap did not reproduce
+  on the same machine; the fast path's design was never at fault — it never rebuilds
+  `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the directory's first use, only
+  `user_program` itself relinks per point. Either figure is a large improvement over the
+  reference path below.
 - **Reference path (reporting).** The upstream CLI, `crates/cli/src/commands/compile.rs`.
   Measured: **7–10 s and ~51 MB per point**, because `ensure_build_dir`
   (`compile.rs:36`) keys an isolated build directory by source hash, so `pinocchio`,

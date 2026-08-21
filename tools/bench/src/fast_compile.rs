@@ -30,7 +30,19 @@ use prop_amm_sim::runner;
 const NATIVE_SWAP_SYMBOL: &[u8] = b"__prop_amm_compute_swap_export";
 const NATIVE_AFTER_SWAP_SYMBOL: &[u8] = b"__prop_amm_after_swap_export";
 
-const FAST_BUILD_DIR: &str = ".build/fast";
+/// The fast build directory, anchored at the workspace root via `CARGO_MANIFEST_DIR`
+/// (resolved at compile time to `<root>/tools/bench`) rather than a bare relative path.
+/// A bare `".build/fast"` resolves against `std::env::current_dir()` at *runtime* — fine
+/// when `bench` is invoked from the workspace root, but wrong (and a hard `cargo` error,
+/// not a silent misbehavior) when invoked from a nested git worktree
+/// (`.claude/worktrees/<name>/`, the git workflow's own mandated layout) or via `cargo
+/// test` (whose cwd is this crate's own directory) — either way the resulting `.build/fast`
+/// lands somewhere the *outer* workspace's `exclude = [".build"]` (a literal top-level-only
+/// pattern) doesn't cover, so cargo tries to fold it into that outer workspace instead of
+/// treating it as its own isolated package (WHI-1205).
+fn fast_build_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.build/fast")
+}
 
 /// Identical to `crates/cli/src/commands/compile.rs`'s `CARGO_TOML`, except the
 /// `submission-sdk` path: relative to *this* fixed directory's depth (`.build/fast/` — two
@@ -123,7 +135,7 @@ fn native_ext() -> &'static str {
 /// key — there is only ever one fast-path directory). `safe_source` must already be the
 /// *safe* submission source — shim-injected, unsafe-checked (`make_safe_source`).
 pub fn ensure_fast_build_dir(safe_source: &str) -> anyhow::Result<PathBuf> {
-    ensure_fast_build_dir_at(Path::new(FAST_BUILD_DIR), safe_source)
+    ensure_fast_build_dir_at(&fast_build_dir(), safe_source)
 }
 
 /// Whether `.build/fast/target/` already exists. A caller measuring compile time (`bench
@@ -132,7 +144,7 @@ pub fn ensure_fast_build_dir(safe_source: &str) -> anyhow::Result<PathBuf> {
 /// dependency build — a fact about the directory's prior state, not something to be guessed
 /// from a sample's position in the sequence.
 pub fn fast_build_dir_is_warm() -> bool {
-    Path::new(FAST_BUILD_DIR).join("target").exists()
+    fast_build_dir().join("target").exists()
 }
 
 fn ensure_fast_build_dir_at(build_dir: &Path, safe_source: &str) -> anyhow::Result<PathBuf> {
@@ -373,6 +385,27 @@ mod tests {
     #[test]
     fn cargo_toml_points_at_the_fast_build_dirs_own_depth() {
         assert!(CARGO_TOML.contains(r#"path = "../../crates/submission-sdk""#));
+    }
+
+    #[test]
+    fn fast_build_dir_resolves_to_the_workspace_root_not_the_runtime_cwd() {
+        // Anchored at compile-time CARGO_MANIFEST_DIR, so this must land at
+        // `<repo root>/.build/fast` regardless of `std::env::current_dir()` — the whole
+        // point of WHI-1205's fix (a bare relative path resolved against runtime cwd,
+        // which breaks under a nested worktree or `cargo test`'s crate-dir cwd).
+        let resolved = fast_build_dir();
+        assert!(
+            resolved.ends_with(".build/fast"),
+            "expected a `.build/fast` suffix, got {}",
+            resolved.display()
+        );
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            resolved.starts_with(manifest_dir.join("../..")),
+            "expected `{}` to be anchored under `{}/../..`, independent of cwd",
+            resolved.display(),
+            manifest_dir.display()
+        );
     }
 
     #[test]

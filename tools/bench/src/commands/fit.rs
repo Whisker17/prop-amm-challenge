@@ -20,6 +20,32 @@ pub struct FitArgs {
     /// `lib.rs` with a `// === PARAMS BEGIN/END ===` block.
     #[arg(long)]
     strategy: String,
+    /// Override the search budget (`config/bench.toml`'s `[search] max_points`) for a
+    /// bounded, cheap run — e.g. smoke-testing the fast path's compile timing in seconds
+    /// instead of minutes (WHI-1205). Must be between 1 and the protocol's hard cap
+    /// (`search::MAX_SEARCH_POINTS`), same bound the config file itself is validated
+    /// against.
+    #[arg(long)]
+    max_points: Option<usize>,
+    /// Skip writing a `results/` snapshot — for bounded/exploratory runs (WHI-1205) that
+    /// shouldn't produce committed evidence.
+    #[arg(long)]
+    no_report: bool,
+}
+
+/// Validates a `--max-points` override against the same bound `config/bench.toml`'s
+/// `[search] max_points` is checked against (`config.rs::BenchConfig::load_default`).
+fn validate_max_points(max_points: usize) -> anyhow::Result<usize> {
+    if max_points == 0 {
+        anyhow::bail!("--max-points must be at least 1");
+    }
+    if max_points > search::MAX_SEARCH_POINTS {
+        anyhow::bail!(
+            "--max-points ({max_points}) exceeds the protocol's hard cap of {}",
+            search::MAX_SEARCH_POINTS
+        );
+    }
+    Ok(max_points)
 }
 
 /// The acceptance criterion this module measures against: "compiles a parameter point in
@@ -102,8 +128,11 @@ impl CompileTimings {
     }
 }
 
-/// Builds `safe_source` through the fast path, recording the compile-only wall time (the
-/// `cargo build` call inside `compile_and_load_fast`, not the simulation that follows).
+/// Builds `safe_source` through the fast path, recording the build-and-load wall time —
+/// `compile_and_load_fast`'s `cargo build` call **plus** locating and `dlopen`-ing the
+/// resulting dylib (a fresh tempfile copy each time, `fast_compile::load_fast`), not just
+/// the build (WHI-1205 measured `dlopen`+copy at roughly 1-2x the build itself — real, not
+/// previously accounted for separately) and not the simulation that follows.
 fn compile_timed(
     safe_source: &str,
     timings: &mut CompileTimings,
@@ -127,8 +156,12 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         })?;
     let stage = format!("fit-{slug}");
 
-    // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    // Fail fast, before any compiling/simulating, on a bad --max-points or (unless
+    // --no-report) an already-taken report slot.
+    let max_points = args.max_points.map(validate_max_points).transpose()?;
+    if !args.no_report {
+        report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    }
 
     let bench_config = BenchConfig::load_default()?;
     // Fixed, not user-selectable: the search inner loop always runs on `screening` (common
@@ -137,7 +170,7 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let screening = bench_config.segment("screening")?;
     let train = bench_config.segment("train")?;
     let validation = bench_config.segment("validation")?;
-    let budget = bench_config.search_max_points();
+    let budget = max_points.unwrap_or_else(|| bench_config.search_max_points());
 
     let lib_path = strategy_dir.join("lib.rs");
     let source = std::fs::read_to_string(&lib_path)
@@ -271,14 +304,18 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
                 failure_section,
                 curve_section,
             ];
-            let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+            let evidence_note = if args.no_report {
+                "Curve and search budget were not written (--no-report).".to_string()
+            } else {
+                let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+                format!("Curve and search budget written to {}.", path.display())
+            };
             anyhow::bail!(
                 "the `{}`<->edge response is not single-peaked (docs/DESIGN.md §2.8's \
                  self-check, tolerance {tolerance:.6}) — this blocks the issue; investigate \
                  the bench mechanism before trusting any fitted point from this search. \
-                 Curve and search budget written to {}.",
+                 {evidence_note}",
                 specs[0].name,
-                path.display(),
             );
         }
         println!("Single-peaked self-check: PASS (tolerance {tolerance:.6}).");
@@ -360,8 +397,12 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     sections.extend(self_check_section);
     sections.push(winning_point_section);
     sections.push(curve_section);
-    let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
-    println!("Report written to {}", path.display());
+    if args.no_report {
+        println!("Report not written (--no-report).");
+    } else {
+        let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+        println!("Report written to {}", path.display());
+    }
 
     Ok(())
 }
@@ -418,5 +459,30 @@ mod tests {
         let summary = timings.summary();
         assert!(summary.contains("cold start"));
         assert!(summary.contains("no warm samples recorded"));
+    }
+
+    #[test]
+    fn zero_max_points_is_rejected() {
+        let err = validate_max_points(0).unwrap_err();
+        assert!(err.to_string().contains("at least 1"));
+    }
+
+    #[test]
+    fn max_points_above_the_protocol_cap_is_rejected() {
+        let err = validate_max_points(search::MAX_SEARCH_POINTS + 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds the protocol's hard cap"));
+    }
+
+    #[test]
+    fn max_points_at_the_protocol_cap_is_allowed() {
+        assert_eq!(
+            validate_max_points(search::MAX_SEARCH_POINTS).unwrap(),
+            search::MAX_SEARCH_POINTS
+        );
+    }
+
+    #[test]
+    fn max_points_of_one_is_allowed() {
+        assert_eq!(validate_max_points(1).unwrap(), 1);
     }
 }

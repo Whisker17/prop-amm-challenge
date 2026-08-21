@@ -58,27 +58,59 @@ budget cap. Full curve (param → screening avg edge) is committed at
 66, then strictly decreasing to 500** — a clean single peak, confirming the protocol
 self-check (§2.8) before this or any other strategy's numbers are trusted.
 
-**On the "&lt; 1s on a warm build directory" acceptance criterion — not cleanly met in this
-measurement environment, reported honestly rather than rounded up.** The committed report
-(`results/2026-08-20-fit-001-cpmm-fee.md`) shows a 15.799s cold start (one-time
-`pinocchio`/`wincode`/`prop-amm-submission-sdk` build the first time `.build/fast/` is used)
-followed by 160 warm compiles: **min=0.472s, mean=1.000s, max=1.311s** —
-`tools/bench/src/commands/fit.rs`'s own verdict logic reports this as **EXCEEDS** (it checks
-the *maximum* warm sample, since the criterion is a per-point claim, not an average). This
-was re-measured twice, including once after confirming via `uptime` that a concurrent
-session's load had cleared (down to load averages of 3-12, from a peak of 18-30 during an
-earlier attempt) — the numbers did not meaningfully improve, so the elevated compile time
-is attributed to this session's execution environment (likely virtualization/tenancy
-overhead `uptime`'s load average doesn't fully capture) rather than to further, uncontrolled
-contention. `docs/DESIGN.md` §2.6's 0.11–0.57s estimate was not reproduced here.
+**On the "&lt; 1s on a warm build directory" acceptance criterion — WHI-1205 settled this.**
+WHI-1194's committed report (`results/2026-08-20-fit-001-cpmm-fee.md`) showed 160 warm
+compiles at min=0.472s, mean=1.000s, max=1.311s — roughly 9x the 0.11s bare-`cargo build`
+control measured on this same machine during WHI-1193 — and attributed the gap to "this
+session's execution environment" without a control in hand. WHI-1205 checked all four
+candidate structural causes named in that follow-up issue:
 
-What *is* demonstrated, regardless: the fast path never rebuilds `pinocchio`/`wincode`/
-`prop-amm-submission-sdk` after the first point (`.build/fast/` stays a single directory —
-verified never to grow, see the Acceptance criteria checklist), so every subsequent point
-pays only for relinking `user_program` itself — a 5-15x improvement over the reference
-path's unconditional 7-10s/point (`crates/cli/src/commands/compile.rs`'s per-source-hash
-isolated build), even at this measurement's elevated absolute numbers. The mechanism's
-design is sound; the specific numeric target is what this environment couldn't confirm.
+- **Cargo.toml rewritten per point?** No — `ensure_fast_build_dir_at`
+  (`tools/bench/src/fast_compile.rs`) only writes it when content differs from the fixed
+  template, and the template never changes across points. Ruled out.
+- **`--features no-entrypoint` passed?** Yes, already passed on every build. Ruled out.
+- **Does `.build/fast` resolve against the root `[profile.release]` (`lto=true`,
+  `codegen-units=1`)?** No, when invoked from the workspace root — `cargo build -v`
+  showed `-C embed-bitcode=no` on `user_program`'s compile (LTO would require
+  `embed-bitcode=yes`) and no explicit `-C lto=…`/`-C codegen-units=…` override. Ruled
+  out as an explanation of the gap. **But** this surfaced a real, separate bug fixed as
+  part of this issue: `FAST_BUILD_DIR` was a bare relative path (`.build/fast`), resolved
+  against the runtime working directory rather than the workspace root. Invoked from a
+  nested worktree (`.claude/worktrees/<name>/`, this repo's own mandated git-workflow
+  layout) or via `cargo test` (whose cwd is the crate directory), that resolves somewhere
+  the *outer* workspace's `exclude = [".build"]` doesn't cover, and cargo hard-errors:
+  `current package believes it's in a workspace when it's not`. Fixed by anchoring the
+  build directory at `CARGO_MANIFEST_DIR` (resolved at compile time), independent of
+  runtime cwd.
+- **Is the timed window wider than the build itself?** Partially, yes — `compile_timed`
+  (`tools/bench/src/commands/fit.rs`) times `cargo build` **plus** locating and
+  `dlopen`-ing the resulting dylib (a fresh tempfile copy each time). Instrumented
+  separately: build ≈0.11-0.13s, load (copy + `dlopen`) ≈0.14-0.22s — real and previously
+  unaccounted-for, but nowhere near the missing ~0.75s needed to explain WHI-1194's mean.
+
+None of the four explains the 9x magnitude. A fresh, bounded re-measurement on this same
+machine — `bench fit --strategy strategies/001-cpmm-fee --max-points 8 --no-report`
+(WHI-1205's new flags; see "Cheap verification" below) — gives **7 warm compiles:
+min=0.320s, mean=0.327s, max=0.343s — MEETS the &lt;1s target**, close to
+`docs/DESIGN.md` §2.6's original 0.11–0.57s estimate once build+load are counted
+together honestly. The 9x gap does not reproduce on this machine today: WHI-1194's
+specific session-environment attribution holds up, now with a control in hand rather
+than an assertion.
+
+What *is* demonstrated, regardless of session-to-session variance: the fast path never
+rebuilds `pinocchio`/`wincode`/`prop-amm-submission-sdk` after the first point
+(`.build/fast/` stays a single directory — verified never to grow, see the Acceptance
+criteria checklist), so every subsequent point pays only for relinking `user_program`
+itself — at minimum a 5-15x improvement over the reference path's unconditional
+7-10s/point (`crates/cli/src/commands/compile.rs`'s per-source-hash isolated build), and
+now (WHI-1205) confirmed to meet the sub-1s target outright on a normal run.
+
+**Cheap verification (WHI-1205):** `bench fit` previously had no way to bound a run —
+`--strategy` was its only flag, so even a compile-timing smoke test cost a full run at up
+to 300 search points (~7 minutes) and wrote a dated `results/` snapshot. `bench fit` now
+accepts `--max-points <N>` (bounds the search budget, 1..=300) and `--no-report` (skips
+writing to `results/`), so the fast path's compile timing can be checked in well under a
+minute — the bounded run above took 43s wall-clock total.
 
 **Winning point: `FEE_BPS = 66`** — well inside the competitor's own `norm_fee_bps ∈ U[30, 80]`
 sampling range (`crates/shared/src/config.rs`), and far from the starter's 500bps, matching
