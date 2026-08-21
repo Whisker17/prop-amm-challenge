@@ -20,6 +20,34 @@ pub struct FitArgs {
     /// `lib.rs` with a `// === PARAMS BEGIN/END ===` block.
     #[arg(long)]
     strategy: String,
+    // WHI-1205: an escape hatch for cheap, uncommitted smoke-testing (e.g. of the fast
+    // path's compile timing) — never for a committed run, so `bench fit` requires
+    // --no-report whenever this is set (docs/DESIGN.md §2.5's 300-point budget stays the
+    // only value that ever produces committed evidence).
+    /// Override the search budget for a quick, uncommitted check (must be paired with
+    /// `--no-report`) — independent of `config/bench.toml`'s `[search] max_points`, only
+    /// the protocol's own 1..=300 range.
+    #[arg(long)]
+    max_points: Option<usize>,
+    /// Skip writing a `results/` snapshot — required alongside `--max-points`, since a
+    /// bounded run doesn't represent the protocol's full search budget.
+    #[arg(long)]
+    no_report: bool,
+}
+
+/// `--max-points` is only for uncommitted smoke-testing — docs/DESIGN.md §2.5's 300-point
+/// budget is what a `results/` snapshot is supposed to represent, so a bounded run must
+/// never produce one.
+fn validate_max_points_requires_no_report(
+    max_points: Option<usize>,
+    no_report: bool,
+) -> anyhow::Result<()> {
+    if max_points.is_some() && !no_report {
+        anyhow::bail!(
+            "--max-points requires --no-report (a bounded run is never committed evidence)"
+        );
+    }
+    Ok(())
 }
 
 /// The acceptance criterion this module measures against: "compiles a parameter point in
@@ -102,8 +130,11 @@ impl CompileTimings {
     }
 }
 
-/// Builds `safe_source` through the fast path, recording the compile-only wall time (the
-/// `cargo build` call inside `compile_and_load_fast`, not the simulation that follows).
+/// Builds `safe_source` through the fast path, recording the build-and-load wall time —
+/// `compile_and_load_fast`'s `cargo build` call **plus** locating and `dlopen`-ing the
+/// resulting dylib (a fresh tempfile copy each time, `fast_compile::load_fast`), not just
+/// the build (WHI-1205 measured `dlopen`+copy at roughly 1-2x the build itself — real, not
+/// previously accounted for separately) and not the simulation that follows.
 fn compile_timed(
     safe_source: &str,
     timings: &mut CompileTimings,
@@ -127,8 +158,17 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         })?;
     let stage = format!("fit-{slug}");
 
-    // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    // Fail fast, before any compiling/simulating: a bad --max-points, --max-points without
+    // its required --no-report (a bounded run must never produce committed evidence at a
+    // non-protocol budget — docs/DESIGN.md §2.5's 300-point budget is what `results/`
+    // reports represent), or (unless --no-report) an already-taken report slot.
+    if let Some(n) = args.max_points {
+        search::validate_budget(n, "--max-points")?;
+    }
+    validate_max_points_requires_no_report(args.max_points, args.no_report)?;
+    if !args.no_report {
+        report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
+    }
 
     let bench_config = BenchConfig::load_default()?;
     // Fixed, not user-selectable: the search inner loop always runs on `screening` (common
@@ -137,7 +177,9 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let screening = bench_config.segment("screening")?;
     let train = bench_config.segment("train")?;
     let validation = bench_config.segment("validation")?;
-    let budget = bench_config.search_max_points();
+    let budget = args
+        .max_points
+        .unwrap_or_else(|| bench_config.search_max_points());
 
     let lib_path = strategy_dir.join("lib.rs");
     let source = std::fs::read_to_string(&lib_path)
@@ -271,14 +313,18 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
                 failure_section,
                 curve_section,
             ];
-            let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+            let evidence_note = if args.no_report {
+                "Curve and search budget were not written (--no-report).".to_string()
+            } else {
+                let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+                format!("Curve and search budget written to {}.", path.display())
+            };
             anyhow::bail!(
                 "the `{}`<->edge response is not single-peaked (docs/DESIGN.md §2.8's \
                  self-check, tolerance {tolerance:.6}) — this blocks the issue; investigate \
                  the bench mechanism before trusting any fitted point from this search. \
-                 Curve and search budget written to {}.",
+                 {evidence_note}",
                 specs[0].name,
-                path.display(),
             );
         }
         println!("Single-peaked self-check: PASS (tolerance {tolerance:.6}).");
@@ -360,8 +406,12 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     sections.extend(self_check_section);
     sections.push(winning_point_section);
     sections.push(curve_section);
-    let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
-    println!("Report written to {}", path.display());
+    if args.no_report {
+        println!("Report not written (--no-report).");
+    } else {
+        let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+        println!("Report written to {}", path.display());
+    }
 
     Ok(())
 }
@@ -418,5 +468,26 @@ mod tests {
         let summary = timings.summary();
         assert!(summary.contains("cold start"));
         assert!(summary.contains("no warm samples recorded"));
+    }
+
+    #[test]
+    fn max_points_without_no_report_is_rejected() {
+        let err = validate_max_points_requires_no_report(Some(8), false).unwrap_err();
+        assert!(err.to_string().contains("requires --no-report"));
+    }
+
+    #[test]
+    fn max_points_with_no_report_is_allowed() {
+        assert!(validate_max_points_requires_no_report(Some(8), true).is_ok());
+    }
+
+    #[test]
+    fn no_report_without_max_points_is_allowed() {
+        assert!(validate_max_points_requires_no_report(None, true).is_ok());
+    }
+
+    #[test]
+    fn neither_flag_is_allowed() {
+        assert!(validate_max_points_requires_no_report(None, false).is_ok());
     }
 }
