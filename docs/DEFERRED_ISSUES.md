@@ -75,18 +75,6 @@ soon — anything touching a declared high-risk path defaults to at least High),
   contract (a distinct prefix for temporary cuts, or pushing only after the PR exists); the
   workflow mitigates it with prose only ("open the PR immediately after the push",
   § Releasing to `main`). Low likelihood in a single-operator repo.
-- **`docs/agents/issue-tracker.md` still describes `.scratch/` and the WHI-1192/"`Done`
-  state flip" `docs/DEFERRED_ISSUES.md` entries as present-tense open problems**
-  (Low, WHI-1199). `docs/agents/issue-tracker.md:9-13` (top-of-file forward-reference),
-  `:63-71` (§ Decisions, Decision 1 — "It is left in place, stale text and all"), and
-  `:101-138` (§ "What happened to `.scratch/`") — this PR (WHI-1199) deleted `.scratch/`
-  and moved both `docs/DEFERRED_ISSUES.md` entries those sections cite to *Resolved*, but
-  all three sites still read as if none of that happened. Left unfixed here because
-  `docs/agents/issue-tracker.md` is a governance carve-out path
-  (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and this PR's diff is
-  non-carve-out only — touching it here would mix scopes, which WHI-1199's own acceptance
-  criteria forbid. Fix: WHI-1200 (governance-scoped, carve-out paths only) updates all
-  three sites to past tense.
 - **`telemetry.rs`'s recorder-dispatch mechanism duplicates `compile.rs`'s `Slot`/
   `LOADED_AFTER_SWAP` shape** (Low, WHI-1195). `tools/bench/src/telemetry.rs::AmmSlot` /
   `REAL_AFTER_SWAP` / `record_and_delegate` reproduce `compile.rs`'s `Slot` /
@@ -114,7 +102,8 @@ soon — anything touching a declared high-risk path defaults to at least High),
   workflow itself calls out ("A mixed PR ... must be split"). Fix: a follow-up
   governance-scoped PR (carve-out paths only, base `dev`) updates `AGENTS.md:30-38` to
   record §6 as fully written and the freeze + M0 as landed, past tense — same shape as
-  WHI-1200's fix for the analogous `docs/agents/issue-tracker.md` staleness above.
+  WHI-1200's fix for the analogous `docs/agents/issue-tracker.md` staleness (see the
+  WHI-1199 entry under *Resolved*).
 - **`commands/l1.rs` bakes `strategies/000-normalizer/lib.rs` into generic measurement
   infrastructure's `--file` default** (Low, WHI-1195). `tools/bench/src/commands/l1.rs::
   DEFAULT_NORMALIZER_AS_SUBMISSION` — a specific strategy id is now a default in a command
@@ -266,3 +255,14 @@ soon — anything touching a declared high-risk path defaults to at least High),
   call `results/` snapshots "committed evidence" that is "never overwritten silently", and
   this PR only ever adds new stage names, never renames an existing file — only new
   reports use the new naming.
+- **`docs/agents/issue-tracker.md` described `.scratch/` and the WHI-1192/"`Done` state
+  flip" `docs/DEFERRED_ISSUES.md` entries as present-tense open problems** (Low, WHI-1199).
+  `docs/agents/issue-tracker.md:8-13` (top-of-file forward-reference), `:62-72`
+  (§ Decisions, Decision 1 — "This PR left it in place, stale text and all"), and
+  `:102-141` (§ "What happened to `.scratch/`") — WHI-1199 deleted `.scratch/` and moved
+  both `docs/DEFERRED_ISSUES.md` entries those sections cite to *Resolved*, but all three
+  sites still read as if none of that had happened. This was deferred because
+  `docs/agents/issue-tracker.md` is a governance carve-out path
+  (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and WHI-1199's diff was
+  non-carve-out only. Resolved by WHI-1200 (`b767dbc`), which updated all three sites to
+  past tense. Entry moved here by WHI-1214.
