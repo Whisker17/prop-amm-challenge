@@ -49,15 +49,19 @@ const SCALE: u128 = 1_000_000_000; // both the price fixed-point scale and NANO_
 
 // ---- searched parameters (docs/DESIGN.md §2.4/§2.5) --------------------------
 // === PARAMS BEGIN ===
-const K_SCALED: u128 = 1_639_729_121; // range: 250000000..=32000000000
+const K_SCALED: u128 = 1_639_362_224; // range: 250000000..=32000000000
 const DELTA_BPS: u128 = 67; // range: 5..=200
                             // === PARAMS END ===
 
 // ---- frozen, un-searched (NOTES.md § Frozen parameter space) -----------------
 const MIN_MID_FP: u128 = 1_000; // real price floor ~1e-6 Y/X — sanitises degenerate reserves
 const MAX_MID_FP: u128 = 1_000_000_000_000_000; // real price ceiling 1e6 Y/X — sane-band clamp (finding #5)
-const SWITCH_FRACTION_NUM: u128 = 1; // switch point sits at 1/2 of the reserve cap
-const SWITCH_FRACTION_DEN: u128 = 2;
+                                                // Buy-side switch point (output-space fraction of the buy-side reserve cap) — the sell side
+                                                // derives its own switch differently (a fraction of its vertex, or a reserve-safe bound,
+                                                // whichever is smaller: see `sell_output`), since its raw curve has a vertex to avoid and
+                                                // the buy side's does not.
+const BUY_SWITCH_FRACTION_NUM: u128 = 1;
+const BUY_SWITCH_FRACTION_DEN: u128 = 2;
 const RESERVE_CAP_NUM: u128 = 999; // reserve cap = 99.9% of the live reserve
 const RESERVE_CAP_DEN: u128 = 1_000;
 
@@ -218,6 +222,13 @@ fn cost_buy(x: u128, buy_fp: u128, k: u128) -> u128 {
 /// Stable inversion of `cost_buy`: `x = 2*SCALE*y / (sqrt(buy_fp^2 + 2*k*y) + buy_fp)`.
 /// The naive `(sqrt(...) - buy_fp)/k` form is cancellation-prone near small `y`
 /// (docs/DESIGN.md §2.9 cross-cutting finding #7); this is the stable rearrangement.
+///
+/// Note (NOTES.md § Clamping before squaring): the real-valued inverse is strictly
+/// increasing in `y` everywhere, but this integer form can occasionally drop by a single
+/// nano right where `isqrt`'s floor ticks over to the next integer — finding #7's own
+/// bisection fallback is for when that error *exceeds* the runtime's
+/// `QUOTE_DELTA_UNCERTAINTY_NANO = 4` tolerance; a 1-nano tick does not, so floor-`sqrt` is
+/// sufficient here (confirmed by `bench fuzz`'s zero violations across every regime corner).
 #[inline]
 fn invert_buy(y: u128, buy_fp: u128, k: u128) -> u128 {
     let inner = buy_fp
@@ -229,6 +240,19 @@ fn invert_buy(y: u128, buy_fp: u128, k: u128) -> u128 {
         return 0;
     }
     (2u128.saturating_mul(SCALE).saturating_mul(y)) / denom
+}
+
+/// Forward output for selling `x` (nano X) at sell-side price `sell_fp`, impact `k`: exact
+/// only for `x` on the increasing branch of the sell-side parabola (below its vertex) — the
+/// mirror image of `cost_buy`, except the sell side's raw curve genuinely has a vertex (see
+/// NOTES.md § Fidelity self-assessment), so callers must clamp `x` themselves before calling
+/// this (see `sell_output`'s `x0` derivation).
+#[inline]
+fn cost_sell(x: u128, sell_fp: u128, k: u128) -> u128 {
+    let term1 = sell_fp.saturating_mul(x) / SCALE;
+    let kx_over_scale = k.saturating_mul(x) / SCALE;
+    let term2 = kx_over_scale.saturating_mul(x) / (2 * SCALE);
+    term1.saturating_sub(term2)
 }
 
 /// A `RESERVE_CAP - D/((v - switch) + C)` tail: value- and slope-matched to a raw
@@ -249,11 +273,11 @@ fn saturating_tail(
         return value_at_switch;
     }
     let headroom = reserve_cap - value_at_switch;
-    // C = headroom / slope = headroom * slope_den / slope_num
-    let c = headroom.saturating_mul(slope_den) / slope_num;
-    if c == 0 {
-        return reserve_cap;
-    }
+    // C = headroom / slope = headroom * slope_den / slope_num, floored to at least 1 so the
+    // tail is always well-defined and strictly increasing even in a corner case where the
+    // true C would round to 0 — never a flat plateau at `reserve_cap` (that would violate
+    // validate.rs's strict monotonicity check the moment `v` grows past the switch).
+    let c = (headroom.saturating_mul(slope_den) / slope_num).max(1);
     let d = c.saturating_mul(headroom);
     let w = v.saturating_sub(switch).saturating_add(c);
     if w == 0 {
@@ -271,7 +295,7 @@ fn buy_output(y_in: u128, rx: u128, mid_fp: u128) -> u64 {
     if reserve_cap_x == 0 {
         return 0;
     }
-    let v0 = reserve_cap_x.saturating_mul(SWITCH_FRACTION_NUM) / SWITCH_FRACTION_DEN;
+    let v0 = reserve_cap_x.saturating_mul(BUY_SWITCH_FRACTION_NUM) / BUY_SWITCH_FRACTION_DEN;
     let buy_fp = mid_fp.saturating_mul(10_000 + DELTA_BPS) / 10_000;
 
     let y0 = cost_buy(v0, buy_fp, K_SCALED);
@@ -307,19 +331,16 @@ fn sell_output(x_in: u128, ry: u128, mid_fp: u128) -> u64 {
     // quadratic on its increasing branch (finding: "the doc's raw formula cannot pass for
     // any k" — the vertex is at sell_fp*SCALE/k); the second guarantees
     // cost_sell(x0) <= reserve_cap_y/2 via cost_sell(x) <= sell_fp*x/SCALE regardless of k
-    // (NOTES.md § Saturating tail).
-    let vertex_half = sell_fp.saturating_mul(SCALE) / (2 * K_SCALED);
-    let reserve_safe = reserve_cap_y.saturating_mul(SCALE) / (2 * sell_fp);
+    // (NOTES.md § Saturating tail). `.max(1)` on each divisor is defensive only — the
+    // frozen ranges (K_SCALED >= 250000000, DELTA_BPS <= 200 so sell_fp > 0 whenever
+    // mid_fp > 0) never let either hit zero today.
+    let vertex_half = sell_fp.saturating_mul(SCALE) / (2 * K_SCALED).max(1);
+    let reserve_safe = reserve_cap_y.saturating_mul(SCALE) / (2 * sell_fp).max(1);
     let x0 = vertex_half.min(reserve_safe);
-
-    let kx0_over_scale = K_SCALED.saturating_mul(x0) / SCALE;
-    let term2_0 = kx0_over_scale.saturating_mul(x0) / (2 * SCALE);
-    let v0 = (sell_fp.saturating_mul(x0) / SCALE).saturating_sub(term2_0);
+    let v0 = cost_sell(x0, sell_fp, K_SCALED);
 
     let raw = if x_in <= x0 {
-        let kx_over_scale = K_SCALED.saturating_mul(x_in) / SCALE;
-        let term2 = kx_over_scale.saturating_mul(x_in) / (2 * SCALE);
-        (sell_fp.saturating_mul(x_in) / SCALE).saturating_sub(term2)
+        cost_sell(x_in, sell_fp, K_SCALED)
     } else {
         // slope at x0 = sell_fp/SCALE - k*x0/SCALE^2 = (sell_fp*SCALE - k*x0) / SCALE^2.
         let slope_num = sell_fp
@@ -369,19 +390,24 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
     let rx_post = rd8(data, 18);
     let ry_post = rd8(data, 26);
 
-    let base_mid = if rd_u64(storage, OFF_MAGIC) == MAGIC {
-        clamp_mid(rd16(storage, OFF_MID))
+    let new_mid = if rd_u64(storage, OFF_MAGIC) == MAGIC {
+        // Warm state: apply this trade's own impact on top of the tracked mid.
+        let base_mid = clamp_mid(rd16(storage, OFF_MID));
+        let x_executed = if side == 0 { output } else { input };
+        let delta = K_SCALED.saturating_mul(x_executed) / SCALE;
+        clamp_mid(if side == 0 {
+            base_mid.saturating_add(delta)
+        } else {
+            base_mid.saturating_sub(delta)
+        })
     } else {
+        // Cold start: the post-trade reserve ratio already reflects this trade's price
+        // impact (it was quoted off `reserve_mid` before any state existed — see
+        // `mid_from_state`), so initialising from it and *also* adding `k * x_executed`
+        // would double-count this one trade. Initialise from reserves alone; the next call
+        // applies the delta as usual.
         reserve_mid(rx_post, ry_post)
     };
-
-    let x_executed = if side == 0 { output } else { input };
-    let delta = K_SCALED.saturating_mul(x_executed) / SCALE;
-    let new_mid = clamp_mid(if side == 0 {
-        base_mid.saturating_add(delta)
-    } else {
-        base_mid.saturating_sub(delta)
-    });
 
     wr_u64(storage, OFF_MAGIC, MAGIC);
     wr16(storage, OFF_MID, new_mid);

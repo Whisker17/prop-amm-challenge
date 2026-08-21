@@ -52,6 +52,18 @@ the contract's "provenance is mandatory" clause:
    inversion `x = 2*SCALE*y / (sqrt(buy_fp^2 + 2*K_SCALED*y) + buy_fp)`, never the
    cancellation-prone `(sqrt(...) - buy_fp)/K_SCALED` form (finding #7).
 
+**Round-1 review fix (2026-08-21):** the first `after_swap` call after a cold start
+originally derived `base_mid` from the *post*-trade reserve ratio and then **also** added
+`k * x_executed` on top — double-counting that one trade's impact, since the post-trade
+reserve ratio already reflects it (the trade was quoted off `reserve_mid` before any state
+existed). Fixed by skipping the delta on the cold-start branch only (`after_swap` now
+initialises straight from `reserve_mid` with no additional delta on that first call; every
+later call still applies `k * x_executed` as designed). Effect measured at under 0.3 edge
+units across screening/train/validation/observation (one trade's impact, diluted across a
+10,000-step simulation and continually re-corrected by the arbitrageur) — negligible, but
+fixed rather than left, and the search below was re-run against the corrected code so every
+number in this file reflects the same commit.
+
 None of this is disguised as faithful — it is the issue's own prescribed minimal-adaptation
 set (its "declare it up front" section), implemented as specified. What *is* preserved
 faithfully: the core economic idea (a two-sided market maker with a linear-in-flow impact
@@ -134,6 +146,18 @@ Verified empirically, not just algebraically: `prop-amm validate`'s strict monot
 full-length GBM drift) both **pass with zero violations** on the first attempt — no iteration
 was needed once this construction was implemented.
 
+**Precision caveat, stated exactly (not overclaimed):** the *tail* branch is provably
+monotone (§ this section, algebraically). The *raw* branch's `invert_buy` is monotone in the
+real-valued arithmetic (§ Fidelity self-assessment's calculus), but its integer form can tick
+down by exactly 1 nano right where `isqrt`'s floor crosses to the next integer while the
+denominator also grows — a finite-precision artefact of truncating division, not a sign
+error. Finding #7's own bisection fallback exists for when this kind of error *exceeds* the
+runtime check's `QUOTE_DELTA_UNCERTAINTY_NANO = 4` tolerance; a 1-nano tick does not, so no
+gate anywhere in this repo (`validate.rs`'s coarse-grained sample sizes, or
+`curve_checks.rs`'s 4-nano-tolerant runtime check) ever observes it, which is exactly what
+the zero-violations result above confirms across 324 states. See `invert_buy`'s own doc
+comment in `lib.rs` for the same note next to the code.
+
 ## Clamping before squaring (finding #7)
 
 - `cost_buy`/`invert_buy` only ever square `x <= v0` (the buy switch value) or evaluate
@@ -179,6 +203,12 @@ there is nothing 4D left to search.
 
 ### Searched
 
+**Every number in the table below is invented — a statement about our reconstruction of a
+stable 2D manifold, not about the source document's own strategy**, which gives no numbers
+at all (§ Provenance). The doc only fixes the *functional form*; the range each searched
+parameter explores, and the reasoning for its endpoints, both originate in this port, not in
+`docs/references/006-hedged-pnl/`.
+
 | Param | Range | Reason |
 | --- | --- | --- |
 | `K_SCALED` (impact slope `k`, Y/X per X, at `SCALE=1e9` fixed point) | `250000000..=32000000000` (k = 0.25..=32) | Brackets the CPMM's own marginal-price slope at the default state (`2p/x = 2.0` at `(100, 10000)`) by 8x each way; below 0.25 the book is deeper than 8x reserves and the tail dominates every quote; above 32 the vertex/switch sits inside routine retail sizes (confirmed below: `k=8` already shows the curve degrading sharply). |
@@ -187,16 +217,47 @@ there is nothing 4D left to search.
 ### Frozen, recorded as deliberately un-searched
 
 `MIN_MID_FP = 1_000` / `MAX_MID_FP = 1e15` (the sane-band clamp — a safety bound, not a curve
-parameter; searching it would not be measuring the mechanism); `SWITCH_FRACTION_NUM/DEN = 1/2`
-and `RESERVE_CAP_NUM/DEN = 999/1000` (the saturating-tail switch point and reserve headroom —
-structural constants of the safety patch in § Saturating tail, not part of the doc's own
-mechanism, so not something a "how faithful is the port" search should tune).
+parameter; searching it would not be measuring the mechanism); `BUY_SWITCH_FRACTION_NUM/DEN =
+1/2` and `RESERVE_CAP_NUM/DEN = 999/1000` (the saturating-tail switch point and reserve
+headroom — structural constants of the safety patch in § Saturating tail, not part of the
+doc's own mechanism, so not something a "how faithful is the port" search should tune; the
+sell side derives its own switch point differently — see `sell_output` and § Saturating
+tail — so it has no equivalent frozen constant to name here).
+
+### Independent state-handling check (docs/DESIGN.md §2.5/§2.9 finding #10)
+
+Finding #10 asks for a family to *contain or nearly reproduce* `001-cpmm-fee@66bps` as proof
+that state handling and sign mapping are not broken before spending search budget. This
+family cannot do that exactly (§ Step 0 below explains why no parameter setting is an exact
+`001` clone) — so as a substitute, independent of any curve-matching, here is
+`after_swap`'s own update law hand-traced on round numbers, checked directly against the
+committed code rather than against another strategy's edge number:
+
+Take `rx=100`, `ry=10000` (the `validate.rs` default state, so `mid_fp` cold-starts at
+`10000 * 1e9 / 100 = 1e11`, i.e. real price 100). Suppose a buy of `x_executed = 5` real
+tokens (`5e9` nano) executes with `K_SCALED = 2_000_000_000` (k = 2.0). Per `after_swap`'s
+warm-state branch: `delta = K_SCALED * x_executed / SCALE = 2_000_000_000 * 5_000_000_000 /
+1_000_000_000 = 10_000_000_000`. `new_mid = base_mid + delta = 1e11 + 1e10 = 1.1e11` — real
+price `110`. By hand, from the doc's own law (`Δp+ = -k++Δx+`, and this port's collapsed
+`k++ = k`): a buy of `5` tokens at `k=2` should raise the marginal price by `k * x = 2 * 5 =
+10`, from `100` to `110` — **exact agreement**, confirming the sign (`+` for a buy) and the
+scale factor (`SCALE` cancels the nano encoding of `x_executed` against the `1e9` encoding of
+`K_SCALED`) are both correct, independent of any edge-number comparison to `001`.
 
 ## Step 0 — pre-registered bounded probe (docs/DESIGN.md §2.5/§2.9, issue's own review
 amendment)
 
 All three sub-steps run on the 200 screening seeds with common random numbers, frozen in
-advance of any search, per the issue's own "Step 0" amendment:
+advance of any search, per the issue's own "Step 0" amendment. Each point below was
+evaluated via a scratch degenerate-range copy of this file (the frozen range collapsed to a
+single value, `bench fit --max-points 1 --no-report`, the same technique
+`005-vol-adaptive-cpmm-fee/NOTES.md` uses for its own nested-point demonstration) — not
+committed, not part of the real search below, and **absent from `results/` by design**:
+`docs/DESIGN.md` §2.5 states plainly that `--max-points` "can lower [the budget] for a quick,
+uncommitted check... it is not a way to fit a strategy on a smaller budget, and `bench fit`
+refuses it without `--no-report`: a bounded run can never produce `results/` evidence" — so
+their absence from committed evidence is the protocol working as designed, not a gap in this
+port's record-keeping.
 
 1. **Shape gate.** PASS — see § Pre-search shape-fuzz gate and `prop-amm validate` (§ Parity
    gate below) above. *Predicted: passes. Confirmed.*
@@ -227,43 +288,46 @@ Run via `cargo run -p prop-amm-bench --release -- fit --strategy strategies/006-
 144 points) then coordinate descent. Full curve committed at
 `results/2026-08-21-fit-006-hedged-pnl.md`.
 
-**Converged after 226 of 300 points** (budget never exhausted); **zero invalid points** —
+**Converged after 218 of 300 points** (budget never exhausted); **zero invalid points** —
 every evaluated parameter vector produced a valid edge, consistent with the pre-search fuzz
-gate having already cleared this family across every regime corner.
+gate having already cleared this family across every regime corner. (A first run, before the
+round-1 review fix above, converged after 226 points at `K_SCALED=1639729121` with
+essentially identical numbers — the fix moved the winning `k` by under 0.03%, exactly the
+"negligible" magnitude predicted. Only the post-fix run below is committed.)
 
-**Winning point: `K_SCALED = 1639729121` (k ≈ 1.64), `DELTA_BPS = 67`.**
+**Winning point: `K_SCALED = 1639362224` (k ≈ 1.639), `DELTA_BPS = 67`.**
 
 | Segment | n | Avg edge |
 | --- | --- | --- |
-| screening (search inner loop) | 200 | 354.858203 |
-| train (final evaluation) | 1,000 | 384.781858 |
-| validation (final evaluation) | 1,000 | 379.135831 |
+| screening (search inner loop) | 200 | 354.874870 |
+| train (final evaluation) | 1,000 | 384.887225 |
+| validation (final evaluation) | 1,000 | 379.350266 |
 
 Against `001-cpmm-fee`'s own committed numbers (screening 384.82, train 406.14, validation
-401.80): **-29.96 screening, -21.36 train, -22.66 validation** — a consistent shortfall across
+401.80): **-29.95 screening, -21.25 train, -22.45 validation** — a consistent shortfall across
 all three independently-sampled segments. Per `docs/DESIGN.md` §2.8, **this is a negative
 result, not a mid-table entry**: `006` does not beat the 0-line. This matches the issue's own
 review-amendment prediction almost exactly ("385-410 — most likely at or slightly below
 401.80. I predict it does not beat the 0-line"), landing just below the bottom of that
-predicted range on validation (379.14 vs. the predicted floor of 385).
+predicted range on validation (379.35 vs. the predicted floor of 385).
 
-The winning `k=1.64` sits comfortably inside the interior of its `0.25..=32` range (not at
+The winning `k=1.639` sits comfortably inside the interior of its `0.25..=32` range (not at
 either boundary), and `delta=67` sits almost exactly on `001`'s own fitted `66` — the search
 converged to "roughly `001`'s own spread, with a modest impact slope layered on top", which is
 consistent with the grid-mode finding below (the impact mechanism helps at low volatility and
 actively hurts at high volatility, so the fitted point is a compromise between those regimes,
 not a clear win in either).
 
-**Compile timing:** 228 warm compiles, min=0.229s, mean=0.752s, max=3.489s during this run —
+**Compile timing:** 220 warm compiles, min=0.426s, mean=0.839s, max=3.934s during this run —
 exceeds `docs/DESIGN.md` §2.6's `<1s` target on the mean and max samples.
 `strategies/001-cpmm-fee/NOTES.md` (WHI-1205) already ruled out every structural cause of a
 fast-path compile-time gap on this machine; this run's elevated variance is consistent with
 genuine background load rather than a regression — a second bench session (`WHI-1207`) was
-running concurrently against a different strategy in a separate worktree throughout this
-search (confirmed via `ps aux` at the time), which would directly explain both the mean sitting
-well above WHI-1205's own re-measurement and the 3.489s outlier. Not re-investigated further
-here for the same reason `005`'s NOTES.md gives: a single run under known contention cannot
-establish a regression independent of that load.
+running concurrently against a different strategy in a separate worktree throughout both this
+search and its round-1 predecessor (confirmed via `ps aux` at the time), which would directly
+explain both the mean sitting well above WHI-1205's own re-measurement and the multi-second
+outliers. Not re-investigated further here for the same reason `005`'s NOTES.md gives: a
+single run under known contention cannot establish a regression independent of that load.
 
 ## Grid mode: 27-cell fragility matrix (docs/DESIGN.md §2.3)
 
@@ -274,33 +338,33 @@ committed at `results/2026-08-21-grid-006-hedged-pnl.md`.
 
 | cell | fee (bps) | liq mult | sigma | candidate | reference | mean diff |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | 30 | 0.4 | 0.0001 | 724.50 | 710.96 | +13.54 |
-| 1 | 30 | 0.4 | 0.0010 | 708.57 | 695.34 | +13.23 |
-| 2 | 30 | 0.4 | 0.0070 | 72.95 | 197.26 | **-124.31** |
-| 3 | 30 | 1.0 | 0.0001 | 408.93 | 389.11 | +19.82 |
-| 4 | 30 | 1.0 | 0.0010 | 403.10 | 382.63 | +20.47 |
+| 0 | 30 | 0.4 | 0.0001 | 724.71 | 710.96 | +13.75 |
+| 1 | 30 | 0.4 | 0.0010 | 708.53 | 695.34 | +13.19 |
+| 2 | 30 | 0.4 | 0.0070 | 72.96 | 197.26 | **-124.31** |
+| 3 | 30 | 1.0 | 0.0001 | 409.17 | 389.11 | +20.06 |
+| 4 | 30 | 1.0 | 0.0010 | 403.47 | 382.63 | +20.83 |
 | 5 | 30 | 1.0 | 0.0070 | -280.34 | -128.96 | **-151.38** |
-| 6 | 30 | 2.0 | 0.0001 | 216.95 | 205.57 | +11.38 |
-| 7 | 30 | 2.0 | 0.0010 | 202.66 | 192.54 | +10.11 |
-| 8 | 30 | 2.0 | 0.0070 | -459.60 | -288.26 | **-171.34** |
-| 9 | 55 | 0.4 | 0.0001 | 859.67 | 842.83 | +16.84 |
-| 10 | 55 | 0.4 | 0.0010 | 851.83 | 836.89 | +14.94 |
-| 11 | 55 | 0.4 | 0.0070 | 66.38 | 278.70 | **-212.32** |
-| 12 | 55 | 1.0 | 0.0001 | 569.01 | 547.15 | +21.86 |
-| 13 | 55 | 1.0 | 0.0010 | 578.22 | 546.96 | +31.26 |
-| 14 | 55 | 1.0 | 0.0070 | -171.23 | 32.09 | **-203.32** |
-| 15 | 55 | 2.0 | 0.0001 | 356.25 | 348.19 | +8.06 |
-| 16 | 55 | 2.0 | 0.0010 | 348.26 | 341.02 | +7.24 |
-| 17 | 55 | 2.0 | 0.0070 | -368.41 | -159.57 | **-208.83** |
-| 18 | 80 | 0.4 | 0.0001 | 1081.38 | 1030.48 | +50.89 |
-| 19 | 80 | 0.4 | 0.0010 | 1074.60 | 1018.67 | +55.94 |
-| 20 | 80 | 0.4 | 0.0070 | 372.14 | 483.73 | **-111.59** |
-| 21 | 80 | 1.0 | 0.0001 | 895.01 | 838.09 | +56.91 |
-| 22 | 80 | 1.0 | 0.0010 | 898.71 | 838.72 | +59.99 |
-| 23 | 80 | 1.0 | 0.0070 | 121.91 | 315.55 | **-193.65** |
-| 24 | 80 | 2.0 | 0.0001 | 709.30 | 668.09 | +41.22 |
-| 25 | 80 | 2.0 | 0.0010 | 713.51 | 665.90 | +47.61 |
-| 26 | 80 | 2.0 | 0.0070 | -38.66 | 152.43 | **-191.09** |
+| 6 | 30 | 2.0 | 0.0001 | 217.04 | 205.57 | +11.48 |
+| 7 | 30 | 2.0 | 0.0010 | 202.82 | 192.54 | +10.28 |
+| 8 | 30 | 2.0 | 0.0070 | -459.73 | -288.26 | **-171.47** |
+| 9 | 55 | 0.4 | 0.0001 | 860.10 | 842.83 | +17.27 |
+| 10 | 55 | 0.4 | 0.0010 | 852.22 | 836.89 | +15.33 |
+| 11 | 55 | 0.4 | 0.0070 | 66.41 | 278.70 | **-212.28** |
+| 12 | 55 | 1.0 | 0.0001 | 569.16 | 547.15 | +22.01 |
+| 13 | 55 | 1.0 | 0.0010 | 578.35 | 546.96 | +31.38 |
+| 14 | 55 | 1.0 | 0.0070 | -171.14 | 32.09 | **-203.22** |
+| 15 | 55 | 2.0 | 0.0001 | 356.40 | 348.19 | +8.21 |
+| 16 | 55 | 2.0 | 0.0010 | 348.18 | 341.02 | +7.17 |
+| 17 | 55 | 2.0 | 0.0070 | -368.44 | -159.57 | **-208.87** |
+| 18 | 80 | 0.4 | 0.0001 | 1081.39 | 1030.48 | +50.91 |
+| 19 | 80 | 0.4 | 0.0010 | 1074.68 | 1018.67 | +56.01 |
+| 20 | 80 | 0.4 | 0.0070 | 372.03 | 483.73 | **-111.70** |
+| 21 | 80 | 1.0 | 0.0001 | 895.27 | 838.09 | +57.18 |
+| 22 | 80 | 1.0 | 0.0010 | 898.82 | 838.72 | +60.10 |
+| 23 | 80 | 1.0 | 0.0070 | 121.93 | 315.55 | **-193.62** |
+| 24 | 80 | 2.0 | 0.0001 | 709.43 | 668.09 | +41.35 |
+| 25 | 80 | 2.0 | 0.0010 | 713.62 | 665.90 | +47.71 |
+| 26 | 80 | 2.0 | 0.0070 | -38.80 | 152.43 | **-191.24** |
 
 18 of 27 cells favor `006`, all 9 negative cells (bold) favor `001`. Full 95% CIs in
 `results/2026-08-21-grid-006-hedged-pnl.md` — every listed cell's CI excludes 0 (the narrowest
@@ -318,12 +382,12 @@ the fair price moves multiplicatively (GBM). At low/mid sigma, `mid` (updated on
 `k * x_executed` per executed trade) tracks a slowly-moving fair price closely, so the impact
 slope earns a genuine edge on top of the ~67bps half-spread (the low/mid-sigma wins are
 directly proportional to how much extra the impact term captures over a flat spread — compare
-cell 21/22 at `fee=80` where the wins are largest, +56.91/+59.99, against `fee=30` at cells
+cell 21/22 at `fee=80` where the wins are largest, +57.18/+60.10, against `fee=30` at cells
 0/1, the smallest wins). At `sigma=0.007`, the fair price moves far faster than the
 trade-driven `mid` update can track, so the arbitrageur repeatedly catches this pool
 mispriced and extracts LVR on top of what `001`'s flat fee already concedes at that volatility
 — and the size of the loss scales with how deep the opponent's own liquidity is (cell 8's
-`liq=2.0` loss of -171.34 versus cell 2's `liq=0.4` loss of -124.31 at the same fee/sigma: a
+`liq=2.0` loss of -171.47 versus cell 2's `liq=0.4` loss of -124.31 at the same fee/sigma: a
 deeper opponent both takes more flow away at the moment this pool is mispriced *and* gives the
 arbitrageur a bigger corrective trade to extract from this pool once it does route here).
 
@@ -374,15 +438,15 @@ below both execute the real BPF program repeatedly with no compute-budget failur
 ## Parity gate (docs/DESIGN.md §2.6)
 
 Reproduced via `cargo run -p prop-amm-bench --release -- parity --strategy
-strategies/006-hedged-pnl` against the committed `(K_SCALED=1639729121, DELTA_BPS=67)` point:
+strategies/006-hedged-pnl` against the committed `(K_SCALED=1639362224, DELTA_BPS=67)` point:
 `prop-amm validate` passes; the fast path and the reference path agree on **all 1,000
 `observation`-segment seeds to `0` relative difference** (well inside the `1e-9` gate); the
-fast-path aggregate (avg edge 369.58) matches `prop-amm run`'s own 2-decimal output exactly
-(369.58, total 369582.74). See `results/2026-08-21-parity-006-hedged-pnl.md` for the committed
+fast-path aggregate (avg edge 369.79) matches `prop-amm run`'s own 2-decimal output exactly
+(369.79, total 369786.64). See `results/2026-08-21-parity-006-hedged-pnl.md` for the committed
 snapshot.
 
-**Leaderboard-comparable number: avg edge 369.58** (`observation` segment, seeds `0..=999`,
-native), against `001-cpmm-fee`'s own **399.97** on the same segment — a **-30.39 (-7.6%)**
+**Leaderboard-comparable number: avg edge 369.79** (`observation` segment, seeds `0..=999`,
+native), against `001-cpmm-fee`'s own **399.97** on the same segment — a **-30.18 (-7.5%)**
 shortfall, consistent with the negative result recorded in § Search above.
 
 ## Summary

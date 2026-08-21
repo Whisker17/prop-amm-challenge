@@ -1,6 +1,6 @@
 # parity-006-hedged-pnl — 2026-08-21
 
-- Commit: `34b2406`
+- Commit: `bdc7628+dirty`
 - Segment: `observation`
 - Simulations: 1000
 - Steps: 10000
@@ -20,7 +20,7 @@ PASS
 
 ## Aggregate parity (fast path vs `prop-amm run`)
 
-- Fast path: avg edge 369.58
-- `prop-amm run`: avg edge 369.58, total edge 369582.74
+- Fast path: avg edge 369.79
+- `prop-amm run`: avg edge 369.79, total edge 369786.64
 
 
