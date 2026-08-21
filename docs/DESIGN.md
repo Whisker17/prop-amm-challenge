@@ -5,10 +5,10 @@
 > idea into shape (`/grill-me`) and formalizing the result (`/to-spec`) — do not skip
 > straight to code with this document empty.
 >
-> **State of this document:** §1–§5, §7 and §8 are written. §4.1/§4.2 describe both
-> inherited upstream code and our own layer. **§6 is deliberately incomplete**: the
-> milestone structure is fixed, but the *frozen strategy list* M1 iterates over is an
-> owner input that has not been supplied yet — see §6.2. M1 cannot be ticketed until it is.
+> **State of this document:** §1–§8 are written. §4.1/§4.2 describe both inherited
+> upstream code and our own layer. **§6.2 was owner-input-blocked** (WHI-1197) until the
+> frozen strategy list was supplied and filed under `docs/references/`; it is now frozen
+> and M1 is ticketable.
 
 ## 1. Background & Goals
 
@@ -503,22 +503,49 @@ built on top of it (`WHI-1193` → `WHI-1194` → `WHI-1195`). The ordering is t
 the only anchor produced by an upstream code path — the one chance to catch a bench that is
 wrong in the same direction as its own tests.
 
-### 6.2 The frozen strategy list — **OWNER INPUT REQUIRED**
+### 6.2 The frozen strategy list
 
-M1 iterates over a list that does not exist in this repo yet. `docs/references/` is empty;
-the collected material (source, Solidity, prose) is outside the repository.
+Frozen 2026-08-21 (WHI-1197). This is the complete list M1 iterates over — per §2.10,
+nothing is added to v1 after this point. Each entry's original material is filed under
+`docs/references/<id>-<slug>/`, one directory per strategy (a directory rather than a
+single file, since several entries are multi-file source trees); each directory carries
+its own `README.md` with the four fields below plus a mechanism summary, known parameters,
+and a fidelity note. That `README.md` is a **snapshot fixed at freeze time** — it does not
+change once the porting issue starts. `NOTES.md` (§2.4, §2.9) is the living record after
+that: it re-declares the parameter space in the porting issue's own words and is the one
+that governs if the two ever drift, since it is what's actually frozen before search runs.
 
-**M1 cannot be ticketed until this list is supplied.** Each entry needs:
+| Id | Name | Source form | Original material | Known parameters (starting point, not frozen — §2.4) |
+| --- | --- | --- | --- | --- |
+| `002` | Orbic | Solidity (to port) | `docs/references/002-orbic-flashbots/` — Flashbots' `ExamplePropAmm.sol` | `concentration ∈ [1, 2000)`; oracle-published `multX`/`multY`; 5% lock threshold |
+| `003` | Piecewise Linear | source (Rust) + prose (blog) | `docs/references/003-piecewise-linear/` — `benedictbrady/prop-amm`'s on-chain program | `NUM_PRICE_POINTS = 7` / `NUM_SEGMENTS = 6` per side; per-segment liquidity is derived, not free |
+| `004` | EWMA Dynamic Fee + Shock-Decay | source (Rust) + Solidity (richer port) + source (v3 extension) | `docs/references/004-ewma-shock-decay-fee/` — `lilaclilac09/pamm-a`'s own past competition submission | `SHOCK_THRESHOLD_1E9 = 5_000_000` (0.5%); vol EWMA α = 0.20; fee cap 100bps; `VOL_MULT`/`SHOCK_FEE_PER_STEP`/`SHOCK_DECAY_STEPS`/`BASE` per source |
+| `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
+| `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
 
-| Field | Why |
-| --- | --- |
-| Name | the `NAME` constant and the `strategies/NNN-<slug>` directory |
-| Source form | source / Solidity / prose / leaderboard-name-and-score only — sets the porting effort and the fidelity bar (§2.9) |
-| Original material location | filed under `docs/references/` so provenance survives |
-| Known parameters | seeds the frozen space of §2.4 |
+`000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
+(`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
+is measured against, not additional candidates.
 
-Until then §2.10's freeze step has nothing to freeze, and M1 has no issues. M0 is fully
-specified and unblocked.
+Two entries carry an explicit provenance caveat, read before porting:
+
+- **`003`** — the piecewise-linear liquidity curve itself (7 points / 6 segments,
+  self-replenishing) is confirmed in source. A second detail from the collected
+  material — an oracle-staleness spread-widening backoff — traces only to the author's
+  own blog post describing it as an unimplemented, exploratory mock-up with no formula
+  given. Treat the curve as the faithful port; treat staleness backoff as, at most, a
+  `003b` variant (§2.9).
+- **`006`** — the source document titled itself as describing *this* challenge, and its
+  stated volatility range (`U[0.01%, 0.70%]`) matches `crates/shared/src/config.rs`'s
+  `gbm_sigma_min`/`gbm_sigma_max` exactly — but its stated **scoring metric** ("Hedged
+  PnL", a terminal-inventory formula) does not match this repo's actual per-trade
+  average-edge metric (§2.1). Per §2.9's provenance contract, this is filed as-is rather
+  than silently corrected; the porting issue treats the doc's linear-price-impact
+  mechanism as the thing to port, not its claimed scoring rule.
+
+One M1 issue per strategy above is opened per `docs/agents/issue-template.md`, each
+`blockedBy` the last M0 issue (`WHI-1195`): `WHI-1206` (`002`), `WHI-1207` (`003`),
+`WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`).
 
 ## 7. Rejected Alternatives
 
@@ -582,14 +609,13 @@ output contradicts an entry here must flag it explicitly rather than silently ov
 
 **Open questions**
 
-1. **The frozen strategy list** (§6.2) — blocks M1. Owner input.
-2. **Whether the leaderboard is still accepting submissions.** Does not affect v1 (§1.3),
+1. **Whether the leaderboard is still accepting submissions.** Does not affect v1 (§1.3),
    but decides whether §1.4's winner ever gets submitted from a tag.
-3. **Does the grader use seeds `0..=999`?** Assumed from `BASELINE_SIMS`/`BASELINE_STEPS`
+2. **Does the grader use seeds `0..=999`?** Assumed from `BASELINE_SIMS`/`BASELINE_STEPS`
    defaults, not confirmed. Only affects how the observation row is interpreted.
-4. **Are `retail_arrival_rate` and `retail_mean_size` worth adding to the grid?** Held at
+3. **Are `retail_arrival_rate` and `retail_mean_size` worth adding to the grid?** Held at
    defaults for readability (§2.3); a flow-sensitive strategy might need them.
-5. **When does the duplication in §4.2 justify generation?** Trigger set at ≥5 strategies
+4. **When does the duplication in §4.2 justify generation?** Trigger set at ≥5 strategies
    sharing non-trivial numeric helpers; the count is a guess.
-6. **Is L2 needed?** Deferred (§2.7). The trigger is a strategy whose loss cannot be
+5. **Is L2 needed?** Deferred (§2.7). The trigger is a strategy whose loss cannot be
    diagnosed from flow share and edge per unit volume alone.
