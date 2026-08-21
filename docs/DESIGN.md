@@ -446,7 +446,8 @@ strategies/                ours — one directory per candidate
 tools/
 └── bench/                 ours — the measurement layer (workspace member)
 config/
-└── bench.toml             ours — seed segments, search budget, grid levels (§3.1)
+└── bench.toml             ours — seed segments, search budget, grid levels, fuzz-gate
+                              sample counts (§3.1)
 results/
 └── <date>-<stage>.md      ours — comparison snapshots, each carrying a commit sha
 ```
@@ -477,6 +478,7 @@ revisited only once ≥5 strategies share the same non-trivial numeric helpers (
 | `HyperparameterVariance::apply(&base, seed)` | seed → full regime, deterministic | **Yes** — lets bench label any result's regime with no upstream change |
 | `GBMPriceProcess::new(...)` | seed → exact price path | Not used in v1; the basis of L2 (§2.7) |
 | bench's fast compile path | source text → loadable dylib | **Deliberately not abstracted.** It duplicates upstream logic; the parity gate (§2.6) is the control, not an interface |
+| `tools/bench/src/curve_checks.rs`'s mirror of `crates/sim/src/curve_checks.rs::submission_shape_violation` | `bench fuzz`'s (§2.9) shape check, off the frozen-search critical path | Duplicates *private* upstream logic (`mod curve_checks;`, not `pub`, so no import exists) with **no equivalent control** — unlike the fast compile path, nothing else in the system fails if this copy drifts from upstream's. Mitigated by one ported upstream regression test; residual risk logged in `docs/DEFERRED_ISSUES.md` |
 
 ### 4.4 Core flows
 

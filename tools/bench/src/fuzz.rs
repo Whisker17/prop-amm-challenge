@@ -38,8 +38,10 @@ use crate::fast_compile::LoadedFast;
 use crate::grid;
 
 /// Mirrors `crates/sim/src/arbitrageur.rs`'s own `MIN_INPUT`/`crates/sim/src/router.rs`'s
-/// `MIN_TRADE_SIZE` — the smallest input either real search ever evaluates.
-const MIN_INPUT: f64 = 1e-3;
+/// `MIN_TRADE_SIZE` — the smallest input either real search ever evaluates. `pub(crate)` so
+/// `config.rs::validate_fuzz` can reject a `moderate_max_input` too close to it (a
+/// degenerate, near-single-point "moderate range" sweep) without duplicating the literal.
+pub(crate) const MIN_INPUT: f64 = 1e-3;
 /// Mirrors `crates/sim/src/arbitrageur.rs::MAX_INPUT_AMOUNT` — the largest input an
 /// arbitrageur's search is ever allowed to reach.
 const MAX_INPUT_AMOUNT: f64 = (u64::MAX as f64 / NANO_SCALE_F64) * 0.999_999;
@@ -66,8 +68,14 @@ const FUZZ_PRICE_SEED_BASE: u64 = 5_000_000;
 /// cell.
 const FUZZ_STATE_SEED_BASE: u64 = 6_000_000;
 /// Offset added to `FUZZ_STATE_SEED_BASE` for jitter seeds, keeping that namespace disjoint
-/// from the storage-seed namespace below it.
-const FUZZ_JITTER_SEED_OFFSET: u64 = 1_000_000;
+/// from the storage-seed namespace below it. Sized for `MAX_SUPPORTED_GRID_CELLS` cells at
+/// `SEED_STRIDE_PER_CELL` each, with headroom — `build_states` asserts the actual grid
+/// config never exceeds that count, so a future `[grid]` table with more levels fails loudly
+/// here instead of silently aliasing storage seeds into the jitter namespace.
+const FUZZ_JITTER_SEED_OFFSET: u64 = 100_000_000;
+/// See `FUZZ_JITTER_SEED_OFFSET`'s doc comment. `100_000_000 / SEED_STRIDE_PER_CELL` (32,768)
+/// is ~3,051; 1,000 leaves a 3x margin over that for arithmetic simplicity.
+const MAX_SUPPORTED_GRID_CELLS: usize = 1_000;
 
 const SIDES: [(u8, &str); 2] = [(0, "buy X (input Y)"), (1, "sell X (input X)")];
 
@@ -96,17 +104,31 @@ pub struct Violation {
 /// the exact-CPMM-invariant reserve pair and a randomly jittered, off-invariant, asymmetric
 /// one (issue WHI-1212 asks for "*random* states", and WHI-1206's own reserve-clamp-plateau
 /// failure is specifically an off-invariant state) — each in turn paired with a zeroed and a
-/// random-byte storage buffer. `norm_fee_bps` (the third grid axis) has no principled effect
-/// on a *submission's own* reserves — it only ever governs the normalizer counterpart's
-/// curve — so it distinguishes states here only through jitter/storage seeding (every cell
-/// still gets its own distinct states; it just isn't the reserve-scale axis liquidity and
-/// sigma are).
+/// random-byte storage buffer.
+///
+/// None of the three grid axes actually drive the *submission's own* reserve scale in the
+/// real simulation: `crates/sim/src/engine.rs` always constructs the submission's `BpfAmm`
+/// from the fixed `config.initial_x`/`config.initial_y`, and `norm_liquidity_mult` scales
+/// only the *normalizer counterpart's* reserves (`norm_x`/`norm_y`) — so scaling this fuzz
+/// gate's own synthetic invariant by `cell.norm_liquidity_mult` below is a deliberately
+/// synthetic reserve-magnitude axis for this gate's own coverage, not a reproduction of how
+/// the real engine ties liquidity to submission reserves. `norm_fee_bps` gets no such
+/// synthetic axis (there's no analogous "fee changes reserve magnitude" story to tell), so
+/// it distinguishes states here only through jitter/storage seeding — every cell still gets
+/// its own distinct states, via `cell.index`.
 pub fn build_states(grid_config: &GridConfig, fuzz_config: &FuzzConfig) -> Vec<FuzzState> {
     let mut states = Vec::new();
     for cell in grid::cells(grid_config) {
-        let liquidity = INITIAL_X.max(1e-9) * cell.norm_liquidity_mult;
+        assert!(
+            cell.index < MAX_SUPPORTED_GRID_CELLS,
+            "`[grid]` in config/bench.toml has grown to {} cells, past bench fuzz's seed- \
+             namespace headroom of {MAX_SUPPORTED_GRID_CELLS} (see `FUZZ_JITTER_SEED_OFFSET`'s \
+             doc comment in fuzz.rs) — widen the offset before adding more grid levels",
+            cell.index + 1,
+        );
+        let liquidity_x = INITIAL_X.max(1e-9) * cell.norm_liquidity_mult;
         let liquidity_y = INITIAL_Y.max(1e-9) * cell.norm_liquidity_mult;
-        let k = liquidity * liquidity_y;
+        let k = liquidity_x * liquidity_y;
 
         let (min_price, max_price) =
             drift_extremes(cell.gbm_sigma, cell.index, fuzz_config.seeds_per_regime);
@@ -155,7 +177,8 @@ pub fn build_states(grid_config: &GridConfig, fuzz_config: &FuzzConfig) -> Vec<F
                 ] {
                     states.push(FuzzState {
                         label: format!(
-                            "cell {} ({}) price={price:.6} [{reserve_label}, {storage_label}]",
+                            "cell {} ({}) price={price:.6} reserve_x={reserve_x:.6} \
+                             reserve_y={reserve_y:.6} [{reserve_label}, {storage_label}]",
                             cell.index,
                             cell.label_axes(),
                         ),
@@ -548,9 +571,12 @@ mod tests {
     fn jitter_seed_x_and_y_never_alias_each_other_or_a_neighboring_price_index() {
         // Regression guard: an earlier version derived jitter_seed_y as
         // `jitter_seed_x(c, p).wrapping_add(1)`, which at the old stride-1 spacing equaled
-        // `jitter_seed_x(c, p + 1)` exactly.
+        // `jitter_seed_x(c, p + 1)` exactly. Covers the full `MAX_SUPPORTED_GRID_CELLS`
+        // range `build_states`'s own headroom assertion promises, not just today's 27 cells
+        // — a future `[grid]` table growing within that headroom must stay collision-free
+        // too, not just the current shape.
         let mut seeds = std::collections::HashSet::new();
-        for cell_index in 0..27usize {
+        for cell_index in 0..MAX_SUPPORTED_GRID_CELLS {
             for price_idx in 0..3usize {
                 assert!(seeds.insert(jitter_seed_x(cell_index, price_idx)));
                 assert!(seeds.insert(jitter_seed_y(cell_index, price_idx)));
@@ -562,9 +588,10 @@ mod tests {
     fn storage_seed_windows_never_overlap() {
         // Regression guard: an earlier version used a stride of 100 for both cell and price
         // index, far below `STORAGE_SIZE` (1024) — `random_storage`'s 1024-value window from
-        // two different (cell, price) pairs would then overlap almost entirely.
+        // two different (cell, price) pairs would then overlap almost entirely. Covers the
+        // full `MAX_SUPPORTED_GRID_CELLS` range, same rationale as the test above.
         let mut windows = Vec::new();
-        for cell_index in 0..27usize {
+        for cell_index in 0..MAX_SUPPORTED_GRID_CELLS {
             for price_idx in 0..3usize {
                 let start = storage_seed(cell_index, price_idx);
                 windows.push((start, start + STORAGE_SIZE as u64 - 1));

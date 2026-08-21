@@ -384,6 +384,18 @@ fn validate_fuzz(raw: &RawFuzzConfig) -> anyhow::Result<FuzzConfig> {
     if !raw.moderate_max_input.is_finite() || raw.moderate_max_input <= 0.0 {
         anyhow::bail!("fuzz config's moderate_max_input must be finite and positive");
     }
+    // A value too close to `MIN_INPUT` collapses every dense-sweep grid (`linear_grid` etc.
+    // in `fuzz.rs` clamp their span to a tiny epsilon) to effectively one point instead of a
+    // real sweep — fail loudly here (`AGENTS.md` § Runtime configuration's fail-fast rule)
+    // rather than let the gate silently probe almost nothing.
+    if raw.moderate_max_input <= crate::fuzz::MIN_INPUT * 10.0 {
+        anyhow::bail!(
+            "fuzz config's moderate_max_input ({}) is too close to the minimum tradable \
+             input ({}) to produce a real sweep",
+            raw.moderate_max_input,
+            crate::fuzz::MIN_INPUT,
+        );
+    }
     if raw.golden_max_iters == 0 {
         anyhow::bail!("fuzz config's golden_max_iters is 0");
     }
@@ -857,6 +869,20 @@ max_points = {MAX_SEARCH_POINTS}
         assert!(
             err.to_string()
                 .contains("moderate_max_input must be finite and positive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fuzz_table_rejects_a_moderate_max_input_too_close_to_min_input() {
+        let text = format!(
+            "{}\n[fuzz]\ndense_sweep_points = 200\nseeds_per_regime = 3\ngolden_price_multipliers = [1.0]\nmoderate_max_input = 0.001\ngolden_max_iters = 20\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("too close to the minimum tradable input"),
             "unexpected error: {err}"
         );
     }
