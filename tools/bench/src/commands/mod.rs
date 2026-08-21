@@ -6,9 +6,25 @@ pub mod grid;
 pub mod l1;
 pub mod parity;
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::Segment;
+
+/// Resolves a `--strategy <dir>` argument to `(slug, lib.rs path)` — shared by every
+/// subcommand that takes a strategy directory (`parity`, `fit`, `fuzz`). Extracted once a
+/// third call site repeated this verbatim; `docs/DEFERRED_ISSUES.md`'s `telemetry.rs` entry
+/// sets the same bar this repo already uses: "two duplicates is a pattern worth naming,
+/// three is worth extracting."
+pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, PathBuf)> {
+    let strategy_dir = Path::new(strategy);
+    let slug = strategy_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("`--strategy` must be a directory path, got `{strategy}`"))?
+        .to_string();
+    Ok((slug, strategy_dir.join("lib.rs")))
+}
 
 /// Printed once when a resolved segment isn't a decision input (docs/DESIGN.md §2.2) —
 /// shared so every segment-taking subcommand says the same thing instead of repeating it.
@@ -124,5 +140,17 @@ mod tests {
     fn edges_agree_compares_at_cli_precision() {
         assert!(edges_agree(210.501, 210.499));
         assert!(!edges_agree(210.50, 210.51));
+    }
+
+    #[test]
+    fn resolve_strategy_lib_path_derives_slug_and_lib_rs_path() {
+        let (slug, file) = resolve_strategy_lib_path("strategies/001-cpmm-fee").unwrap();
+        assert_eq!(slug, "001-cpmm-fee");
+        assert_eq!(file, Path::new("strategies/001-cpmm-fee/lib.rs"));
+    }
+
+    #[test]
+    fn resolve_strategy_lib_path_rejects_a_path_with_no_final_component() {
+        assert!(resolve_strategy_lib_path("").is_err());
     }
 }

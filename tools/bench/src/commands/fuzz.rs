@@ -17,6 +17,7 @@ use std::path::Path;
 
 use clap::Args;
 
+use crate::commands::resolve_strategy_lib_path;
 use crate::config::BenchConfig;
 use crate::fast_compile;
 use crate::fuzz::{self, Violation};
@@ -32,18 +33,8 @@ pub struct FuzzArgs {
 }
 
 pub fn run(args: FuzzArgs) -> anyhow::Result<()> {
-    let strategy_dir = Path::new(&args.strategy);
-    let slug = strategy_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "`--strategy` must be a directory path, got `{}`",
-                args.strategy
-            )
-        })?;
+    let (slug, file) = resolve_strategy_lib_path(&args.strategy)?;
     let stage = format!("{STAGE_PREFIX}-{slug}");
-    let file = strategy_dir.join("lib.rs");
     let file_str = file.to_string_lossy().to_string();
 
     let bench_config = BenchConfig::load_default()?;
@@ -95,18 +86,25 @@ pub fn run(args: FuzzArgs) -> anyhow::Result<()> {
     // taken (e.g. by an earlier violation found today) is not itself a reason to swallow
     // *this* violation — note it and move on to the `bail!` below, which is the actual
     // failure this command reports.
+    //
+    // `n_sims`/`n_steps` stay at `0`: this gate quotes a candidate's `compute_swap`
+    // directly, it never runs a `SimResult`-producing batch, so there's no honest non-zero
+    // value for either field — same reasoning `bench grid`'s own non-segment `segment`
+    // sentinel uses. The states/sides actually probed are named in the report body instead.
     let meta = ReportMeta {
         stage,
         segment: "fuzz (not a config/bench.toml segment)".to_string(),
-        n_sims: states.len() * 2,
+        n_sims: 0,
         n_steps: 0,
         execution_path: "native (fast path)".to_string(),
     };
     let sections = vec![ReportSection {
         heading: "bench fuzz — shape violation found (WHI-1212)".to_string(),
         body: format!(
-            "- Candidate: `{file_str}`\n- State: {state_label}\n- Side: {side_label}\n\
-             - Sample kind: {sample_kind}\n- Message: {message}\n",
+            "- Candidate: `{file_str}`\n- Fuzz sweep size: {} states x 2 sides (this run \
+             stopped at the first violation, not all of them)\n- State: {state_label}\n\
+             - Side: {side_label}\n- Sample kind: {sample_kind}\n- Message: {message}\n",
+            states.len(),
         ),
     }];
     match report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections) {

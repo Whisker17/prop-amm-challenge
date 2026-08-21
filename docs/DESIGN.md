@@ -336,8 +336,10 @@ full-length GBM drift, in both a zeroed- and a random-byte-storage variant, mirr
 `curve_checks.rs`'s own check. Every M1 strategy issue runs this gate before a `bench fit`
 search is allowed to spend paired-seed budget on that candidate. A PASS writes no report
 (the gate is meant to run repeatedly, before every search); a violation commits a
-`results/*.md` report naming the state and input pair, the same evidentiary role a runtime
-panic's stack trace plays for this section's `wontfix` path.
+`results/*.md` report naming the state and input pair — unless today's report slot for
+that strategy is already taken by an earlier run, in which case it's noted rather than
+silently dropped (`docs/DEFERRED_ISSUES.md`) — the same evidentiary role a runtime panic's
+stack trace plays for this section's `wontfix` path.
 
 ### 2.10 Convergence
 

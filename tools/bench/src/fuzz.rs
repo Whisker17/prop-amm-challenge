@@ -43,16 +43,27 @@ const MIN_INPUT: f64 = 1e-3;
 /// Mirrors `crates/sim/src/arbitrageur.rs::MAX_INPUT_AMOUNT` — the largest input an
 /// arbitrageur's search is ever allowed to reach.
 const MAX_INPUT_AMOUNT: f64 = (u64::MAX as f64 / NANO_SCALE_F64) * 0.999_999;
+/// The golden ratio conjugate itself — not a tunable, a mathematical constant golden-section
+/// search requires; mirrored from `crates/sim/src/arbitrageur.rs`/`router.rs` because both
+/// use the same value, not because this module's search is a literal port of either (see
+/// this module's own header comment and `docs/DEFERRED_ISSUES.md`).
 const GOLDEN_RATIO_CONJUGATE: f64 = 0.618_033_988_749_894_8;
-const GOLDEN_MAX_ITERS: usize = 20;
+/// Cluster-grid power values for the dense sweep's two power-clustered grid shapes (toward
+/// the low end and the high end respectively) — an algorithm-shape choice independent of
+/// `[fuzz]`'s own sample-*count* tunables, same bucket as `GOLDEN_RATIO_CONJUGATE` above and
+/// as upstream's own hardcoded search constants (`arbitrageur.rs::BRACKET_GROWTH`, etc.),
+/// not a value this module claims fidelity to any specific upstream number for.
+const CLUSTER_GRID_POWER_LOW: f64 = 2.4;
+const CLUSTER_GRID_POWER_HIGH: f64 = 0.45;
 /// Not a `config/bench.toml` segment and not a decision input — purely an internal RNG seed
 /// for exploring a regime's GBM drift range when building fuzz states, disjoint from grid
 /// mode's own `GRID_SEED_BASE` (`tools/bench/src/grid.rs`) and from `FUZZ_STATE_SEED_BASE`
 /// below only so the three are never confused when reading a seed value in a debugger.
 const FUZZ_PRICE_SEED_BASE: u64 = 5_000_000;
-/// Seeds the random-byte storage buffer and the off-invariant reserve jitter (`storage_seed`/
-/// `jitter_seed` below) — a distinct base from `FUZZ_PRICE_SEED_BASE` so the two purposes
-/// never share a literal seed value for the same cell.
+/// Seeds the random-byte storage buffer and the off-invariant reserve jitter
+/// (`storage_seed`/`jitter_seed_x`/`jitter_seed_y` below) — a distinct base from
+/// `FUZZ_PRICE_SEED_BASE` so the two purposes never share a literal seed value for the same
+/// cell.
 const FUZZ_STATE_SEED_BASE: u64 = 6_000_000;
 /// Offset added to `FUZZ_STATE_SEED_BASE` for jitter seeds, keeping that namespace disjoint
 /// from the storage-seed namespace below it.
@@ -115,9 +126,8 @@ pub fn build_states(grid_config: &GridConfig, fuzz_config: &FuzzConfig) -> Vec<F
                 continue;
             }
 
-            let jitter_seed = jitter_seed(cell.index, price_idx);
-            let jitter_x = jitter_factor(jitter_seed);
-            let jitter_y = jitter_factor(jitter_seed.wrapping_add(1));
+            let jitter_x = jitter_factor(jitter_seed_x(cell.index, price_idx));
+            let jitter_y = jitter_factor(jitter_seed_y(cell.index, price_idx));
             let reserve_variants = [
                 (on_invariant_x, on_invariant_y, "on-invariant"),
                 (
@@ -160,12 +170,34 @@ pub fn build_states(grid_config: &GridConfig, fuzz_config: &FuzzConfig) -> Vec<F
     states
 }
 
+/// `random_storage` consumes `STORAGE_SIZE` (1024) consecutive `mix()` inputs starting at
+/// its seed, so any two storage seeds this function returns must differ by at least
+/// `STORAGE_SIZE` or their byte streams overlap — hence a stride well above it, with a
+/// per-cell stride that's itself a multiple of the per-price stride (room for a few more
+/// price points per cell than the 3 `build_states` ever produces, with margin).
+const SEED_STRIDE_PER_PRICE: u64 = 4_096;
+const SEED_STRIDE_PER_CELL: u64 = SEED_STRIDE_PER_PRICE * 8;
+
 fn storage_seed(cell_index: usize, price_idx: usize) -> u64 {
-    FUZZ_STATE_SEED_BASE + (cell_index as u64) * 100 + price_idx as u64
+    FUZZ_STATE_SEED_BASE
+        + (cell_index as u64) * SEED_STRIDE_PER_CELL
+        + (price_idx as u64) * SEED_STRIDE_PER_PRICE
 }
 
-fn jitter_seed(cell_index: usize, price_idx: usize) -> u64 {
-    FUZZ_STATE_SEED_BASE + FUZZ_JITTER_SEED_OFFSET + (cell_index as u64) * 100 + price_idx as u64
+fn jitter_seed_x(cell_index: usize, price_idx: usize) -> u64 {
+    FUZZ_STATE_SEED_BASE
+        + FUZZ_JITTER_SEED_OFFSET
+        + (cell_index as u64) * SEED_STRIDE_PER_CELL
+        + (price_idx as u64) * SEED_STRIDE_PER_PRICE
+}
+
+/// Offset by half a price-stride from `jitter_seed_x` — `jitter_factor` only ever reads a
+/// single `mix()` value (unlike `random_storage`'s 1024-wide window), so this only needs to
+/// avoid landing on another `(cell, price)`'s exact seed, not a wide non-overlap margin;
+/// `jitter_seed_x(c, p).wrapping_add(1)` would have aliased `jitter_seed_x(c, p + 1)` at the
+/// old stride of 1 — this offset can't alias any `jitter_seed_x` call for any cell/price.
+fn jitter_seed_y(cell_index: usize, price_idx: usize) -> u64 {
+    jitter_seed_x(cell_index, price_idx) + SEED_STRIDE_PER_PRICE / 2
 }
 
 /// Maps a seed to a multiplicative factor in `[0.4, 2.5]` — wide enough that applying it
@@ -273,6 +305,7 @@ pub fn run_fuzz(
                 MIN_INPUT,
                 MAX_INPUT_AMOUNT,
                 &fuzz_config.golden_price_multipliers,
+                fuzz_config.golden_max_iters,
             ) {
                 return Some(Violation {
                     state_label: state.label.clone(),
@@ -295,8 +328,8 @@ fn dense_sweep_grids(min_input: f64, max_input: f64, n: usize) -> Vec<Vec<f64>> 
     vec![
         linear_grid(min_input, max_input, n),
         geometric_grid(min_input, max_input, n),
-        clustered_grid(min_input, max_input, n, 2.4),
-        clustered_grid(min_input, max_input, n, 0.45),
+        clustered_grid(min_input, max_input, n, CLUSTER_GRID_POWER_LOW),
+        clustered_grid(min_input, max_input, n, CLUSTER_GRID_POWER_HIGH),
     ]
 }
 
@@ -357,6 +390,7 @@ fn golden_section_sample<F: FnMut(f64) -> f64>(
     fair_price: f64,
     min_input: f64,
     max_input: f64,
+    max_iters: usize,
 ) -> Vec<(f64, f64)> {
     let score = |input: f64, output: f64| -> f64 {
         if side == 0 {
@@ -368,7 +402,7 @@ fn golden_section_sample<F: FnMut(f64) -> f64>(
 
     let left0 = min_input.max(0.0);
     let right0 = max_input.max(left0 * 1.000_001).max(MIN_INPUT);
-    let mut points = Vec::with_capacity(GOLDEN_MAX_ITERS + 4);
+    let mut points = Vec::with_capacity(max_iters + 4);
 
     let out_left = quote(left0);
     points.push((left0, out_left));
@@ -386,7 +420,7 @@ fn golden_section_sample<F: FnMut(f64) -> f64>(
     let mut f1 = score(x1, out1);
     let mut f2 = score(x2, out2);
 
-    for _ in 0..GOLDEN_MAX_ITERS {
+    for _ in 0..max_iters {
         if f1 < f2 {
             left = x1;
             x1 = x2;
@@ -418,10 +452,12 @@ fn golden_section_violation<F: FnMut(f64) -> f64>(
     min_input: f64,
     max_input: f64,
     multipliers: &[f64],
+    max_iters: usize,
 ) -> Option<String> {
     for &multiplier in multipliers {
         let fair_price = (spot * multiplier).max(1e-12);
-        let points = golden_section_sample(quote, side, fair_price, min_input, max_input);
+        let points =
+            golden_section_sample(quote, side, fair_price, min_input, max_input, max_iters);
         if let Some(message) = submission_shape_violation(&points, min_input) {
             return Some(message);
         }
@@ -449,6 +485,7 @@ mod tests {
             seeds_per_regime: 2,
             golden_price_multipliers: vec![0.5, 1.0, 2.0],
             moderate_max_input: 50_000.0,
+            golden_max_iters: 20,
         }
     }
 
@@ -501,10 +538,49 @@ mod tests {
         // normalizer counterpart), so two cells differing only in fee would otherwise be
         // indistinguishable at the reserve level — `cell.index` is what still gives every
         // one of the 27 grid cells its own distinct jittered reserve state.
-        let seed_a = jitter_seed(0, 0);
-        let seed_b = jitter_seed(1, 0);
+        let seed_a = jitter_seed_x(0, 0);
+        let seed_b = jitter_seed_x(1, 0);
         assert_ne!(seed_a, seed_b);
         assert!((jitter_factor(seed_a) - jitter_factor(seed_b)).abs() > 1e-9);
+    }
+
+    #[test]
+    fn jitter_seed_x_and_y_never_alias_each_other_or_a_neighboring_price_index() {
+        // Regression guard: an earlier version derived jitter_seed_y as
+        // `jitter_seed_x(c, p).wrapping_add(1)`, which at the old stride-1 spacing equaled
+        // `jitter_seed_x(c, p + 1)` exactly.
+        let mut seeds = std::collections::HashSet::new();
+        for cell_index in 0..27usize {
+            for price_idx in 0..3usize {
+                assert!(seeds.insert(jitter_seed_x(cell_index, price_idx)));
+                assert!(seeds.insert(jitter_seed_y(cell_index, price_idx)));
+            }
+        }
+    }
+
+    #[test]
+    fn storage_seed_windows_never_overlap() {
+        // Regression guard: an earlier version used a stride of 100 for both cell and price
+        // index, far below `STORAGE_SIZE` (1024) — `random_storage`'s 1024-value window from
+        // two different (cell, price) pairs would then overlap almost entirely.
+        let mut windows = Vec::new();
+        for cell_index in 0..27usize {
+            for price_idx in 0..3usize {
+                let start = storage_seed(cell_index, price_idx);
+                windows.push((start, start + STORAGE_SIZE as u64 - 1));
+            }
+        }
+        windows.sort();
+        for pair in windows.windows(2) {
+            let (_, end_a) = pair[0];
+            let (start_b, _) = pair[1];
+            assert!(
+                end_a < start_b,
+                "storage seed windows overlap: {:?} vs {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
     }
 
     #[test]
@@ -542,8 +618,9 @@ mod tests {
     #[test]
     fn golden_section_sample_produces_a_dense_near_optimum_point_set() {
         let mut quote = |x: f64| (1.0 + x).ln();
-        let points = golden_section_sample(&mut quote, 0, 1.0, MIN_INPUT, 1_000.0);
-        assert!(points.len() >= GOLDEN_MAX_ITERS);
+        let max_iters = 20;
+        let points = golden_section_sample(&mut quote, 0, 1.0, MIN_INPUT, 1_000.0, max_iters);
+        assert!(points.len() >= max_iters);
         assert!(points.iter().all(|(x, _)| x.is_finite() && *x >= 0.0));
     }
 
@@ -556,7 +633,7 @@ mod tests {
                 10.0 - x
             }
         };
-        let message = golden_section_violation(&mut quote, 0, 1.0, MIN_INPUT, 20.0, &[1.0])
+        let message = golden_section_violation(&mut quote, 0, 1.0, MIN_INPUT, 20.0, &[1.0], 20)
             .expect("expected violation");
         assert!(
             message.contains("monotonicity"),

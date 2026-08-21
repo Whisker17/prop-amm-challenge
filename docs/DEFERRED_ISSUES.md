@@ -168,6 +168,22 @@ soon — anything touching a declared high-risk path defaults to at least High),
   shape would not have reached, port the missing algorithm shape (bracket preamble, or an
   alpha-split objective) as its own additional sample-set kind alongside the dense sweep and
   the current golden-section one.
+- **A second, same-day, *distinct* `bench fuzz` violation on the same strategy produces no
+  committed evidence for that second violation** (Low, WHI-1212). `tools/bench/src/
+  commands/fuzz.rs::run` — `report.rs`'s one-report-per-`(day, stage)` rule (the same rule
+  that motivated dropping the PASS-path report, see this PR's own commit history) means a
+  violation found after an earlier same-day violation on the same strategy already claimed
+  today's `results/<date>-fuzz-<slug>.md` slot just prints "(violation evidence not
+  written: ... already exists)" instead of committing anything for the second one. Accepted
+  because the gate's own point is to run repeatedly and cheaply before every search — a
+  strategy author debugging a violation is expected to fix it and re-run, not accumulate
+  several same-day violations that all need separate evidence — and this exact
+  one-report-per-day tradeoff is already an accepted, precedented limitation of `report.rs`
+  (see the existing "A committed `compare` report with a regime-slice table needed a
+  non-standard filename" entry above). Fix: none needed unless a workflow emerges that
+  genuinely needs multiple same-day violation reports for one strategy; if so, a
+  `--report-suffix` flag (or a timestamp in the filename) would resolve it the same way that
+  entry's manual rename did.
 
 ---
 
