@@ -24,7 +24,7 @@ const MODEL_USED: &str = "Claude Sonnet 5";
 //
 // k=1 collapses to the exact zero-fee CPMM output `fair*V/(V+fair)` (PMMPricing's own
 // `k==ONE` special case) — this is the containment anchor against `001-cpmm-fee`'s CPMM
-// family (NOTES.md § Nested 0-line).
+// family (NOTES.md § Step 0.5, "3. Containment demonstration").
 //
 // ANCHOR UPDATE (after_swap, no sqrt). Re-anchoring is not a no-op for a curved book: the
 // PMM's own marginal price at the post-trade reserve point differs from the pre-trade
@@ -190,7 +190,8 @@ fn isqrt(n: u128) -> u128 {
 // orders of magnitude between `validate`'s small fixed probe (~1e22, at real reserves of a
 // few thousand tokens) and the reserve-clamped extreme (~1e37) — a fixed scale that's safe at
 // one end wastes precision or overflows at the other. At the small end this resolves output
-// differences well below a nano (see NOTES.md § CU and arithmetic risk); at the clamped
+// differences well below a nano (see NOTES.md § Clamping before squaring; adaptive-precision
+// sqrt for the concavity violation this fixed); at the clamped
 // extreme, `shift` collapses to 0 (no headroom left) where nano-level precision is moot
 // anyway (the reserve itself is ~5.8e8 tokens). `shift = n.leading_zeros()/2` (integer
 // division) already keeps `2*shift <= n.leading_zeros()`, so `n << 2*shift` never loses a
@@ -244,7 +245,8 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
 
     if k_bps >= K_DEN {
         // k=1: exact zero-fee CPMM output (PMMPricing's own k==ONE special case) — the
-        // containment anchor against 001-cpmm-fee's family (NOTES.md § Nested 0-line).
+        // containment anchor against 001-cpmm-fee's family (NOTES.md § Step 0.5,
+        // "3. Containment demonstration").
         return fair.saturating_mul(v) / v.saturating_add(fair);
     }
 
@@ -421,16 +423,24 @@ fn post_trade_mid_multiply(i_old: u128, v0: u128, vp: u128, k_bps: u128) -> u128
     }
     // `vp != 0` (checked above) implies `vp2 = vp.saturating_mul(vp) != 0` — saturating
     // multiplication only ever saturates a nonzero input up to `u128::MAX`, never down to 0
-    // — so no separate `vp2 == 0` guard is needed here (unlike `divide`'s `denom_scaled == 0`
-    // check, which guards a genuinely reachable zero from `rf_denominator_scaled`).
+    // — so `vp2` (the divisor here) never needs its own zero guard. `denom_scaled` (this
+    // function's numerator) is a different matter: `rf_denominator_scaled` floors both
+    // `vp2/K_DEN` and `v02/K_DEN` to 0 whenever both reserves are under ~100 nano, so it CAN
+    // legitimately be 0 — guarded the same way `divide` guards its own `denom_scaled == 0`,
+    // since silently writing a `0` anchor here would be unrecoverable (every subsequent
+    // `compute_swap` reads `i_fp == 0` and returns 0 forever, with no trade ever occurring
+    // to correct it).
     let (denom_scaled, vp2) = rf_denominator_scaled(v0, vp, k_bps);
+    if denom_scaled == 0 {
+        return i_old;
+    }
     i_old.saturating_mul(denom_scaled) / vp2
 }
 
 /// Called after EVERY executed trade (not sampled once per step, unlike `004`/`005`'s
-/// estimators — PMM re-anchors to R=ONE on every trade by construction; NOTES.md § Anchor
-/// update rule). No sqrt: both directions are rational functions of the reconstructed
-/// pre-trade reserve and the post-trade reserve on the shortage side.
+/// estimators — PMM re-anchors to R=ONE on every trade by construction; see this file's own
+/// header comment, "ANCHOR UPDATE"). No sqrt: both directions are rational functions of the
+/// reconstructed pre-trade reserve and the post-trade reserve on the shortage side.
 pub fn after_swap(data: &[u8], storage: &mut [u8]) {
     if data.len() < 42 || storage.len() < STATE_END {
         return;
@@ -444,6 +454,13 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
         return;
     }
 
+    // Clamped the same way `anchor_price`/`compute_swap` clamp reserves before any ratio or
+    // squaring — both branches below feed `raw_ratio_price`, and clamping here is what makes
+    // that call agree with `anchor_price`'s own cold-start fallback bit-for-bit, including on
+    // `validate`'s synthetic near-`u64::MAX` reserve probes.
+    let rx_post_c = clamp_reserve(rx_post);
+    let ry_post_c = clamp_reserve(ry_post);
+
     let magic = rd_u64(storage, OFF_MAGIC);
     if magic != MAGIC {
         // First ever call: no valid pre-trade anchor exists to derive a curved re-anchor
@@ -451,7 +468,11 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
         // faithful cold-start reading, since the initial reserves encode the initial price
         // exactly (cross-cutting §4/§5).
         wr_u64(storage, OFF_MAGIC, MAGIC);
-        wr16(storage, OFF_ANCHOR_PRICE, raw_ratio_price(rx_post, ry_post));
+        wr16(
+            storage,
+            OFF_ANCHOR_PRICE,
+            raw_ratio_price(rx_post_c, ry_post_c),
+        );
         return;
     }
 
@@ -468,10 +489,15 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
     // each update depends only on the CURRENT reserves, never on the previous anchor, so no
     // error has anything to accumulate onto. This does not need `rx_pre`/`ry_pre` at all —
     // and, since it always agrees with `anchor_price`'s own cold-start fallback computed
-    // from the same live reserves, the stored anchor never actually diverges from the raw
-    // ratio at k=1 (the storage round-trip is a no-op here — see NOTES.md's note on this).
+    // from the same live (and identically clamped) reserves, the stored anchor never
+    // actually diverges from the raw ratio at k=1 (the storage round-trip is a no-op here —
+    // see NOTES.md's note on this).
     if K_BPS >= K_DEN {
-        wr16(storage, OFF_ANCHOR_PRICE, raw_ratio_price(rx_post, ry_post));
+        wr16(
+            storage,
+            OFF_ANCHOR_PRICE,
+            raw_ratio_price(rx_post_c, ry_post_c),
+        );
         return;
     }
 
@@ -496,8 +522,6 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
 
     let rx_pre_c = clamp_reserve(rx_pre);
     let ry_pre_c = clamp_reserve(ry_pre);
-    let rx_post_c = clamp_reserve(rx_post);
-    let ry_post_c = clamp_reserve(ry_post);
 
     let new_price = if side == 1 {
         post_trade_mid_divide(i_old, ry_pre_c, ry_post_c, K_BPS)

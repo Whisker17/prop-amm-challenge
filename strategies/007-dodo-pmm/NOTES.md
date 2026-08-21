@@ -53,7 +53,8 @@ source's own arithmetic is itemised here per the fidelity contract:
   `V2 = 2*k*V0^2 / (sqrt(disc) + b_abs)` instead — algebraically identical, immune to
   cancellation. A source-fidelity change forced by this repo's own checker, not a mechanism
   change.
-- **Adaptive-precision `isqrt`** (`scaled_isqrt`, see § CU and arithmetic risk below): the
+- **Adaptive-precision `isqrt`** (`scaled_isqrt`, see § Clamping before squaring;
+  adaptive-precision sqrt below): the
   source's 1e18/256-bit arithmetic has enough headroom that plain Solidity `sqrt` never
   needs this; at 1e9/u128 it does. This is new code with no Solidity analogue, added to
   satisfy `prop-amm validate`'s 1-nano concavity tolerance (see the callout below) — not a
@@ -327,7 +328,7 @@ having run it, not a substitute for a report a PASS was never meant to produce:
 | --- | --- | --- |
 | 25 | PASS (incl. native/BPF parity) | PASS — zero shape violations |
 | 400 | PASS (incl. native/BPF parity) | PASS — zero shape violations |
-| 2,500 | PASS *after* the `scaled_isqrt` fix (see § CU above for the violation this caught and fixed) | PASS — zero shape violations, both before and after the fix |
+| 2,500 | PASS *after* the `scaled_isqrt` fix (see § Clamping before squaring; adaptive-precision sqrt above for the violation this caught and fixed) | PASS — zero shape violations, both before and after the fix |
 | 10,000 | PASS (incl. native/BPF parity) | PASS — zero shape violations |
 
 **Result: PASS at all four points.** *Stop rule* ("`wontfix` if a violation survives one
@@ -337,7 +338,7 @@ rationalised quadratic and the two clamps), not deferred.
 
 ### 2. CU, once, through the BPF executor
 
-**Worst case: 6,072 CU** (§ CU and arithmetic risk above, full table there). *Stop rule*
+**Worst case: 6,072 CU** (§ Clamping before squaring; adaptive-precision sqrt above, full table there). *Stop rule*
 ("`wontfix` above ~80,000 CU") not triggered — over 13x headroom.
 
 ### 3. Containment demonstration
@@ -439,8 +440,9 @@ from the *identical* live reserves whenever it's invoked — so the stored ancho
 actually differs from what a stateless "just read the current reserves" computation would
 give. The storage round-trip is a no-op at the committed point: there is no drift left to
 attribute anything to. The `+1.31` is fully explained by `001` fee-ing the input and this
-port fee-ing the output at the same nominal `FEE_BPS` (§ Nested 0-line) plus the
-consequences of that on the exact reserve trajectory a 10,000-step simulation takes.
+port fee-ing the output at the same nominal `FEE_BPS` (§ Step 0.5, "3. Containment
+demonstration") plus the consequences of that on the exact reserve trajectory a 10,000-step
+simulation takes.
 
 **Committed value: `(K_BPS=10_000, FEE_BPS=66)`** — the boundary the pre-registered stop
 rule closes the family at, per the `WHI-1209` boundary-hit precedent this issue's own

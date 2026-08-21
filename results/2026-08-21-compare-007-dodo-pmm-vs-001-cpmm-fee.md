@@ -1,5 +1,10 @@
 # compare-007-dodo-pmm-vs-001-cpmm-fee — 2026-08-21
 
+> **Traceability note (WHI-1219 round-3 review):** see the same note in
+> `results/2026-08-21-parity-007-dodo-pmm.md` — generated at commit `5851484` from a
+> disposable scratch worktree (hence `+dirty`); later commits touched `lib.rs` only in ways
+> re-verified not to change the committed point's output.
+
 - Commit: `5851484+dirty`
 - Segment: `train`
 - Simulations: 1000
