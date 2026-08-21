@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{anchor, compare, fit, grid, l1, parity};
+use crate::commands::{anchor, compare, fit, fuzz, grid, l1, parity};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Prop AMM Challenge measurement layer")]
@@ -26,6 +26,9 @@ enum Commands {
     Grid(grid::GridArgs),
     /// L1 observability: flow share and edge per unit volume for one candidate.
     L1(l1::L1Args),
+    /// Pre-search shape-fuzz gate: hammer a candidate harder than `prop-amm validate` does,
+    /// before a frozen search spends budget on it (WHI-1212).
+    Fuzz(fuzz::FuzzArgs),
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -37,5 +40,6 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Parity(args) => parity::run(args),
         Commands::Grid(args) => grid::run(args),
         Commands::L1(args) => l1::run(args),
+        Commands::Fuzz(args) => fuzz::run(args),
     }
 }

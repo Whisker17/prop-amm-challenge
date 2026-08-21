@@ -136,6 +136,54 @@ soon — anything touching a declared high-risk path defaults to at least High),
   than a single required path. Fix: if a third baseline ever needs the same treatment,
   consider moving the default file list into `config/bench.toml` instead of a second hardcoded
   constant.
+- **`tools/bench/src/curve_checks.rs`'s mirror of `crates/sim/src/curve_checks.rs::
+  submission_shape_violation` has no automated drift-detection control** (Medium, WHI-1212).
+  `docs/DESIGN.md` §4.3 permits duplicating upstream logic only alongside a control — for
+  `fast_compile.rs`'s own duplicated `compile.rs` logic, that control is `bench parity`'s
+  per-seed output-agreement check, which would fail if the two paths' compiled *behavior*
+  ever diverged. `curve_checks.rs`'s mirror has no equivalent: it is a pure math function
+  used only by `bench fuzz`'s own gate, so nothing else in the system would fail if upstream
+  changed `submission_shape_violation`'s constants or logic and this copy silently didn't
+  follow. Mitigated, not closed, by porting one of upstream's regression tests
+  (`exposes_false_positive_from_cancellation_prone_concave_curve`) verbatim into this
+  mirror's own test module — upstream's `accepts_extensive_{analytic,piecewise}_*_matrix`
+  and normalizer-curve/runtime-path tests were not ported, since they need `rand_pcg`/
+  `rand_distr`/`BpfAmm`/`engine::run_simulation_native` machinery `tools/bench` doesn't
+  otherwise depend on. Fix: re-diff this file against `crates/sim/src/curve_checks.rs` by
+  hand at every upstream sync that touches it (the header comment says so); revisit if a
+  cheap way to assert the two copies are byte-identical (e.g. a build script diffing both
+  files) is ever worth the coupling.
+- **`bench fuzz`'s golden-section-shaped sampling is a faithful-shape mirror, not a literal
+  port of `crates/sim/src/arbitrageur.rs`'s bracket-then-golden-section search or
+  `crates/sim/src/router.rs`'s alpha-split objective** (Low, WHI-1212). `tools/bench/src/
+  fuzz.rs::golden_section_sample` runs one generic golden-section maximization of a
+  profit-like objective directly over `[MIN_INPUT, MAX_INPUT_AMOUNT]` against several
+  synthetic fair-price multipliers; it reproduces neither `arbitrageur.rs`'s doubling-growth
+  `bracket_maximum` preamble nor `router.rs`'s search over an alpha *split fraction* of a
+  fixed total order size. This was a disclosed, approved design trade-off (see the plan this
+  issue's implementation was reviewed against) made to avoid coupling `tools/bench` to two
+  more private search algorithms for a fuzz gate whose job is triggering the same
+  *check function*, not reproducing the exact economics that would lead a real arbitrageur
+  or router there. Fix: if a future violation is found at runtime that this gate's sampling
+  shape would not have reached, port the missing algorithm shape (bracket preamble, or an
+  alpha-split objective) as its own additional sample-set kind alongside the dense sweep and
+  the current golden-section one.
+- **A second, same-day, *distinct* `bench fuzz` violation on the same strategy produces no
+  committed evidence for that second violation** (Low, WHI-1212). `tools/bench/src/
+  commands/fuzz.rs::run` — `report.rs`'s one-report-per-`(day, stage)` rule (the same rule
+  that motivated dropping the PASS-path report, see this PR's own commit history) means a
+  violation found after an earlier same-day violation on the same strategy already claimed
+  today's `results/<date>-fuzz-<slug>.md` slot just prints "(violation evidence not
+  written: ... already exists)" instead of committing anything for the second one. Accepted
+  because the gate's own point is to run repeatedly and cheaply before every search — a
+  strategy author debugging a violation is expected to fix it and re-run, not accumulate
+  several same-day violations that all need separate evidence — and this exact
+  one-report-per-day tradeoff is already an accepted, precedented limitation of `report.rs`
+  (see the existing "A committed `compare` report with a regime-slice table needed a
+  non-standard filename" entry above). Fix: none needed unless a workflow emerges that
+  genuinely needs multiple same-day violation reports for one strategy; if so, a
+  `--report-suffix` flag (or a timestamp in the filename) would resolve it the same way that
+  entry's manual rename did.
 
 ---
 

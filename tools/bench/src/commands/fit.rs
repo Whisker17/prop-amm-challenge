@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use clap::Args;
 use prop_amm_shared::config::SimulationConfig;
 
+use crate::commands::resolve_strategy_lib_path;
 use crate::config::BenchConfig;
 use crate::fast_compile;
 use crate::params;
@@ -146,16 +147,7 @@ fn compile_timed(
 }
 
 pub fn run(args: FitArgs) -> anyhow::Result<()> {
-    let strategy_dir = Path::new(&args.strategy);
-    let slug = strategy_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "`--strategy` must be a directory path, got `{}`",
-                args.strategy
-            )
-        })?;
+    let (slug, lib_path) = resolve_strategy_lib_path(&args.strategy)?;
     let stage = format!("fit-{slug}");
 
     // Fail fast, before any compiling/simulating: a bad --max-points, --max-points without
@@ -181,7 +173,6 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         .max_points
         .unwrap_or_else(|| bench_config.search_max_points());
 
-    let lib_path = strategy_dir.join("lib.rs");
     let source = std::fs::read_to_string(&lib_path)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", lib_path.display()))?;
     let specs = params::parse_params_block(&source)?;

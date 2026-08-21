@@ -326,6 +326,21 @@ construction. An issue that establishes this records the reason and closes as `w
 **Provenance is mandatory.** Prose-only strategies may be second-hand or simply wrong.
 `NOTES.md` records the source, its form, and a fidelity self-assessment.
 
+**The pre-search shape-fuzz gate.** `prop-amm validate` alone probes far too little of a
+candidate's input/state space to make "passed validation" mean "won't panic mid-search" —
+10 sizes at one fixed reserve state, versus the ~10^7 instances a real 1000-sim run
+exercises. `bench fuzz --strategy <dir>` (WHI-1212) closes that gap: dense sweeps and
+golden-section-shaped sample sets, run against every `[grid]` regime corner — both on the
+CPMM invariant and randomly jittered off it — including states only reachable after a
+full-length GBM drift, in both a zeroed- and a random-byte-storage variant, mirroring
+`curve_checks.rs`'s own check. Every M1 strategy issue runs this gate before a `bench fit`
+search is allowed to spend paired-seed budget on that candidate. A PASS writes no report
+(the gate is meant to run repeatedly, before every search); a violation commits a
+`results/*.md` report naming the state and input pair — unless today's report slot for
+that strategy is already taken by an earlier run, in which case it's noted rather than
+silently dropped (`docs/DEFERRED_ISSUES.md`) — the same evidentiary role a runtime panic's
+stack trace plays for this section's `wontfix` path.
+
 ### 2.10 Convergence
 
 1. Freeze the strategy list (§6.2). Nothing is added to v1 after this point.
@@ -347,7 +362,7 @@ Every tunable falls into exactly one bucket:
 | Bucket | Where it lives | Who may change it |
 | --- | --- | --- |
 | Challenge-owned (volatility range, normalizer sampling, step count, edge formula) | `crates/shared/src/config.rs` | upstream sync only. **Never** tuned to improve a local number — the grader runs upstream's values. |
-| Ours, protocol-level (seed segments, search budget, grid levels, sim counts) | `config/bench.toml`, typed + fail-fast validated | a PR that also updates §2 |
+| Ours, protocol-level (seed segments, search budget, grid levels, sim counts, fuzz-gate sample counts) | `config/bench.toml`, typed + fail-fast validated | a PR that also updates §2 |
 | Ours, strategy-level (a family's free parameters) | the strategy's `lib.rs`, space declared in its `NOTES.md` | frozen before search (§2.4) |
 
 No parameter appears in code without a §2 or `NOTES.md` citation.
@@ -431,7 +446,8 @@ strategies/                ours — one directory per candidate
 tools/
 └── bench/                 ours — the measurement layer (workspace member)
 config/
-└── bench.toml             ours — seed segments, search budget, grid levels (§3.1)
+└── bench.toml             ours — seed segments, search budget, grid levels, fuzz-gate
+                              sample counts (§3.1)
 results/
 └── <date>-<stage>.md      ours — comparison snapshots, each carrying a commit sha
 ```
@@ -462,6 +478,7 @@ revisited only once ≥5 strategies share the same non-trivial numeric helpers (
 | `HyperparameterVariance::apply(&base, seed)` | seed → full regime, deterministic | **Yes** — lets bench label any result's regime with no upstream change |
 | `GBMPriceProcess::new(...)` | seed → exact price path | Not used in v1; the basis of L2 (§2.7) |
 | bench's fast compile path | source text → loadable dylib | **Deliberately not abstracted.** It duplicates upstream logic; the parity gate (§2.6) is the control, not an interface |
+| `tools/bench/src/curve_checks.rs`'s mirror of `crates/sim/src/curve_checks.rs::submission_shape_violation` | `bench fuzz`'s (§2.9) shape check, off the frozen-search critical path | Duplicates *private* upstream logic (`mod curve_checks;`, not `pub`, so no import exists) with **no equivalent control** — unlike the fast compile path, nothing else in the system fails if this copy drifts from upstream's. Mitigated by one ported upstream regression test; residual risk logged in `docs/DEFERRED_ISSUES.md` |
 
 ### 4.4 Core flows
 

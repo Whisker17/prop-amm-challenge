@@ -4,7 +4,8 @@ use clap::Args;
 use prop_amm_shared::config::SimulationConfig;
 
 use crate::commands::{
-    edges_agree, note_if_not_decision_input, run_prop_amm, run_prop_amm_validate,
+    edges_agree, note_if_not_decision_input, resolve_strategy_lib_path, run_prop_amm,
+    run_prop_amm_validate,
 };
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
@@ -39,18 +40,8 @@ pub struct ParityArgs {
 }
 
 pub fn run(args: ParityArgs) -> anyhow::Result<()> {
-    let strategy_dir = Path::new(&args.strategy);
-    let slug = strategy_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "`--strategy` must be a directory path, got `{}`",
-                args.strategy
-            )
-        })?;
+    let (slug, file) = resolve_strategy_lib_path(&args.strategy)?;
     let stage = format!("parity-{slug}");
-    let file = strategy_dir.join("lib.rs");
     let file_str = file.to_string_lossy().to_string();
 
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
