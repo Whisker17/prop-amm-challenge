@@ -696,8 +696,9 @@ output contradicts an entry here must flag it explicitly rather than silently ov
 7. **Concavity is a runtime panic, not a score.** Structurally incompatible designs can
    absorb unbounded effort. *Mitigation:* the `wontfix` terminal state (§2.9) for a family
    that panics **everywhere** in its frozen range. A family that panics only in part of its
-   range (three of M1's five families do — WHI-1206/1207/1210) is not this case: `bench
-   fit` handles it per-point via the `Invalid` outcome instead (§2.5, WHI-1213).
+   range (two of M1's four live families do — WHI-1207/1210; `002`/WHI-1206 is Canceled,
+   §6.2) is not this case: `bench fit` handles it per-point via the `Invalid` outcome
+   instead (§2.5, WHI-1213).
 
 **Open questions**
 
