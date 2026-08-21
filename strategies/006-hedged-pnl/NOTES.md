@@ -102,14 +102,18 @@ does not need it).
 
 ## Every error path saturates, never returns a spurious 0 (finding #6)
 
-Both `buy_output` and `sell_output` end in `raw.min(reserve_cap_x/y) as u64` — the output is
-**structurally bounded by the reserve cap** regardless of which branch (raw or tail) produced
-`raw`, so it can never exceed the live reserve and trip `crates/sim/src/amm.rs`'s
-"quote > reserve -> 0.0" guard. For a huge input (the arbitrageur brackets toward
-`MAX_INPUT_AMOUNT ~= 1.8e19` nano), both sides are already in `saturating_tail`'s branch by
-construction (see § Saturating tail below for why the switch point is always far below any
-input that large), which asymptotes toward — but never reaches — `reserve_cap`, so the output
-saturates toward the reserve, never collapses to `0`.
+Both `buy_output` and `sell_output` end in `raw.min(reserve_cap_x/y) as u64` — **this final
+clamp, not which branch produced `raw`, is the actual structural guarantee**: the output can
+never exceed the live reserve and trip `crates/sim/src/amm.rs`'s "quote > reserve -> 0.0"
+guard, regardless of branch. For realistic reserves, a huge input (the arbitrageur brackets
+toward `MAX_INPUT_AMOUNT ~= 1.8e19` nano) does land in `saturating_tail`'s branch, which
+asymptotes toward `reserve_cap` (see § Saturating tail below) — but this is not, on its own,
+airtight at an extreme reserve: `cost_buy`'s `saturating_mul` can itself saturate at a
+sufficiently large reserve, pushing `y0` (the branch threshold) far past any realistic input
+and keeping the raw branch selected instead. That does not create a bug — `invert_buy`'s own
+output is separately bounded by the same final `raw.min(reserve_cap_x)` clamp — but it means
+the true safety net is that one clamp, not "the tail always engages for huge inputs", which
+this section previously overstated.
 
 ## Saturating tail (findings #1, #6, #7)
 
@@ -134,10 +138,12 @@ happens to see:
 Past the switch, `saturating_tail` fits `reserve_cap - D/((v - switch) + C)`, choosing `C`/`D`
 so the tail is **both value- and slope-continuous** with the raw curve at the switch point (not
 just value-matched — matching the review's own weaker "kinks downward" bar with a strictly
-stronger guarantee costs one extra, cheap division). The tail is strictly increasing and
-concave for every `v` past the switch and asymptotes to `reserve_cap` without ever reaching it,
-by construction (`C, D > 0` always, given `reserve_cap > value_at_switch`, which both switch
-constructions above guarantee).
+stronger guarantee costs one extra, cheap division). In real-valued arithmetic the tail is
+strictly increasing and concave for every `v` past the switch and asymptotes to `reserve_cap`
+without ever reaching it, by construction (`C, D > 0` always, given
+`reserve_cap > value_at_switch`, which both switch constructions above guarantee) — see
+§ Precision caveat below for what the integer-truncated form actually guarantees, which is
+slightly weaker (non-decreasing, not strictly increasing at every single nano step).
 
 Verified empirically, not just algebraically: `prop-amm validate`'s strict monotonicity check
 (sizes 0.1..200 real tokens, single fixed state) and `bench fuzz`'s 324-state x 2-side sweep
@@ -146,16 +152,28 @@ Verified empirically, not just algebraically: `prop-amm validate`'s strict monot
 full-length GBM drift) both **pass with zero violations** on the first attempt — no iteration
 was needed once this construction was implemented.
 
-**Precision caveat, stated exactly (not overclaimed):** the *tail* branch is provably
-monotone (§ this section, algebraically). The *raw* branch's `invert_buy` is monotone in the
-real-valued arithmetic (§ Fidelity self-assessment's calculus), but its integer form can tick
-down by exactly 1 nano right where `isqrt`'s floor crosses to the next integer while the
-denominator also grows — a finite-precision artefact of truncating division, not a sign
-error. Finding #7's own bisection fallback exists for when this kind of error *exceeds* the
-runtime check's `QUOTE_DELTA_UNCERTAINTY_NANO = 4` tolerance; a 1-nano tick does not, so no
-gate anywhere in this repo (`validate.rs`'s coarse-grained sample sizes, or
-`curve_checks.rs`'s 4-nano-tolerant runtime check) ever observes it, which is exactly what
-the zero-violations result above confirms across 324 states. See `invert_buy`'s own doc
+**Precision caveat, stated exactly (not overclaimed) — both branches:**
+
+- The *tail* (`saturating_tail`) is monotone in real-valued arithmetic (algebraically, above),
+  but its integer form (`d / w`, truncating division) is only guaranteed **non-decreasing**,
+  not strictly increasing at every single nano step — a run of consecutive inputs can floor to
+  the same output whenever the tail's true slope there rounds below one output-nano per
+  input-nano (this is common in practice: e.g. deep in the tail, `d/w` can stay flat across
+  dozens of consecutive nano-inputs before ticking up by 1). Non-decreasing is exactly what
+  every gate in this repo actually requires (`validate.rs`'s check only fails on a *decrease*,
+  and `curve_checks.rs` merges inputs within `INPUT_MERGE_EPS_NANO = 4` of each other), so this
+  is not a gap against either gate — but "strictly increasing" was too strong a claim for the
+  integer form and is corrected here.
+- The *raw* branch's `invert_buy` is monotone in real-valued arithmetic (§ Fidelity
+  self-assessment's calculus), but its integer form can additionally tick **down** by exactly 1
+  nano right where `isqrt`'s floor crosses to the next integer while the denominator also
+  grows — a finite-precision artefact of truncating division, not a sign error. Finding #7's
+  own bisection fallback exists for when this kind of error *exceeds* the runtime check's
+  `QUOTE_DELTA_UNCERTAINTY_NANO = 4` tolerance; a 1-nano tick does not.
+
+No gate anywhere in this repo (`validate.rs`'s coarse-grained sample sizes, or
+`curve_checks.rs`'s 4-nano-tolerant runtime check) observes either effect, which is exactly
+what the zero-violations result above confirms across 324 states. See `invert_buy`'s own doc
 comment in `lib.rs` for the same note next to the code.
 
 ## Clamping before squaring (finding #7)

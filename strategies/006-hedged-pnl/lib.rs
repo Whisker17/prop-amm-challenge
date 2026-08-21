@@ -40,7 +40,7 @@ const MODEL_USED: &str = "Claude Sonnet 5";
 // SATURATING TAIL — the raw quadratic form is only used up to a switch point (a fraction
 // of the vertex for sell, a fraction of the reserve for buy); beyond it a
 // `A - B/(x+C)` tail (NOTES.md's invented adaptation, value+slope matched at the switch)
-// carries the curve strictly monotone and concave all the way to `MAX_INPUT_AMOUNT`,
+// carries the curve non-decreasing and concave all the way to `MAX_INPUT_AMOUNT`,
 // asymptoting below the live reserve (findings #1, #6, #7).
 // ============================================================================
 
@@ -56,10 +56,11 @@ const DELTA_BPS: u128 = 67; // range: 5..=200
 // ---- frozen, un-searched (NOTES.md § Frozen parameter space) -----------------
 const MIN_MID_FP: u128 = 1_000; // real price floor ~1e-6 Y/X — sanitises degenerate reserves
 const MAX_MID_FP: u128 = 1_000_000_000_000_000; // real price ceiling 1e6 Y/X — sane-band clamp (finding #5)
-                                                // Buy-side switch point (output-space fraction of the buy-side reserve cap) — the sell side
-                                                // derives its own switch differently (a fraction of its vertex, or a reserve-safe bound,
-                                                // whichever is smaller: see `sell_output`), since its raw curve has a vertex to avoid and
-                                                // the buy side's does not.
+
+// Buy-side switch point (output-space fraction of the buy-side reserve cap) — the sell side
+// derives its own switch differently (a fraction of its vertex, or a reserve-safe bound,
+// whichever is smaller: see `sell_output`), since its raw curve has a vertex to avoid and
+// the buy side's does not.
 const BUY_SWITCH_FRACTION_NUM: u128 = 1;
 const BUY_SWITCH_FRACTION_DEN: u128 = 2;
 const RESERVE_CAP_NUM: u128 = 999; // reserve cap = 99.9% of the live reserve
@@ -256,10 +257,14 @@ fn cost_sell(x: u128, sell_fp: u128, k: u128) -> u128 {
 }
 
 /// A `RESERVE_CAP - D/((v - switch) + C)` tail: value- and slope-matched to a raw
-/// increasing-concave curve at `(switch, value_at_switch)`, strictly monotone and concave
-/// for every `v > switch`, asymptoting to `reserve_cap` without ever reaching it
-/// (NOTES.md § Saturating tail). `slope_num/slope_den` is the raw curve's own slope at the
-/// switch point, kept as a fraction rather than rounded to preserve the match.
+/// increasing-concave curve at `(switch, value_at_switch)`. Monotone non-decreasing and
+/// concave for every `v > switch` in real-valued arithmetic; in this integer form it never
+/// *decreases*, though it can plateau (both at the asymptote itself, once `d/w` floors to 0
+/// for a large enough `v` — an expected, harmless property of any finite-precision
+/// asymptotic curve, not unique to this one — and, more locally, wherever the true slope
+/// rounds below one output-nano per input-nano; NOTES.md § Precision caveat). Asymptotes to
+/// `reserve_cap` without ever exceeding it. `slope_num/slope_den` is the raw curve's own
+/// slope at the switch point, kept as a fraction rather than rounded to preserve the match.
 #[inline]
 fn saturating_tail(
     v: u128,
@@ -274,9 +279,12 @@ fn saturating_tail(
     }
     let headroom = reserve_cap - value_at_switch;
     // C = headroom / slope = headroom * slope_den / slope_num, floored to at least 1 so the
-    // tail is always well-defined and strictly increasing even in a corner case where the
-    // true C would round to 0 — never a flat plateau at `reserve_cap` (that would violate
-    // validate.rs's strict monotonicity check the moment `v` grows past the switch).
+    // tail is always well-defined and never jumps straight to `reserve_cap` right at the
+    // switch, in the corner case where the true C would otherwise round to 0 (that would
+    // violate validate.rs's strict monotonicity check the moment `v` grows past the switch,
+    // since the very next sampled input would then read as a non-increase against it).
+    // `reserve_cap` is still the correct eventual limit as `v` grows without bound — this
+    // guard only keeps the *approach* to it gradual instead of immediate.
     let c = (headroom.saturating_mul(slope_den) / slope_num).max(1);
     let d = c.saturating_mul(headroom);
     let w = v.saturating_sub(switch).saturating_add(c);
@@ -331,9 +339,11 @@ fn sell_output(x_in: u128, ry: u128, mid_fp: u128) -> u64 {
     // quadratic on its increasing branch (finding: "the doc's raw formula cannot pass for
     // any k" — the vertex is at sell_fp*SCALE/k); the second guarantees
     // cost_sell(x0) <= reserve_cap_y/2 via cost_sell(x) <= sell_fp*x/SCALE regardless of k
-    // (NOTES.md § Saturating tail). `.max(1)` on each divisor is defensive only — the
-    // frozen ranges (K_SCALED >= 250000000, DELTA_BPS <= 200 so sell_fp > 0 whenever
-    // mid_fp > 0) never let either hit zero today.
+    // (NOTES.md § Saturating tail). `.max(1)` on each divisor is defensive only:
+    // `2 * K_SCALED` can never be 0 given the frozen range (K_SCALED >= 250000000); `2 *
+    // sell_fp` can't either, since the `sell_fp == 0` check just above already returns —
+    // this guard is redundant with it today, kept only against a future edit that removes
+    // that check without noticing this line depends on it.
     let vertex_half = sell_fp.saturating_mul(SCALE) / (2 * K_SCALED).max(1);
     let reserve_safe = reserve_cap_y.saturating_mul(SCALE) / (2 * sell_fp).max(1);
     let x0 = vertex_half.min(reserve_safe);
