@@ -26,6 +26,12 @@ pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, Path
     Ok((slug, strategy_dir.join("lib.rs")))
 }
 
+/// Uninformative path components [`slug_from_source_path`] climbs past, in climb order —
+/// `lib.rs` (the file itself), then `src` above it (only reached once `lib.rs` has already
+/// been stripped, since `programs/<name>/src/lib.rs` only has a `src` component directly
+/// above the file).
+const UNINFORMATIVE_PATH_COMPONENTS: [&str; 2] = ["lib.rs", "src"];
+
 /// Derives a short identifier for a `.rs` source file path — the `grid`/`l1`/`compare`
 /// equivalent of [`resolve_strategy_lib_path`]'s slug, for the subcommands that take the
 /// source file directly (`--candidate`/`--reference`/`--file`) rather than a
@@ -36,8 +42,7 @@ pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, Path
 /// valid `--candidate`/`--reference` values before this stage-naming existed and must stay
 /// valid now.
 ///
-/// If the file is named `lib.rs`, and then (transitively) if what's left is a `src`
-/// directory, walks up to the next meaningful path component — so both
+/// Climbs past each of [`UNINFORMATIVE_PATH_COMPONENTS`] in turn — so both
 /// `strategies/<slug>/lib.rs` and `programs/<name>/src/lib.rs` resolve to their meaningful
 /// directory name (`<slug>`, `<name>`) instead of the uninformative `lib`/`src` a plain
 /// `file_stem()`/immediate-parent lookup would give — but only ever climbs a level that
@@ -46,14 +51,11 @@ pub fn resolve_strategy_lib_path(strategy: &str) -> anyhow::Result<(String, Path
 /// `.rs` stripped so the result reads as an identifier rather than a filename.
 pub fn slug_from_source_path(path: &str) -> anyhow::Result<String> {
     let mut p = Path::new(path);
-    if p.file_name().and_then(|n| n.to_str()) == Some("lib.rs") {
-        if let Some(parent) = p.parent().filter(|par| par.file_name().is_some()) {
-            p = parent;
-        }
-    }
-    if p.file_name().and_then(|n| n.to_str()) == Some("src") {
-        if let Some(parent) = p.parent().filter(|par| par.file_name().is_some()) {
-            p = parent;
+    for component in UNINFORMATIVE_PATH_COMPONENTS {
+        if p.file_name().and_then(|n| n.to_str()) == Some(component) {
+            if let Some(parent) = p.parent().filter(|par| par.file_name().is_some()) {
+                p = parent;
+            }
         }
     }
     let name = p
@@ -61,19 +63,6 @@ pub fn slug_from_source_path(path: &str) -> anyhow::Result<String> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("could not derive a slug from source path `{path}`"))?;
     Ok(name.strip_suffix(".rs").unwrap_or(name).to_string())
-}
-
-/// Derives `stage`'s report slot (`report::DEFAULT_REPORT_DIR`) and fails fast — before any
-/// compiling/simulating — if today's is already taken. `grid`/`l1`/`compare` each repeat
-/// "compute a per-target stage, then claim its slot" verbatim; extracted at the same
-/// "three duplicates is worth extracting" bar [`resolve_strategy_lib_path`]'s own doc
-/// comment cites. `fit`/`parity`/`fuzz` keep calling `report::ensure_report_slot_free`
-/// directly instead of through this — `fit`'s call is conditional on `!args.no_report`,
-/// which this helper has no way to express, so converging all six sites would mean adding a
-/// parameter that only one of them needs.
-pub fn claim_report_slot(stage: String) -> anyhow::Result<String> {
-    crate::report::ensure_report_slot_free(Path::new(crate::report::DEFAULT_REPORT_DIR), &stage)?;
-    Ok(stage)
 }
 
 /// Printed once when a resolved segment isn't a decision input (docs/DESIGN.md §2.2) —

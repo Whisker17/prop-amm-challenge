@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::{claim_report_slot, note_if_not_decision_input, slug_from_source_path};
+use crate::commands::{note_if_not_decision_input, slug_from_source_path};
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, SegmentSelector};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
@@ -137,9 +137,10 @@ pub fn run(args: L1Args) -> anyhow::Result<()> {
     // disambiguate. A caller measuring several non-default files under the same primary on
     // the same day still collides; accepted for now (docs/DEFERRED_ISSUES.md).
     let primary_slug = slug_from_source_path(&args.files[0])?;
+    let stage = format!("l1-{primary_slug}");
 
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    let stage = claim_report_slot(format!("l1-{primary_slug}"))?;
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
 
     let bench_config = BenchConfig::load_default()?;
     let (segment_name, segment) = args.segment_selector.resolve(&bench_config)?;

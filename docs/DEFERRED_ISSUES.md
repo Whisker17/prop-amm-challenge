@@ -199,6 +199,17 @@ soon — anything touching a declared high-risk path defaults to at least High),
   path component would collide there too — not a new limitation this issue introduces).
   Fix: an explicit `--stage-suffix` (the issue's second, declined option) if this is ever
   hit in practice.
+- **`slug_from_source_path` doesn't sanitize its output, so an unusual path component
+  lands verbatim in a committed `results/` filename** (Low, WHI-1215).
+  `tools/bench/src/commands/mod.rs::slug_from_source_path` — a `--candidate` like
+  `strategies/a b/lib.rs` (a space) or one containing another filename-hostile character
+  produces a report path with that character in it. Not fixed here: every strategy
+  directory that exists in this repo today (`strategies/000-normalizer`,
+  `strategies/001-cpmm-fee`) already follows a fixed `NNN-kebab-case` naming convention
+  with no such characters, so this is a theoretical gap against today's actual inputs, not
+  an observed failure — adding sanitization for a shape no real strategy directory uses
+  would be speculative. Fix: sanitize (e.g. replace non-`[A-Za-z0-9_-]` bytes) if a
+  strategy or ad-hoc `.rs` file with such a name is ever actually used.
 
 ---
 
@@ -250,5 +261,7 @@ soon — anything touching a declared high-risk path defaults to at least High),
   per-target treatment (`grid-<candidate-slug>`, `l1-<primary-file-slug>`), closing the
   `grid.rs`/`l1.rs`/`compare.rs` constant-`STAGE` collision this whole entry, and WHI-1215's
   own issue, were about. `results/2026-08-20-compare-with-regime-slices.md` and every other
-  pre-existing `results/*.md` file are left untouched (docs/DESIGN.md §3.3: committed
-  evidence is never renamed after the fact) — only new reports use the new naming.
+  pre-existing `results/*.md` file are left untouched — `report.rs`'s own doc comments
+  call `results/` snapshots "committed evidence" that is "never overwritten silently", and
+  this PR only ever adds new stage names, never renames an existing file — only new
+  reports use the new naming.

@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
-use crate::commands::{claim_report_slot, slug_from_source_path};
+use crate::commands::slug_from_source_path;
 use crate::compile::{self, Slot};
 use crate::config::BenchConfig;
 use crate::grid::{self, GridCell};
@@ -45,9 +45,10 @@ pub fn run(args: GridArgs) -> anyhow::Result<()> {
     // (the issue's own "Why it blocks now": several strategies each running their own grid
     // on the same day, against the same fixed reference).
     let candidate_slug = slug_from_source_path(&args.candidate)?;
+    let stage = format!("grid-{candidate_slug}");
 
     // Fail fast, before any compiling/simulating, if today's report slot is already taken.
-    let stage = claim_report_slot(format!("grid-{candidate_slug}"))?;
+    report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
 
     let bench_config = BenchConfig::load_default()?;
     let grid_config = bench_config.grid()?;
