@@ -52,6 +52,45 @@ pub enum PointOutcome {
     Invalid(String),
 }
 
+/// Every point the coarse grid managed to evaluate was `Invalid`, so there is no valid
+/// point to start coordinate descent from (docs/DESIGN.md §2.5, §8 risk 7, WHI-1213).
+///
+/// This is the error of [`coarse_grid_then_coordinate_descent`] — the search genuinely
+/// failed and there is no fitted point — but a *typed* one carrying the measurement it did
+/// make, because blocking must not mean losing the evidence that triggered the block (the
+/// same rule `commands/fit.rs`'s single-peak-failure path follows). `commands/fit.rs`
+/// downcasts to this (`anyhow::Error::downcast`) to write the panicking vectors into a
+/// `results/` snapshot before propagating the failure: those vectors are the entire input to
+/// the two decisions this case feeds — extending a fuzz-gate corner set (WHI-1212) and
+/// routing a family that panics *everywhere* in its frozen range to §2.9's `wontfix`
+/// terminal state.
+#[derive(Debug, Clone)]
+pub struct AllGridPointsInvalid {
+    /// Every distinct point that panicked, in first-seen order, with its panic message —
+    /// the same content [`SearchOutcome::invalid`] carries when the search does find a valid
+    /// point.
+    pub invalid: Vec<(Vec<i128>, String)>,
+    /// Distinct points compiled and simulated before the search gave up. Normally exactly
+    /// `invalid.len()`; it can exceed it only for a `Valid` point whose edge never beats the
+    /// initial `f64::NEG_INFINITY` best (a NaN or `-inf` edge), which means a broken `eval`,
+    /// not a shape-check panic — reported separately rather than derived so the report can't
+    /// quietly understate how much budget was spent.
+    pub points_evaluated: usize,
+}
+
+impl std::fmt::Display for AllGridPointsInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "every evaluated grid point ({}) was invalid (a caught shape-check panic) — no \
+             valid point exists yet to start coordinate descent from",
+            self.invalid.len()
+        )
+    }
+}
+
+impl std::error::Error for AllGridPointsInvalid {}
+
 #[derive(Debug, Clone)]
 pub struct SearchOutcome {
     pub best: Vec<i128>,
@@ -89,7 +128,9 @@ pub struct SearchOutcome {
 ///
 /// Never evaluates more than `budget` points; an `eval` failure (e.g. the candidate failed
 /// to compile — a genuine error, distinct from a caught runtime panic) propagates
-/// immediately as an error.
+/// immediately as an error. If the grid phase finds no valid point at all, the error is a
+/// typed [`AllGridPointsInvalid`] carrying what was measured, so the caller can still report
+/// it (see that type).
 pub fn coarse_grid_then_coordinate_descent(
     specs: &[ParamSpec],
     budget: usize,
@@ -163,17 +204,22 @@ pub fn coarse_grid_then_coordinate_descent(
             }
         }
     }
-    let mut best_point = best_point.ok_or_else(|| {
-        if grid_invalid_count == 0 {
-            anyhow::anyhow!("search budget ({budget}) is too small to evaluate even one grid point")
-        } else {
-            anyhow::anyhow!(
-                "every evaluated grid point ({grid_invalid_count}) was invalid (a caught \
-                 shape-check panic) — no valid point exists yet to start coordinate \
-                 descent from"
-            )
+    let mut best_point = match best_point {
+        Some(point) => point,
+        None if grid_invalid_count == 0 => {
+            anyhow::bail!("search budget ({budget}) is too small to evaluate even one grid point")
         }
-    })?;
+        // Neither of these arms can reach `try_eval` again (both leave the function), so its
+        // mutable borrow of `invalid`/`points_evaluated` is already dead here and the
+        // measured evidence can be moved out into the error — see [`AllGridPointsInvalid`]
+        // for why it travels with the error rather than being dropped.
+        None => {
+            return Err(anyhow::Error::new(AllGridPointsInvalid {
+                invalid,
+                points_evaluated,
+            }))
+        }
+    };
 
     if !budget_exhausted {
         // A quarter of each dimension's range: coarse enough that the first couple of
@@ -560,6 +606,34 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(!err.to_string().contains("too small"));
+    }
+
+    #[test]
+    fn the_all_invalid_error_still_carries_every_measured_point() {
+        // The failure path must not throw away what it measured: `commands/fit.rs` downcasts
+        // this exact type to write the panicking vectors into a `results/` snapshot before
+        // propagating (WHI-1213). Downgrading it back to a bare `anyhow!` would silently
+        // lose that evidence, which is what this test exists to prevent.
+        let specs = vec![spec("x", 0, 500)];
+        let err = coarse_grid_then_coordinate_descent(&specs, 6, |p| {
+            Ok(PointOutcome::Invalid(format!("point {} panicked", p[0])))
+        })
+        .unwrap_err();
+
+        let failure = err
+            .downcast::<AllGridPointsInvalid>()
+            .expect("the all-invalid failure must stay downcastable");
+        assert!(!failure.invalid.is_empty());
+        assert_eq!(
+            failure.points_evaluated,
+            failure.invalid.len(),
+            "with no valid points, every point evaluated is an invalid one"
+        );
+        assert!(failure
+            .invalid
+            .iter()
+            .all(|(point, reason)| reason == &format!("point {} panicked", point[0])));
+        assert!(failure.to_string().contains("was invalid"));
     }
 
     #[test]

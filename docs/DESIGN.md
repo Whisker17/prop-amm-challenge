@@ -225,7 +225,10 @@ number is no longer an honest estimate.
   un-flagged. If a future fuzz-coverage gate (WHI-1212, not yet built) passes for a family
   but a search point still panics, that gap is itself the signal the gate's corner set is
   incomplete — the failing parameter vector recorded here is exactly the input needed to
-  extend it.
+  extend it. If *every* point the coarse grid evaluates panics there is no fitted point and
+  the run fails, but the snapshot is still written first (same rule as above): those vectors
+  are the whole basis for the two calls that case forces — extending that corner set, or
+  routing the family to §2.9's `wontfix` (§8 risk 7).
 
 ### 2.6 Compile paths and the parity gate
 

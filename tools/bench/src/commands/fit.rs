@@ -213,6 +213,30 @@ fn describe_optional_outcome(outcome: Option<&search::PointOutcome>) -> String {
     }
 }
 
+/// The `results/` snapshot's "Frozen parameter space" section: the declared range the search
+/// was allowed to move inside (docs/DESIGN.md §2.4).
+fn frozen_space_section(specs: &[params::ParamSpec]) -> ReportSection {
+    ReportSection {
+        heading: "Frozen parameter space".to_string(),
+        body: specs
+            .iter()
+            .map(|s| format!("- `{}` ({}): {}..={}\n", s.name, s.ty, s.min, s.max))
+            .collect::<String>(),
+    }
+}
+
+/// The `results/` snapshot's "Search budget" section. `stopped` is why the search ended —
+/// coordinate-descent convergence, the evaluation-point cap, or (WHI-1213) never finding a
+/// valid point to descend from at all.
+fn budget_section(budget: usize, spent: usize, invalid: usize, stopped: &str) -> ReportSection {
+    ReportSection {
+        heading: "Search budget".to_string(),
+        body: format!(
+            "- Cap: {budget}\n- Spent: {spent}\n- Invalid: {invalid}\n- Stopped: {stopped}\n"
+        ),
+    }
+}
+
 /// The `results/` snapshot's "Invalid points" section (docs/DESIGN.md §2.5/WHI-1213): every
 /// panicked point, by parameter vector and panic message — or an explicit "none" body, so
 /// an empty search-time panic history is a stated fact in the report rather than a missing
@@ -229,6 +253,40 @@ fn invalid_points_section(invalid: &[(Vec<i128>, String)]) -> ReportSection {
                 .collect::<String>()
         },
     }
+}
+
+/// The whole `results/` snapshot for a search that never found a single valid point
+/// (`search::AllGridPointsInvalid`, WHI-1213): there is no curve, no winner, no self-check
+/// and no train/validation re-evaluation, but the panicking vectors themselves *are* the
+/// measurement — and they are the entire input to the two decisions this case feeds
+/// (extending a WHI-1212 fuzz-gate corner set; routing a family that panics everywhere in
+/// its frozen range to docs/DESIGN.md §2.9's `wontfix`, §8 risk 7). Same "write what was
+/// measured, then fail" shape as [`run`]'s single-peak-failure path.
+fn all_invalid_report_sections(
+    specs: &[params::ParamSpec],
+    budget: usize,
+    failure: &search::AllGridPointsInvalid,
+    timings: &CompileTimings,
+) -> Vec<ReportSection> {
+    vec![
+        frozen_space_section(specs),
+        budget_section(
+            budget,
+            failure.points_evaluated,
+            failure.invalid.len(),
+            "no valid point — every point the coarse grid evaluated panicked",
+        ),
+        invalid_points_section(&failure.invalid),
+        ReportSection {
+            heading: "Fast-path compile timing".to_string(),
+            body: format!(
+                "- {}\n- Every sample is a `cargo build` invocation against the single, \
+                 reused `.build/fast/` directory (search phase only — the run never reached \
+                 the train/validation builds).\n",
+                timings.summary()
+            ),
+        },
+    ]
 }
 
 /// The single-peak self-check's verdict (docs/DESIGN.md §2.8, WHI-1213). `Inconclusive` is
@@ -314,14 +372,58 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
     let screening_configs = screening.sim_configs(&base);
 
     let mut timings = CompileTimings::new(!fast_compile::fast_build_dir_is_warm());
-    let outcome = search::coarse_grid_then_coordinate_descent(&specs, budget, |values| {
+    // Bound to a `let` rather than `?`-ed inline: the search closure's mutable borrow of
+    // `timings` ends with this statement, so the failure branch below can still read the
+    // timings the failed search collected.
+    let search_result = search::coarse_grid_then_coordinate_descent(&specs, budget, |values| {
         let rewritten = params::rewrite_params(&source, values)?;
         let safe_source = fast_compile::make_safe_source(&rewritten)?;
         let loaded = compile_timed(&safe_source, &mut timings)?;
         let point_outcome = run_batch_catching_panics(&loaded, screening_configs.clone())?;
         println!("  {values:?} -> {}", describe_outcome(&point_outcome));
         Ok(point_outcome)
-    })?;
+    });
+    let outcome = match search_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            // Every point the grid evaluated panicked (WHI-1213). The search failed — there
+            // is no fitted point to report — but "blocking must not mean losing the evidence
+            // that triggered the block" applies here exactly as it does to the single-peak
+            // failure below, and this is the case where the evidence carries the most
+            // weight: those vectors are what a §8 risk-7 `wontfix` call or a WHI-1212
+            // corner-set extension gets decided on. Any *other* search error (a failed
+            // compile, a rejected budget) measured nothing worth a snapshot — hence the `?`
+            // on `downcast`, which on a mismatch hands the original error straight back for
+            // propagation, untouched.
+            let failure = err.downcast::<search::AllGridPointsInvalid>()?;
+            println!("Search found no valid point: {failure}");
+            let evidence_note = if args.no_report {
+                "The invalid points were not written (--no-report).".to_string()
+            } else {
+                let meta = ReportMeta {
+                    stage: stage.clone(),
+                    segment: "screening".to_string(),
+                    n_sims: screening.seeds().len(),
+                    n_steps: base.n_steps,
+                    execution_path: "native (fast path)".to_string(),
+                };
+                let sections = all_invalid_report_sections(&specs, budget, &failure, &timings);
+                let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
+                format!(
+                    "The {} invalid point(s) were written to {}.",
+                    failure.invalid.len(),
+                    path.display()
+                )
+            };
+            anyhow::bail!(
+                "{failure} — this strategy has no fitted point. If its *whole* frozen range \
+                 panics, that is docs/DESIGN.md §8 risk 7: route the family to §2.9's \
+                 `wontfix` rather than absorbing more effort. If only part of it does, the \
+                 declared range needs revisiting (and the panicking vectors are exactly what \
+                 a WHI-1212 fuzz-gate corner set should have caught first). {evidence_note}"
+            );
+        }
+    };
 
     if outcome.budget_exhausted {
         println!(
@@ -343,26 +445,17 @@ pub fn run(args: FitArgs) -> anyhow::Result<()> {
         timings.summary()
     );
 
-    let frozen_space_section = ReportSection {
-        heading: "Frozen parameter space".to_string(),
-        body: specs
-            .iter()
-            .map(|s| format!("- `{}` ({}): {}..={}\n", s.name, s.ty, s.min, s.max))
-            .collect::<String>(),
-    };
-    let budget_section = ReportSection {
-        heading: "Search budget".to_string(),
-        body: format!(
-            "- Cap: {budget}\n- Spent: {}\n- Invalid: {}\n- Stopped: {}\n",
-            outcome.points_evaluated,
-            outcome.invalid.len(),
-            if outcome.budget_exhausted {
-                "budget exhausted"
-            } else {
-                "converged"
-            },
-        ),
-    };
+    let frozen_space_section = frozen_space_section(&specs);
+    let budget_section = budget_section(
+        budget,
+        outcome.points_evaluated,
+        outcome.invalid.len(),
+        if outcome.budget_exhausted {
+            "budget exhausted"
+        } else {
+            "converged"
+        },
+    );
     // Docs/DESIGN.md §2.5/WHI-1213: every point that panicked during simulation, listed by
     // parameter vector and panic message — built once and reused by both the early-bail
     // report (single-peak failure or invalid winner) and the success-path report below.
@@ -692,6 +785,45 @@ mod tests {
         assert!(section.body.contains("point 7 panicked"));
         assert!(section.body.contains("[9]"));
         assert!(section.body.contains("point 9 panicked"));
+    }
+
+    #[test]
+    fn the_all_invalid_report_states_the_budget_and_lists_every_panicking_point() {
+        // A search that never found a valid point still has to leave a `results/` snapshot
+        // behind (WHI-1213): the panicking vectors are the measurement, and the only input a
+        // §8 risk-7 `wontfix` call or a WHI-1212 corner-set extension has to work from.
+        let specs = params::parse_params_block(PANICKING_FIXTURE).unwrap();
+        let failure = search::AllGridPointsInvalid {
+            invalid: vec![
+                (vec![0i128], "shape violation at step 3".to_string()),
+                (vec![1i128], "shape violation at step 7".to_string()),
+            ],
+            points_evaluated: 2,
+        };
+        let sections =
+            all_invalid_report_sections(&specs, 300, &failure, &CompileTimings::new(false));
+
+        let headings: Vec<&str> = sections.iter().map(|s| s.heading.as_str()).collect();
+        assert_eq!(
+            headings,
+            vec![
+                "Frozen parameter space",
+                "Search budget",
+                "Invalid points",
+                "Fast-path compile timing",
+            ]
+        );
+        let text: String = sections
+            .iter()
+            .map(|s| format!("{}\n{}", s.heading, s.body))
+            .collect();
+        assert!(text.contains("`MODE`"), "unexpected report text: {text}");
+        assert!(text.contains("- Cap: 300"));
+        assert!(text.contains("- Spent: 2"));
+        assert!(text.contains("- Invalid: 2"));
+        assert!(text.contains("no valid point"));
+        assert!(text.contains("[0] -> INVALID: shape violation at step 3"));
+        assert!(text.contains("[1] -> INVALID: shape violation at step 7"));
     }
 
     #[test]
