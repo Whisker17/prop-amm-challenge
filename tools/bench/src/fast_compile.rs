@@ -414,7 +414,7 @@ mod tests {
         // WHI-1205: without this, isolation from the outer workspace's [profile.release]
         // depends on the outer `exclude` list actually covering wherever `.build/fast`
         // happens to be nested — see
-        // `a_bare_relative_build_dir_gets_folded_into_an_outer_workspace_when_nested`.
+        // `a_package_without_its_own_workspace_table_gets_folded_into_an_outer_workspace_when_nested`.
         assert!(CARGO_TOML.contains("[workspace]"));
     }
 
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_relative_build_dir_gets_folded_into_an_outer_workspace_when_nested() {
+    fn a_package_without_its_own_workspace_table_gets_folded_into_an_outer_workspace_when_nested() {
         // Reproduces WHI-1205's discovered failure mode directly (not just asserted from
         // reading cargo's docs): a package excluded from its *immediate* parent workspace
         // but nested two levels under an *outer* workspace whose `exclude` list only
@@ -492,8 +492,8 @@ mod tests {
             .unwrap();
         assert!(
             !output.status.success(),
-            "expected the bare-relative-style package (no [workspace] table) nested two \
-             levels deep to fail exactly like `.build/fast` used to"
+            "expected the package (no [workspace] table) nested two levels deep to fail \
+             exactly like `.build/fast` used to before it gained one"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(

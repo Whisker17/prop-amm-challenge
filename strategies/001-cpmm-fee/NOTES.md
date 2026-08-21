@@ -105,13 +105,16 @@ candidate structural causes named in that follow-up issue:
   *between* them.
 
 None of the four explains the 9x magnitude — the fast path's own mechanism is not at
-fault. A fresh, bounded re-measurement on this same machine — `bench fit --strategy
+fault. (The "9x" itself is measured against the 0.11s raw-build-only control; against the
+more honest build+load control below, ~0.25-0.35s, WHI-1194's 1.000s mean is closer to
+3x — still unexplained by any of the four, just a smaller gap to explain.) A fresh,
+bounded re-measurement on this same machine — `bench fit --strategy
 strategies/001-cpmm-fee --max-points 8 --no-report` (WHI-1205's new flags; see "Cheap
 verification" below) — gives **7 warm compiles: min=0.320s, mean=0.327s, max=0.343s —
 MEETS the &lt;1s target**, close to `docs/DESIGN.md` §2.6's original 0.11–0.57s estimate
 once build+load are counted together honestly.
 
-**What this does and does not establish.** The 9x gap does not reproduce on this machine
+**What this does and does not establish.** The gap does not reproduce on this machine
 today, and that is consistent with WHI-1194's environment attribution — but
 non-reproduction is not confirmation of it: this session ruling out the four named
 structural causes and getting a fast number is not proof that WHI-1194's specific
