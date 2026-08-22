@@ -68,9 +68,12 @@ never underflows; `vol_fee`'s multiply/divide and the final three-term sum are p
 arithmetic (not saturating) that relies on headroom rather than clamping — the largest
 possible residual (`u64::MAX`) times the largest possible `VOL_MULT_NUM` (`64`) is
 ~1.18e21, comfortably inside `u128`'s ~3.4e38 ceiling, so nothing overflows before the final
-`.min(MAX_FEE_1E9)` clamp bounds the result. Only `shock_fee`'s `shock_steps.saturating_mul`
-is actually saturating (inherited unchanged from the parent). `bench fuzz` (below) confirms
-this empirically, the same way it did for the parent.
+`.min(MAX_FEE_1E9)` clamp bounds the result. Of the whole formula, only two operations are
+actually saturating: `residual`'s `saturating_sub` and `shock_fee`'s
+`shock_steps.saturating_mul` (the latter inherited unchanged from the parent) — `vol_fee`'s
+multiply/divide and the final three-term sum are the plain, headroom-bounded arithmetic
+described above. `bench fuzz` (below) confirms this empirically, the same way it did for
+the parent.
 
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting finding #3) — unchanged
 
@@ -112,8 +115,12 @@ ewma-shock-decay-fee/NOTES.md` § Search) to argue 500 is a safe, still-anchored
 (the largest fee with any committed strong-high-sigma measurement, per the issue's Objective
 table above). This is legitimate as this variant's own newly-declared frozen space (§2.4
 requires freezing *before this issue's own search*, which this range does), not a
-retroactive widening of the parent's already-closed search — moot in practice here, since
-the kill rule below stops the search before any point actually exercises the new headroom.
+retroactive widening of the parent's already-closed search. The new headroom was not left
+unexercised, either: P1 below reaches all the way to `MAX_FEE_BPS=500` (the new upper
+bound) and P2 to `450` — both above the parent's old `400` ceiling — so the two
+pre-registered probes that trigger the kill rule are themselves direct evidence the widened
+range doesn't help; the 300-point coordinate-descent *search* is what never ran, not the
+widened space itself.
 
 Budget: 4 dims, 300 points -> coarse grid 3 levels/axis = 81 points, ~219 for descent (never
 spent — see § Negative result below).
