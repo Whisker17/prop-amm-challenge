@@ -881,9 +881,10 @@ through `strategies/*/NOTES.md` and closed issues.
 
 *Protocol lesson*
 
-6. **Pre-registered probes with numeric kill rules saved most of the search budget.** Three
-   of the nine post-freeze entries closed on a pre-search measurement without running their
-   300-point search: `004b`'s kill rule fired (WHI-1223); `005b`'s Probe A survived its own
+6. **Pre-registered stop rules saved most of the search budget.** Three of the nine
+   non-baseline strategy entries (§6.2 plus its variants, excluding the `000`/`001`
+   baselines) closed on a pre-search measurement without running their 300-point search:
+   `004b`'s numeric kill rule literally fired (WHI-1223); `005b`'s Probe A survived its own
    literal kill conditions, but a paired `bench compare` CI computed at the probe stage
    showed a real net loss (WHI-1225); `007` closed at its own Step 0.5 boundary hit
    (WHI-1219). In each of these three, a number produced before the search phase — not a
