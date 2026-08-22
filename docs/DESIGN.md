@@ -178,11 +178,16 @@ Each strategy therefore delivers:
 2. a **parameter space declared in `NOTES.md` and frozen before any search runs**,
 3. the fitted point, committed as the strategy's `lib.rs` — the best point measured within
    that frozen space by the family's own declared protocol, which is usually the 300-point
-   search's own convergence result but is not required to be: a pre-registered probe run
-   before the search (§2.5's own carve-out for a quick check, or this issue's own required
-   P0-style step) can measure a point the search's coarse grid never touches and that beats
-   everything the search finds within its budget — §8's "protocol lesson" 7 records the
-   first instance and the reasoning,
+   search's own convergence result but is not required to be: a pre-registered probe (this
+   issue's own required P0-style step) run before the search can measure a point the
+   search's coarse grid never touches and that beats everything the search finds within its
+   budget. §2.5's own equal-budget invariant still applies to whichever point is committed:
+   a `--max-points`/`--no-report` quick check is never sufficient on its own (§2.5 says so
+   explicitly) — the committed point's own numbers must also come from a genuine,
+   non-bypassed `bench fit`/`bench compare`/`bench parity` invocation with its own
+   `results/*.md` report, even when that invocation is run against a purpose-built
+   degenerate-range copy that pins the declared space to the single point being confirmed.
+   §8's "protocol lesson" 7 records the first instance and the reasoning,
 4. its train and validation numbers, and its CLI parity reproduction (§2.6).
 
 Freezing the space *before* searching is what makes the seed segmentation of §2.2 worth
@@ -960,20 +965,27 @@ through `strategies/*/NOTES.md` and closed issues.
    arb-vs-retail classifier, which needs the fair price, which the interface does not
    provide — so a repair would be a new strategy family, not a variant.
 
-   **`008` (WHI-1236, complete) is exactly that new family, and it holds the named
-   classifier.** Its mechanism classifies each quote's direction against a deliberately
-   lagging Kalman-filtered VWAP — the fair-price substitute this finding says the interface
-   otherwise withholds — surcharging the presumptively-informed direction and rebating the
-   presumptively-uninformed one. Ported and measured at the source's own unmodified anchor
-   point (`strategies/008-lagging-vwap-fee/NOTES.md`): validation avg edge **503.907498**, a
-   paired **+57.61** `[53.21, 62.01]` over the current leader `004` (n=1,000, CI excludes
-   zero) and a 26-of-27 win rate on the grid fragility matrix against `001-cpmm-fee` — the
-   largest margin of any M1 entry. This is this project's own measurement under §3.3's
-   protocol. It does not, by itself, isolate how much of that margin comes from the
-   classifier specifically versus the rest of the mechanism (the fee ratchet, the
-   3-profile ensemble) — no ablation separating them was run — but it is direct evidence
-   that a family built around this finding's own named gap performs strongly here, which is
-   more than this finding had before `008`.
+   **`008` (WHI-1236, complete) is a new family holding the named classifier, though not a
+   full repair of this finding's own shock-surcharge complaint specifically.** Its
+   `compute_swap` classifies each quote's direction against a deliberately lagging
+   Kalman-filtered VWAP — the fair-price substitute this finding says the interface
+   otherwise withholds — surcharging the presumptively-informed direction (`+arb_k*dev^2`)
+   and rebating the presumptively-uninformed one (`-counter_k*(...)*dev^2`)
+   (`strategies/008-lagging-vwap-fee/lib.rs::quote_profile`). But the classifier only gates
+   that `dev^2` term: the raw `shock_read_k*shock_hat`/`tox_read_k*tox_hat` additive reads
+   in the same formula are unconditional, applied to both directions exactly like this
+   finding's own complaint about `004`'s undirected shock surcharge — so `008` adds a
+   directional layer alongside the undirected one this finding named, rather than replacing
+   it. Measured at the source's own unmodified anchor point: validation avg edge
+   **503.907498**, a paired **+57.61** `[53.21, 62.01]` over the current leader `004`
+   (n=1,000, CI excludes zero) and a 26-of-27 win rate on the grid fragility matrix against
+   `001-cpmm-fee` — the largest margin of any M1 entry, and this project's own measurement
+   under §3.3's protocol. It does not, by itself, isolate how much of that margin comes from
+   the directional classifier specifically versus the rest of the mechanism (the still-
+   undirected tox/shock reads, the fee ratchet, the 3-profile ensemble) — no ablation
+   separating them was run — but it is direct evidence that a family holding a version of
+   this finding's own named gap performs strongly here, which is more than this finding had
+   before `008`.
 
 *Protocol lesson*
 

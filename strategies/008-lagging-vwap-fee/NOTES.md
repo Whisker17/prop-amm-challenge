@@ -191,21 +191,51 @@ gain bounds, switcher hysteresis thresholds) is frozen at the source's own value
 
 ### Containment
 
-Per § Fidelity self-assessment above, the usual 0-line containment demonstration (zero the
-ratchet, pin the fee, compare against `001`'s 384.82) is superseded here by the stronger
-mechanical diff for catching a *transcription* bug — there is no re-derivation for it to
-catch one in. But the spec's own stated purpose for that demonstration is narrower and
-different: **"broken plumbing"** — does *this repository's own harness* actually build,
-route, and execute this file's `compute_swap`/`after_swap` the way it's supposed to. A
-source-vs-port text diff cannot establish that; it only proves the text matches. What
-*does* establish it, and is run in its place: `prop-amm validate`'s ELF-load and
-native/BPF-parity checks, `bench fuzz`'s 324-state PASS, **the P0 plumbing/reproducibility
-check** below (the ported file reproduces the source's own committed constants' behavior
-bit-exactly, twice, through the fast compile path), `bench parity`'s exact agreement
-against `prop-amm run` on 1,000 real seeds, and `bench grid`'s 27-cell run — five
-independent executions of the actual harness against the actual compiled artifact, not a
-textual argument. If storage offsets were wired wrong, the ABI mismatched, or the fast path
-diverged from the BPF path, at least one of these would have failed; none did.
+**Run, not superseded.** Per the issue's own instruction, via the degenerate-range scratch
+method (`004b`/`005b`/`007`'s own precedent: a throwaway copy, never committed, with every
+`PARAMS` range collapsed to `MIN==MAX` at the target value): `ARB_K_BPS`/`COUNTER_K_BPS`/
+`SIZE_K_BPS` collapsed to `0..=0`, `TARGET_BASE_BPS` to `66..=66`, and — since this
+mechanism carries live non-`PARAMS` terms no `MIN==MAX` collapse can reach — the scratch
+copy additionally zeroed, by hand, every remaining source of fee variation: `P0_VOL_MULT`/
+`P0_TOX_QUAD`/`P0_TOX_CUBE`/`P0_SHOCK_QUAD`/`P0_SHOCK_CUBE` (the `after_swap` ratchet's
+non-base terms), `SIZE_FEE_K` and `PRICE_DEV_K` (the size-fee and cold-start deviation
+terms), every profile's own `*_SHOCK_K` and the `profile_params` `default_fee`/`tox_read_k`
+pair (all three set to `66bps`/`0` so the ensemble switcher's choice of active profile
+cannot matter), and the two literal, non-`PARAMS` discrete bumps in `after_swap`'s
+`make_target` closure (`tox_shock_spike`'s `+15bps`, `sv_bump`'s `+5`/`+10bps`) — none of
+which are searchable but all of which are live at every trade otherwise. Run via
+`bench fit --strategy strategies/008-0line --max-points 1 --no-report`:
+
+| Segment | n | `008-0line` avg edge | `001-cpmm-fee`'s own committed number | gap |
+| --- | --- | --- | --- | --- |
+| screening | 200 | 384.821251 | 384.820761 | **+0.00049** |
+| train | 1,000 | 406.149734 | 406.144289 | +0.005445 |
+| validation | 1,000 | 401.809011 | 401.800851 | +0.008160 |
+
+The issue's own stop rule: "any `|gap| > 0.05` on screening means broken plumbing." Measured
+screening gap **0.00049** — two orders of magnitude under that threshold, and under the
+issue's own predicted magnitude ("under 0.01") too. The issue predicted the sign would be
+*negative* (this port's own floor-rounded output path giving the pool less than `001`'s
+ceil-rounded path); measured here it is *positive*, by less than half a thousandth of an
+edge unit — the same sign-flip-within-a-tiny-predicted-magnitude `007`'s own NOTES.md
+records for its own containment check, read there (and here) as implementation-detail
+rounding noise around a genuinely near-zero effective gap, not a plumbing defect.
+`008-0line` is never committed; no `results/*.md` report is written for it (a `--no-report`
+quick check, per docs/DESIGN.md §2.5), and this table is this port's own record of having
+run it.
+
+**A second, independent line of evidence, for the risk the literal demonstration does not
+cover.** The table above rules out broken plumbing at the 0-line boundary; it does not by
+itself rule out a transcription bug elsewhere in the ~40 constants and control flow the
+0-line collapse never exercises differentially (since everything is flattened to one
+formula there). For that, § Fidelity self-assessment's machine-verified normalized diff
+against the pristine source is strictly stronger evidence than a re-derivation's own 0-line
+check could be: it shows there is no re-derivation step to have introduced a transcription
+bug in. `prop-amm validate`'s parity checks, `bench fuzz`'s 324-state PASS, the P0
+plumbing/reproducibility check below, `bench parity`'s exact agreement against `prop-amm
+run`, and `bench grid`'s 27-cell run are five further, independent executions of the actual
+compiled artifact through the actual harness — none of which would have passed if storage
+offsets were wired wrong, the ABI mismatched, or the fast path diverged from the BPF path.
 
 ## The pre-registered probe (WHI-1236)
 
@@ -215,17 +245,29 @@ diverged from the BPF path, at least one of these would have failed; none did.
 
 Verbatim source constants (`ARB_K_BPS=5200, COUNTER_K_BPS=1000, TARGET_BASE_BPS=16,
 SIZE_K_BPS=2900`) on the 200 `screening` seeds, via the degenerate-range scratch method
-(`004b`/`007`'s own precedent: a throwaway copy with the PARAMS range collapsed to
-`MIN==MAX` at the committed value, `bench fit --max-points 1 --no-report`, never
-committed), **run twice**:
+(`004b`/`005b`/`007`'s own precedent: a throwaway copy with the `PARAMS` range collapsed to
+`MIN==MAX` at the committed value, never committed), **run three times**: twice as a quick,
+uncommitted check (`bench fit --max-points 1 --no-report`), then once more as a genuine,
+unbounded `bench fit` invocation (no `--max-points`, no `--no-report`) — which produces an
+official `results/*.md` report in its own right, per docs/DESIGN.md §2.5's own rule that a
+bounded/`--no-report` run can never itself stand as a committed point's evidence:
 
-| Run | Screening avg edge (n=200) |
-| --- | --- |
-| 1 | 478.537310 |
-| 2 | 478.537310 |
+| Run | Kind | Screening avg edge (n=200) |
+| --- | --- | --- |
+| 1 | quick check, `--max-points 1 --no-report` | 478.537310 |
+| 2 | quick check, `--max-points 1 --no-report` | 478.537310 |
+| 3 | genuine `bench fit`, no bypass flags — `results/2026-08-22-fit-008-lagging-vwap-fee-anchor.md` | 478.537310 |
 
-**Bit-identical to the last digit, both runs.** Train/validation re-evaluation of the same
-point (also bit-identical across both runs): **train 509.422465, validation 503.907498.**
+**Bit-identical to the last digit, all three runs.** Train/validation re-evaluation of the
+same point (also bit-identical across all three, including the officially reported run):
+**train 509.422465, validation 503.907498.** The officially reported run's own budget
+accounting shows `Spent: 1` against the degenerate copy's own single-point declared
+space — this is **not** charged against `008`'s own 300-point family budget below (§ 5),
+which searches the family's real, full-width frozen space and is accounted separately; the
+degenerate copy is never committed, exists only to route this specific point through the
+same non-bypassed reporting machinery every other committed number in this project goes
+through, and the same convention `004b`/`005b`/`007` already establish for a pre-search
+anchor/probe check.
 
 ### 3. Kill rule, applied to P0's screening number
 
@@ -253,10 +295,12 @@ matches `prop-amm run`'s own avg edge exactly.
 segment, common random numbers): **converged after 172 of 300 points** (coarse grid over
 each dimension's endpoints/midpoint, then coordinate descent; 0 invalid points). The
 report's own compile-timing line flags fast-path compiles exceeding the `<1s` target during
-this run — not investigated further, since P0's separately-measured warm compiles (§ 2
-above) were well under 1s on the same machine; read as transient system contention from
-this run's 172 back-to-back compiles rather than a fast-path regression, and it has no
-bearing on the correctness of the measured edge numbers either way.
+this run — not investigated further (no independent per-strategy compile-timing baseline
+was measured for this port to compare against; P0's own runs used `--no-report` and record
+no timings). This is a wall-clock observation about the machine this search happened to run
+on, not a code-shape claim, and has no bearing on the correctness of the measured edge
+numbers, which reproduced bit-identically across two independent runs of this same search
+(§ Verification).
 
 **Winning point:** `ARB_K_BPS=26480, COUNTER_K_BPS=7, TARGET_BASE_BPS=14, SIZE_K_BPS=3378`
 — screening avg edge **472.288277**, train **502.748645**, validation **497.705855**
@@ -296,11 +340,14 @@ committed `PARAMS` block is therefore the source's own unmodified `P0` values.
 
 **Boundary hits, flagged:** the committed point (`5200, 1000, 16, 2900`) sits strictly
 interior to all four declared ranges — not a boundary artifact. The *non-adopted* search
-winner is a different story: `COUNTER_K_BPS=7` sits at the low end of its `0..=4600` range
-(effectively pinned near its floor) and `ARB_K_BPS=26480` sits at 96.9% of its `27333` max
-— both near a boundary, consistent with coordinate descent pushing outward from its own
-coarse-grid corner starts rather than settling on an interior optimum within budget. Neither
-boundary-hugging value is committed.
+winner's `COUNTER_K_BPS=7` and `ARB_K_BPS=26480` are numerically close to their `0` and
+`27333` range extremes, but checking the evaluated curve rules out a genuine boundary
+artifact for either: coordinate descent tried both neighbors on each dimension
+(`COUNTER_K_BPS in {6,7,8}` at 472.229/472.288/472.275; `ARB_K_BPS in {26479,26480,26481}`
+at 472.177/472.288/472.213 — both single-dimension peaks at the reported value, not
+monotone toward the bound), so these are genuine interior local optima that happen to sit
+near an edge, not values the search was pushed against a wall to reach. Neither is
+committed either way.
 
 ### 6. `bench grid` — the 27-cell fragility matrix, against `001-cpmm-fee`
 
@@ -367,11 +414,14 @@ number from the source repository counted as evidence at any point in this measu
       `profile_params`/`raw_edge_sample`/`score_one_profile`/`handle_after_swap`, the
       isolated 1024-byte storage frame) is preserved verbatim, same functions and order as
       the source.
-- [x] Proceeded past P0: near-exact containment addressed via the stronger mechanical-diff
-      argument (§ Fidelity self-assessment; § Containment); fitted point (the anchor, not
-      the search's own inferior point) with train/validation/observation (§ Summary table);
-      `bench grid` produced (§ 6); the search's own boundary/local-optimum behavior is
-      flagged (§ 5).
+- [x] Proceeded past P0: near-exact containment demonstrated with the predicted-gap
+      threshold applied — screening gap **+0.00049** against `001`'s 384.820761, two orders
+      of magnitude under the issue's own `|gap| > 0.05` stop rule (§ Containment), plus the
+      stronger mechanical-diff argument for the transcription-bug risk that check doesn't
+      cover (§ Fidelity self-assessment); fitted point (the anchor, not the search's own
+      inferior point) with train/validation/observation (§ Summary table); `bench grid`
+      produced (§ 6); boundary hits flagged (§ 5 — the committed anchor is interior to all
+      four ranges; the non-adopted search winner is not).
 - [x] A companion docs task records the §6.2/§2.10 post-freeze exception — already landed
       (`WHI-1237`, merged prior to this issue's own porting work).
 - [x] `cargo test --workspace` green; fmt/clippy per `AGENTS.md` (see PR description for
@@ -383,8 +433,15 @@ number from the source repository counted as evidence at any point in this measu
   monotonicity, concavity, randomized-storage checks, native/BPF parity).
 - `bench fuzz --strategy strategies/008-lagging-vwap-fee`: PASS, zero shape violations,
   324 states x 2 sides.
-- `bench fit --strategy strategies/008-degenerate --max-points 1 --no-report` (scratch,
+- `bench fit --strategy <degenerate anchor copy> --max-points 1 --no-report` (scratch,
   never committed), run twice: bit-identical screening/train/validation.
+- `bench fit --strategy <degenerate anchor copy>` (no bypass flags — a genuine, officially
+  reported run against the collapsed single-point space):
+  `results/2026-08-22-fit-008-lagging-vwap-fee-anchor.md`, bit-identical to both quick
+  checks above.
+- `bench fit --strategy <degenerate 0-line copy> --max-points 1 --no-report` (scratch,
+  never committed, every non-`PARAMS` fee-variation source hand-zeroed too): screening
+  384.821251 against `001`'s own committed 384.820761, gap +0.00049 (§ Containment).
 - `bench parity --strategy strategies/008-lagging-vwap-fee`: PASS, exact native/BPF/`prop-amm
   run` agreement.
 - `bench fit --strategy strategies/008-lagging-vwap-fee`: converged 172/300, non-adopted
