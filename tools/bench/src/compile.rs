@@ -130,11 +130,14 @@ impl LoadedNative {
     /// WHI-1225's Probe A "Added scope": runs this candidate (expected to be
     /// `004-ewma-shock-decay-fee`) alongside a shadow accumulator that replicates its own
     /// `ewma_vol` EWMA and records its floor-sweep distribution — see `estimator_probe.rs`.
+    /// `floor_bps` is config-driven (`config/bench.toml`'s `[estimator_probe]` table), not a
+    /// Rust constant (docs/DESIGN.md §3.1).
     pub fn run_batch_with_004_floor_probe(
         &self,
         configs: &[SimulationConfig],
+        floor_bps: &[u64],
     ) -> anyhow::Result<Vec<estimator_probe::Ewma004ProbeSim>> {
-        estimator_probe::run_004_floor_probe(self.swap_fn, self.after_swap_fn, configs)
+        estimator_probe::run_004_floor_probe(self.swap_fn, self.after_swap_fn, configs, floor_bps)
     }
 }
 

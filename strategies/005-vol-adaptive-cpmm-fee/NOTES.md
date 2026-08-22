@@ -373,6 +373,23 @@ variant, not part of this port):
   Fixing the divisor would be a genuine improvement, filed as a `005b` variant candidate, not
   folded into this faithful port.
 
+**Addendum (2026-08-22, WHI-1225): the divisor bias predicted above is now directly
+measured, not just anticipated.** `005b`'s own Probe A (`bench estimator-probe`,
+`strategies/005b-elapsed-steps-divisor-fix/NOTES.md`) replicates both normalizations from a
+real run of this committed strategy over the 200 screening seeds: mean `sigma_hat` across
+**all** seeds drops from 53.805 (this port's `var_sum/count`) to 34.645 under the corrected
+`var_sum/elapsed_sum` — a 35.6% reduction, broader across the sigma range than this section's
+own "low-vol regimes specifically" framing anticipated. At this port's own fitted map
+(`FEE_LO=5, A_NUM=13, B_DEN=1265`), that translates to a mean fee drop of ~26 bps. The
+inherited "MLE of stationary variance" comment on `fee_from_state`'s `variance` line (this
+file's own committed `lib.rs`) is accurate as a description of what the source *intends*, but
+this measurement confirms `count` (as opposed to elapsed steps) is precisely why the estimate
+this port ships is not that MLE whenever a sample spans a multi-step gap — left uncorrected
+here per the same §2.9 rationale above (an improvement is `005b`'s job, not this faithful
+port's). `005b` itself closed as a **pre-registered negative** — the bias is real and larger
+than expected, but the parent's own fitted map does not tolerate the correction without a
+refit, and the refit search was never run (see that issue's own NOTES.md for why).
+
 ## Compute units (docs/DESIGN.md §2.9, cross-cutting finding #9)
 
 No bench tooling exposes measured CU headroom today (`prop-amm validate` doesn't report it,

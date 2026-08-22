@@ -4,8 +4,8 @@ use clap::Args;
 use prop_amm_shared::config::{SimulationConfig, BASELINE_STEPS};
 
 use crate::compile::{self, Slot};
-use crate::config::BenchConfig;
-use crate::estimator_probe::{Ewma004ProbeSim, Vol005ProbeSim, FLOOR_BPS};
+use crate::config::{BenchConfig, EstimatorProbeConfig};
+use crate::estimator_probe::{Ewma004ProbeSim, Vol005ProbeSim};
 use crate::report::{self, ReportMeta, ReportSection, DEFAULT_REPORT_DIR};
 use crate::stats;
 
@@ -63,9 +63,12 @@ struct KillEvaluation {
 }
 
 /// Evaluates WHI-1225's two pre-registered kill conditions against a completed Probe A run.
-/// Pure function of the measured per-seed data — no I/O, so it's directly unit-testable
-/// against synthetic `Vol005ProbeSim` fixtures.
-fn evaluate_kill_conditions(sims: &[Vol005ProbeSim]) -> KillEvaluation {
+/// Pure function of the measured per-seed data (plus the configured thresholds) — no I/O, so
+/// it's directly unit-testable against synthetic `Vol005ProbeSim` fixtures.
+fn evaluate_kill_conditions(
+    sims: &[Vol005ProbeSim],
+    probe_config: &EstimatorProbeConfig,
+) -> KillEvaluation {
     let true_sigmas: Vec<f64> = sims.iter().map(|s| s.true_sigma).collect();
     let (low, _mid, high) = tercile_indices(&true_sigmas);
 
@@ -74,8 +77,9 @@ fn evaluate_kill_conditions(sims: &[Vol005ProbeSim]) -> KillEvaluation {
         .map(|&i| sims[i].count as f64 / sims[i].n_steps as f64)
         .collect();
     let median_count_ratio_low = stats::median(&count_ratios_low).unwrap_or(f64::NAN);
-    // Kill (i): median count/n_steps > 0.9 on the low-sigma tercile.
-    let kill_i_triggered = median_count_ratio_low > 0.9;
+    // Kill (i): median count/n_steps exceeds the configured threshold on the low-sigma tercile.
+    let kill_i_triggered =
+        median_count_ratio_low > probe_config.low_sigma_count_ratio_kill_threshold;
 
     let mean_of = |indices: &[usize], f: fn(&Vol005ProbeSim) -> f64| -> f64 {
         let sum: f64 = indices.iter().map(|&i| f(&sims[i])).sum();
@@ -112,8 +116,10 @@ fn evaluate_kill_conditions(sims: &[Vol005ProbeSim]) -> KillEvaluation {
         (None, Some(_)) => true,
         _ => false,
     };
-    // Kill (ii): decompression < ~15% AND no rank-correlation improvement.
-    let kill_ii_triggered = decompression_pct < 15.0 && !rank_correlation_improved;
+    // Kill (ii): decompression under the configured threshold AND no rank-correlation
+    // improvement.
+    let kill_ii_triggered = decompression_pct < probe_config.decompression_kill_threshold_pct
+        && !rank_correlation_improved;
 
     KillEvaluation {
         low_tercile_n: low.len(),
@@ -129,13 +135,16 @@ fn evaluate_kill_conditions(sims: &[Vol005ProbeSim]) -> KillEvaluation {
     }
 }
 
-fn kill_evaluation_section(eval: &KillEvaluation) -> ReportSection {
+fn kill_evaluation_section(
+    eval: &KillEvaluation,
+    probe_config: &EstimatorProbeConfig,
+) -> ReportSection {
     let verdict = if eval.kill_i_triggered {
         "KILL (i) TRIGGERED — the divisor fix is arithmetically a <=5% sigma-hat change, \
          dead on arrival."
     } else if eval.kill_ii_triggered {
-        "KILL (ii) TRIGGERED — dynamic-range decompression under ~15% with no rank-\
-         correlation improvement; the shape thesis is dead even if the level shifts."
+        "KILL (ii) TRIGGERED — dynamic-range decompression under the configured threshold with \
+         no rank-correlation improvement; the shape thesis is dead even if the level shifts."
     } else {
         "NEITHER KILL CONDITION TRIGGERED — Probe A does not close this lane; proceed to \
          Probe B (docs/DESIGN.md's own scratch degenerate-range method)."
@@ -146,14 +155,15 @@ fn kill_evaluation_section(eval: &KillEvaluation) -> ReportSection {
         body: format!(
             "- Low-sigma tercile: {} seeds; high-sigma tercile: {} seeds.\n\
              - **Kill (i)**: median `count/n_steps` on the low-sigma tercile = {:.6} \
-             (threshold: > 0.9) -> {}\n\
+             (threshold, `config/bench.toml` `[estimator_probe]`: > {}) -> {}\n\
              - **Kill (ii)** inputs: dynamic range old = {:.6}, new = {:.6}, decompression = \
-             {:.2}% (threshold: < ~15%); Spearman(sigma_hat_old, true_sigma) = {}, \
+             {:.2}% (threshold: < {}%); Spearman(sigma_hat_old, true_sigma) = {}, \
              Spearman(sigma_hat_new, true_sigma) = {} -> {}\n\n\
              ### Verdict\n\n{verdict}\n",
             eval.low_tercile_n,
             eval.high_tercile_n,
             eval.median_count_ratio_low,
+            probe_config.low_sigma_count_ratio_kill_threshold,
             if eval.kill_i_triggered {
                 "TRIGGERED"
             } else {
@@ -162,6 +172,7 @@ fn kill_evaluation_section(eval: &KillEvaluation) -> ReportSection {
             eval.dynamic_range_old,
             eval.dynamic_range_new,
             eval.decompression_pct,
+            probe_config.decompression_kill_threshold_pct,
             fmt_opt(eval.spearman_old),
             fmt_opt(eval.spearman_new),
             if eval.kill_ii_triggered {
@@ -207,17 +218,21 @@ fn per_seed_005_section(sims: &[Vol005ProbeSim]) -> ReportSection {
     }
 }
 
-fn floor_sweep_section(sims: &[Ewma004ProbeSim]) -> ReportSection {
+fn floor_sweep_section(sims: &[Ewma004ProbeSim], floor_bps: &[u64]) -> ReportSection {
     let true_sigmas: Vec<f64> = sims.iter().map(|s| s.true_sigma).collect();
     let (low, mid, high) = tercile_indices(&true_sigmas);
     let terciles: [(&str, &[usize]); 3] = [("Low", &low), ("Mid", &mid), ("High", &high)];
 
     let mut body = String::from(
         "WHI-1223's own open question, answered per WHI-1225's \"Added scope\": `004`'s \
-         `ewma_vol` fraction of sampled steps at-or-below each `FLOOR_BPS` (the full range \
-         the `004b` issue froze, `0..=60`), bucketed by this run's own `true_sigma` tercile, \
-         both by step count and by executed Y-volume.\n\n\
-         | sigma tercile | n seeds | floor (bps) | fraction of steps <= floor | fraction of \
+         `ewma_vol` fraction of **executed submission trades** at-or-below each floor (the \
+         full range the `004b` issue froze, `0..=60` bps, from `config/bench.toml`'s \
+         `[estimator_probe]` table), bucketed by this run's own `true_sigma` tercile, both by \
+         trade count and by executed Y-volume. `004` updates `ewma_vol` on every executed \
+         submission trade with no per-simulation-step dedup, so this is a fraction of trades, \
+         **not** of simulation steps — a step where the router sent the submission no flow \
+         contributes to neither the numerator nor the denominator.\n\n\
+         | sigma tercile | n seeds | floor (bps) | fraction of trades <= floor | fraction of \
          volume <= floor |\n\
          | --- | --- | --- | --- | --- |\n",
     );
@@ -225,9 +240,9 @@ fn floor_sweep_section(sims: &[Ewma004ProbeSim]) -> ReportSection {
         if indices.is_empty() {
             continue;
         }
-        for (i, &floor_bps) in FLOOR_BPS.iter().enumerate() {
-            let total_steps: u64 = indices.iter().map(|&idx| sims[idx].total_steps).sum();
-            let below_steps: u64 = indices
+        for (i, &floor) in floor_bps.iter().enumerate() {
+            let total_trades: u64 = indices.iter().map(|&idx| sims[idx].total_steps).sum();
+            let below_trades: u64 = indices
                 .iter()
                 .map(|&idx| sims[idx].below_floor_steps[i])
                 .sum();
@@ -236,8 +251,8 @@ fn floor_sweep_section(sims: &[Ewma004ProbeSim]) -> ReportSection {
                 .iter()
                 .map(|&idx| sims[idx].below_floor_volume[i])
                 .sum();
-            let step_frac = if total_steps > 0 {
-                below_steps as f64 / total_steps as f64
+            let trade_frac = if total_trades > 0 {
+                below_trades as f64 / total_trades as f64
             } else {
                 f64::NAN
             };
@@ -247,7 +262,7 @@ fn floor_sweep_section(sims: &[Ewma004ProbeSim]) -> ReportSection {
                 f64::NAN
             };
             body.push_str(&format!(
-                "| {label} | {} | {floor_bps} | {step_frac:.4} | {volume_frac:.4} |\n",
+                "| {label} | {} | {floor} | {trade_frac:.4} | {volume_frac:.4} |\n",
                 indices.len(),
             ));
         }
@@ -263,6 +278,7 @@ pub fn run(args: EstimatorProbeArgs) -> anyhow::Result<()> {
 
     let bench_config = BenchConfig::load_default()?;
     let screening = bench_config.segment("screening")?;
+    let probe_config = bench_config.estimator_probe()?;
     let base = SimulationConfig {
         n_steps: args.steps,
         ..SimulationConfig::default()
@@ -290,9 +306,10 @@ pub fn run(args: EstimatorProbeArgs) -> anyhow::Result<()> {
         configs.len(),
         args.steps,
     );
-    let sims_004 = loaded_004.run_batch_with_004_floor_probe(&configs)?;
+    let sims_004 =
+        loaded_004.run_batch_with_004_floor_probe(&configs, &probe_config.floor_bps_sweep)?;
 
-    let eval = evaluate_kill_conditions(&sims_005);
+    let eval = evaluate_kill_conditions(&sims_005, probe_config);
     println!(
         "Kill (i): median count/n_steps (low tercile) = {:.6} -> {}",
         eval.median_count_ratio_low,
@@ -320,8 +337,8 @@ pub fn run(args: EstimatorProbeArgs) -> anyhow::Result<()> {
         execution_path: "native".to_string(),
     };
     let sections = vec![
-        kill_evaluation_section(&eval),
-        floor_sweep_section(&sims_004),
+        kill_evaluation_section(&eval, probe_config),
+        floor_sweep_section(&sims_004, &probe_config.floor_bps_sweep),
         per_seed_005_section(&sims_005),
     ];
     let path = report::write_report(Path::new(DEFAULT_REPORT_DIR), &meta, &sections)?;
@@ -333,6 +350,17 @@ pub fn run(args: EstimatorProbeArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The thresholds this file used before they moved to `config/bench.toml` — kept as the
+    /// test fixture so the existing test expectations (written against those exact numbers)
+    /// don't need rederiving.
+    fn test_probe_config() -> EstimatorProbeConfig {
+        EstimatorProbeConfig {
+            low_sigma_count_ratio_kill_threshold: 0.9,
+            decompression_kill_threshold_pct: 15.0,
+            floor_bps_sweep: vec![0, 10, 20, 25, 30, 40, 60],
+        }
+    }
 
     /// Test fixture constructor. `sigma_hat_old`/`sigma_hat_new` are passed explicitly rather
     /// than derived from `count`/`elapsed_sum` — these tests exercise the report/kill-
@@ -382,7 +410,7 @@ mod tests {
             sim(5, 0.006, 3_000, 3_100, 50.0, 49.0),
             sim(6, 0.007, 3_000, 3_100, 51.0, 50.0),
         ];
-        let eval = evaluate_kill_conditions(&sims);
+        let eval = evaluate_kill_conditions(&sims, &test_probe_config());
         assert!(eval.kill_i_triggered, "expected kill (i) to trigger");
     }
 
@@ -396,7 +424,7 @@ mod tests {
             sim(5, 0.006, 8_000, 8_100, 50.0, 49.0),
             sim(6, 0.007, 8_500, 8_600, 51.0, 50.0),
         ];
-        let eval = evaluate_kill_conditions(&sims);
+        let eval = evaluate_kill_conditions(&sims, &test_probe_config());
         assert!(!eval.kill_i_triggered, "did not expect kill (i) to trigger");
         assert!(eval.median_count_ratio_low < 0.9);
     }
@@ -413,7 +441,7 @@ mod tests {
                 sim(i, sigma, 100 + i * 50, 100 + i * 50, sigma_hat, sigma_hat)
             })
             .collect();
-        let eval = evaluate_kill_conditions(&sims);
+        let eval = evaluate_kill_conditions(&sims, &test_probe_config());
         assert!((eval.decompression_pct).abs() < 1e-9);
         assert!(eval.kill_ii_triggered, "expected kill (ii) to trigger");
     }
@@ -433,7 +461,7 @@ mod tests {
             sim(8, 0.0069, 9_850, 9_900, 57.0, 60.0),
             sim(9, 0.007, 9_900, 9_950, 58.0, 61.0),
         ];
-        let eval = evaluate_kill_conditions(&sims);
+        let eval = evaluate_kill_conditions(&sims, &test_probe_config());
         assert!(eval.decompression_pct > 15.0);
         assert!(
             !eval.kill_ii_triggered,
@@ -443,24 +471,25 @@ mod tests {
 
     #[test]
     fn floor_sweep_section_reports_every_tercile_and_floor() {
+        let floor_bps = test_probe_config().floor_bps_sweep;
         let sims: Vec<Ewma004ProbeSim> = (0..9u64)
             .map(|i| {
                 let sigma = 0.0001 + (i as f64) * 0.0008;
                 Ewma004ProbeSim {
                     seed: i,
                     true_sigma: sigma,
-                    below_floor_steps: [10, 20, 30, 35, 40, 50, 60],
+                    below_floor_steps: vec![10, 20, 30, 35, 40, 50, 60],
                     total_steps: 100,
-                    below_floor_volume: [100.0, 200.0, 300.0, 350.0, 400.0, 500.0, 600.0],
+                    below_floor_volume: vec![100.0, 200.0, 300.0, 350.0, 400.0, 500.0, 600.0],
                     total_volume: 1_000.0,
                 }
             })
             .collect();
-        let section = floor_sweep_section(&sims);
+        let section = floor_sweep_section(&sims, &floor_bps);
         assert!(section.body.contains("Low"));
         assert!(section.body.contains("Mid"));
         assert!(section.body.contains("High"));
-        for floor in FLOOR_BPS {
+        for floor in floor_bps {
             assert!(section.body.contains(&floor.to_string()));
         }
     }

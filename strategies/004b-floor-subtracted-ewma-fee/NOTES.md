@@ -224,16 +224,23 @@ files contain a direct measurement of `ewma_vol`'s time-distribution across sigm
 so this account should be read as a hypothesis consistent with the measured P1/P2 losses,
 not as an independently confirmed causal chain.
 
-**Addendum (2026-08-22, WHI-1225): this is now a direct measurement, not just a hypothesis.**
-`WHI-1225`'s own Probe A (`bench estimator-probe`, `strategies/005b-elapsed-steps-divisor-fix/
-NOTES.md` § Added scope) replicates `ewma_vol` from a real run and records its time- and
-volume-weighted distribution against a floor sweep, bucketed by true-sigma tercile. Result:
-even in the **Low** sigma tercile (the calmest third of the sampled range, not an extreme
-tail), `ewma_vol` sits at or below 25 bps on **56.2%** of sampled steps (30.7% of executed
-volume) and at or below 30 bps on **70.3%** of steps (44.1% of volume) — exactly the two
-floors P2 and P1 used above. The proposed mechanism is confirmed: at these floor levels the
-residual is zeroed on a majority of calm-regime steps, which is why both probe points lost.
-Full table: `results/2026-08-22-estimator-probe-005b.md`.
+**Addendum (2026-08-22, WHI-1225): this is now a direct measurement, substantiating (not yet
+independently confirming) the hypothesis above.** `WHI-1225`'s own Probe A (`bench
+estimator-probe`, `strategies/005b-elapsed-steps-divisor-fix/NOTES.md` § Added scope)
+replicates `ewma_vol` from a real run and records its trade- and volume-weighted distribution
+against a floor sweep, bucketed by true-sigma tercile (`ewma_vol` updates on every executed
+submission trade, with no per-simulation-step dedup, so this is a fraction of trades, not of
+simulation steps). Result: even in the **Low** sigma tercile (the calmest third of the sampled
+range, not an extreme tail), `ewma_vol` sits at or below 25 bps on **56.2%** of executed trades
+(30.7% of volume) and at or below 30 bps on **70.3%** of trades (44.1% of volume) — exactly the
+two floors P2 and P1 used above. This is now a directly measured distribution, not just a
+plausible-sounding account — it shows `ewma_vol` genuinely does spend a majority of calm-regime
+trades at or below the floors P1/P2 used, the necessary premise for the proposed causal chain.
+It is not, on its own, sufficient proof that the residual-zeroing this measurement makes
+possible is *the* reason both probe points lost (that would need the residual's own
+contribution to the fee, and the specific loss cells, traced through) — but it substantially
+strengthens the account beyond "a hypothesis consistent with the measured losses." Full table:
+`results/2026-08-22-estimator-probe-005b.md`.
 
 **The committed value is the containment point, `(BASE_BPS=34, VOL_MULT_NUM=8,
 FLOOR_BPS=0, MAX_FEE_BPS=391)` — a bit-exact tie with the parent, not an interior optimum.**
