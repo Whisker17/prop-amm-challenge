@@ -71,6 +71,19 @@ struct RawFuzzConfig {
     golden_max_iters: usize,
 }
 
+// `bench estimator-probe`'s own pre-registered kill-condition thresholds and floor sweep
+// (WHI-1225, docs/DESIGN.md §3.1) — "ours, protocol-level" for the same reason `[fuzz]`'s own
+// sample counts are: a future change to either threshold, or to the floor sweep, is a config
+// edit, not a recompile. `deny_unknown_fields` for the same fail-fast reason as the other Raw*
+// structs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEstimatorProbeConfig {
+    low_sigma_count_ratio_kill_threshold: f64,
+    decompression_kill_threshold_pct: f64,
+    floor_bps_sweep: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBenchConfig {
@@ -80,6 +93,7 @@ struct RawBenchConfig {
     search: Option<RawSearchConfig>,
     grid: Option<RawGridConfig>,
     fuzz: Option<RawFuzzConfig>,
+    estimator_probe: Option<RawEstimatorProbeConfig>,
 }
 
 /// A named, contiguous-stride block of seeds, plus the protocol flags that govern how it
@@ -133,12 +147,22 @@ pub struct FuzzConfig {
     pub golden_max_iters: usize,
 }
 
+/// `bench estimator-probe`'s kill-condition thresholds and floor sweep (WHI-1225), loaded
+/// from `config/bench.toml`'s `[estimator_probe]` table.
+#[derive(Debug, Clone)]
+pub struct EstimatorProbeConfig {
+    pub low_sigma_count_ratio_kill_threshold: f64,
+    pub decompression_kill_threshold_pct: f64,
+    pub floor_bps_sweep: Vec<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
     segments: HashMap<String, Segment>,
     search_max_points: usize,
     grid: Option<GridConfig>,
     fuzz: Option<FuzzConfig>,
+    estimator_probe: Option<EstimatorProbeConfig>,
 }
 
 impl BenchConfig {
@@ -219,12 +243,17 @@ impl BenchConfig {
 
         let grid = raw.grid.map(|g| validate_grid(&g)).transpose()?;
         let fuzz = raw.fuzz.map(|f| validate_fuzz(&f)).transpose()?;
+        let estimator_probe = raw
+            .estimator_probe
+            .map(|e| validate_estimator_probe(&e))
+            .transpose()?;
 
         Ok(Self {
             segments,
             search_max_points: search.max_points,
             grid,
             fuzz,
+            estimator_probe,
         })
     }
 
@@ -259,6 +288,15 @@ impl BenchConfig {
         self.fuzz
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("bench config declares no [fuzz] table"))
+    }
+
+    /// `bench estimator-probe`'s config, if `config/bench.toml` declares an
+    /// `[estimator_probe]` table. Fails only when a caller actually needs it (`bench
+    /// estimator-probe` itself), same rationale as `grid()`/`fuzz()`.
+    pub fn estimator_probe(&self) -> anyhow::Result<&EstimatorProbeConfig> {
+        self.estimator_probe
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("bench config declares no [estimator_probe] table"))
     }
 
     fn segment_names(&self) -> String {
@@ -406,6 +444,38 @@ fn validate_fuzz(raw: &RawFuzzConfig) -> anyhow::Result<FuzzConfig> {
         moderate_max_input: raw.moderate_max_input,
         golden_max_iters: raw.golden_max_iters,
         golden_price_multipliers: raw.golden_price_multipliers.clone(),
+    })
+}
+
+fn validate_estimator_probe(raw: &RawEstimatorProbeConfig) -> anyhow::Result<EstimatorProbeConfig> {
+    if !raw.low_sigma_count_ratio_kill_threshold.is_finite()
+        || !(0.0..=1.0).contains(&raw.low_sigma_count_ratio_kill_threshold)
+    {
+        anyhow::bail!(
+            "estimator_probe config's low_sigma_count_ratio_kill_threshold must be in [0, 1]"
+        );
+    }
+    if !raw.decompression_kill_threshold_pct.is_finite()
+        || raw.decompression_kill_threshold_pct < 0.0
+    {
+        anyhow::bail!(
+            "estimator_probe config's decompression_kill_threshold_pct must be finite and \
+             non-negative"
+        );
+    }
+    if raw.floor_bps_sweep.is_empty() {
+        anyhow::bail!("estimator_probe config's floor_bps_sweep is empty");
+    }
+    let mut sorted = raw.floor_bps_sweep.clone();
+    sorted.sort_unstable();
+    if sorted != raw.floor_bps_sweep {
+        anyhow::bail!("estimator_probe config's floor_bps_sweep must be sorted ascending");
+    }
+
+    Ok(EstimatorProbeConfig {
+        low_sigma_count_ratio_kill_threshold: raw.low_sigma_count_ratio_kill_threshold,
+        decompression_kill_threshold_pct: raw.decompression_kill_threshold_pct,
+        floor_bps_sweep: raw.floor_bps_sweep.clone(),
     })
 }
 
@@ -976,5 +1046,93 @@ max_points = {MAX_SEARCH_POINTS}
             i_am_spending_the_test_segment: false,
         };
         assert!(selector.resolve(&cfg).is_err());
+    }
+
+    /// Loads the actual shipped `config/bench.toml`'s `[estimator_probe]` table (WHI-1225).
+    #[test]
+    fn shipped_config_declares_estimator_probe_table() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cfg = BenchConfig::load(&repo_root.join(DEFAULT_CONFIG_PATH)).unwrap();
+        let probe = cfg.estimator_probe().unwrap();
+
+        assert_eq!(probe.low_sigma_count_ratio_kill_threshold, 0.9);
+        assert_eq!(probe.decompression_kill_threshold_pct, 15.0);
+        assert_eq!(probe.floor_bps_sweep, vec![0, 10, 20, 25, 30, 40, 60]);
+    }
+
+    #[test]
+    fn estimator_probe_accessor_fails_when_no_table_declared() {
+        let cfg = BenchConfig::parse(sample_valid()).unwrap();
+        let err = cfg.estimator_probe().unwrap_err();
+        assert!(
+            err.to_string().contains("no [estimator_probe] table"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn estimator_probe_table_parses_and_validates() {
+        let text = format!(
+            "{}\n[estimator_probe]\nlow_sigma_count_ratio_kill_threshold = 0.9\ndecompression_kill_threshold_pct = 15.0\nfloor_bps_sweep = [0, 25, 60]\n",
+            sample_valid()
+        );
+        let cfg = BenchConfig::parse(&text).unwrap();
+        let probe = cfg.estimator_probe().unwrap();
+        assert_eq!(probe.low_sigma_count_ratio_kill_threshold, 0.9);
+        assert_eq!(probe.decompression_kill_threshold_pct, 15.0);
+        assert_eq!(probe.floor_bps_sweep, vec![0, 25, 60]);
+    }
+
+    #[test]
+    fn estimator_probe_table_rejects_a_ratio_threshold_outside_zero_one() {
+        let text = format!(
+            "{}\n[estimator_probe]\nlow_sigma_count_ratio_kill_threshold = 1.5\ndecompression_kill_threshold_pct = 15.0\nfloor_bps_sweep = [0]\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("low_sigma_count_ratio_kill_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn estimator_probe_table_rejects_a_negative_decompression_threshold() {
+        let text = format!(
+            "{}\n[estimator_probe]\nlow_sigma_count_ratio_kill_threshold = 0.9\ndecompression_kill_threshold_pct = -1.0\nfloor_bps_sweep = [0]\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("decompression_kill_threshold_pct"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn estimator_probe_table_rejects_an_empty_floor_sweep() {
+        let text = format!(
+            "{}\n[estimator_probe]\nlow_sigma_count_ratio_kill_threshold = 0.9\ndecompression_kill_threshold_pct = 15.0\nfloor_bps_sweep = []\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("floor_bps_sweep is empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn estimator_probe_table_rejects_an_unsorted_floor_sweep() {
+        let text = format!(
+            "{}\n[estimator_probe]\nlow_sigma_count_ratio_kill_threshold = 0.9\ndecompression_kill_threshold_pct = 15.0\nfloor_bps_sweep = [10, 0, 30]\n",
+            sample_valid()
+        );
+        let err = BenchConfig::parse(&text).unwrap_err();
+        assert!(
+            err.to_string().contains("sorted ascending"),
+            "unexpected error: {err}"
+        );
     }
 }

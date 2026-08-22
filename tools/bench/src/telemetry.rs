@@ -85,6 +85,19 @@ fn install(submission_real: Option<AfterSwapFn>, normalizer_real: Option<AfterSw
     install_real(AmmSlot::Normalizer, normalizer_real);
 }
 
+/// This trade's Y-side volume: the Y-denominated amount on a buy-X (side 0, Y in) is
+/// `input_amount`, and on a sell-X (side 1, Y out) is `output_amount` — the same unit as
+/// `submission_edge`, so edge-per-unit-volume is a meaningful ratio (docs/DESIGN.md §2.7).
+/// Shared with `estimator_probe.rs`'s own volume-weighted floor sweep — the second call site
+/// that made this worth extracting rather than re-deriving.
+pub fn volume_y(side: u8, input_amount: u64, output_amount: u64) -> f64 {
+    if side == 0 {
+        nano_to_f64(input_amount)
+    } else {
+        nano_to_f64(output_amount)
+    }
+}
+
 /// Records the Y-side volume of this trade, then delegates unchanged to the real
 /// `after_swap` for `slot`, if one was installed — a pure pass-through. This is the entire
 /// non-invasiveness contract (docs/DESIGN.md §2.7): the wrapper must not alter `storage`
@@ -92,17 +105,13 @@ fn install(submission_real: Option<AfterSwapFn>, normalizer_real: Option<AfterSw
 /// no real `after_swap` too (a stateless candidate still trades volume worth recording).
 fn record_and_delegate(slot: AmmSlot, data: &[u8], storage: &mut [u8]) {
     let (side, input_amount, output_amount, _rx, _ry, _step, _storage) = decode_after_swap(data);
-    let volume_y = if side == 0 {
-        nano_to_f64(input_amount)
-    } else {
-        nano_to_f64(output_amount)
-    };
+    let this_trade_volume_y = volume_y(side, input_amount, output_amount);
 
     COUNTERS.with(|c| {
         let mut counters = c.borrow_mut();
         let entry = &mut counters[slot as usize];
         entry.trade_count += 1;
-        entry.volume_y += volume_y;
+        entry.volume_y += this_trade_volume_y;
     });
 
     let ptr = REAL_AFTER_SWAP[slot as usize].load(Ordering::Relaxed);

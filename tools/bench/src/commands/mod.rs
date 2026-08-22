@@ -1,5 +1,6 @@
 pub mod anchor;
 pub mod compare;
+pub mod estimator_probe;
 pub mod fit;
 pub mod fuzz;
 pub mod grid;

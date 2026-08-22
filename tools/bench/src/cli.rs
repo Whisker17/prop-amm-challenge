@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{anchor, compare, fit, fuzz, grid, l1, parity};
+use crate::commands::{anchor, compare, estimator_probe, fit, fuzz, grid, l1, parity};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Prop AMM Challenge measurement layer")]
@@ -29,6 +29,10 @@ enum Commands {
     /// Pre-search shape-fuzz gate: hammer a candidate harder than `prop-amm validate` does,
     /// before a frozen search spends budget on it (WHI-1212).
     Fuzz(fuzz::FuzzArgs),
+    /// WHI-1225's pre-registered "Probe A": replicate `005`'s two variance normalizations and
+    /// `004`'s ewma_vol-vs-floor distribution from a real run, before any search spends
+    /// budget.
+    EstimatorProbe(estimator_probe::EstimatorProbeArgs),
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -41,5 +45,6 @@ pub fn run() -> anyhow::Result<()> {
         Commands::Grid(args) => grid::run(args),
         Commands::L1(args) => l1::run(args),
         Commands::Fuzz(args) => fuzz::run(args),
+        Commands::EstimatorProbe(args) => estimator_probe::run(args),
     }
 }

@@ -132,6 +132,39 @@ soon — anything touching a declared high-risk path defaults to at least High),
   hand at every upstream sync that touches it (the header comment says so); revisit if a
   cheap way to assert the two copies are byte-identical (e.g. a build script diffing both
   files) is ever worth the coupling.
+- **`tools/bench/src/estimator_probe.rs` mirrors `strategies/005-vol-adaptive-cpmm-fee/lib.rs`'s
+  and `strategies/004-ewma-shock-decay-fee/lib.rs`'s `after_swap` math with no automated
+  drift-detection control** (Medium, WHI-1225). Same category as the `curve_checks.rs` entry
+  above: `docs/DESIGN.md` §4.3 permits duplicating upstream/strategy logic only alongside a
+  control, and this module (the shadow accumulator `bench estimator-probe` runs alongside a
+  real `005`/`004` batch to replicate their variance/EWMA estimators without touching real
+  storage) has none — its own tests only assert self-consistency properties (`elapsed_sum >=
+  count`, a monotone floor ladder), not agreement with the actual strategy files' committed
+  math. If either `lib.rs` changes its estimator formula, nothing here would fail, and Probe
+  A's numbers would silently stop describing the strategy they claim to. Mitigated, not
+  closed: this issue's own containment check (a scratch copy with the new storage layout but
+  the *old* divisor reproduced `strategies/005-vol-adaptive-cpmm-fee`'s committed screening/
+  train/validation numbers bit-exactly, `strategies/005b-elapsed-steps-divisor-fix/NOTES.md`
+  § Probe B) is one-time evidence the mirror was faithful *at measurement time*, not an
+  ongoing control. Fix: re-diff `vol005_recorder`/`ewma004_recorder` against the two
+  `strategies/*/lib.rs` files by hand whenever either changes; revisit if this probe is ever
+  reused for a future issue, at which point a shared regression fixture (mirroring
+  `curve_checks.rs`'s ported-test approach) would be worth the added coupling.
+- **`strategies/005-vol-adaptive-cpmm-fee/lib.rs`'s inherited "MLE of stationary variance"
+  header comment is not softened, despite WHI-1225 measuring exactly why it's imprecise**
+  (Low, WHI-1225). WHI-1225's own acceptance criteria asked for this comment (`fee_from_state`'s
+  `variance` line, `lib.rs:257`) to be softened to "consistent moment estimator" — `var_sum /
+  count` is not the MLE of a per-step variance whenever a sample spans a multi-step gap, which
+  is precisely what that issue measured (a 35.6% average `sigma_hat` inflation, `strategies/
+  005b-elapsed-steps-divisor-fix/NOTES.md` § Probe A). Left unfixed: WHI-1225 committed no
+  `005b` `lib.rs` to carry an edited comment, and `005` itself is a shipped, ranked strategy —
+  editing its source as a side effect of a probe-gated ablation issue is out of §2.9's
+  minimum-change scope for a faithful port. `strategies/005-vol-adaptive-cpmm-fee/NOTES.md`
+  § Estimator bias has an addendum explaining the imprecision, which defends the comment's
+  accuracy as a statement of intent rather than softening it — so the criterion's literal text
+  is not satisfied. Fix: the next issue that touches `005`'s own `lib.rs` (a genuine `005b`
+  variant that ships a corrected estimator, or a governance-scoped comment sweep) should
+  soften this line then, not as an unrelated side effect of a different issue.
 - **`bench fuzz`'s golden-section-shaped sampling is a faithful-shape mirror, not a literal
   port of `crates/sim/src/arbitrageur.rs`'s bracket-then-golden-section search or
   `crates/sim/src/router.rs`'s alpha-split objective** (Low, WHI-1212). `tools/bench/src/
