@@ -778,9 +778,10 @@ through `strategies/*/NOTES.md` and closed issues.
    comparable across grid reports. Comparing `results/2026-08-20-grid.md` (starter@500)
    against `results/2026-08-21-grid-004-ewma-shock-decay-fee.md` (the fitted M1 winner) at
    `gbm_sigma = 0.0070`: a flat 500 bps out-earns the winner in **seven of the nine**
-   high-sigma cells (all but cells 23 and 26) — by margin: cell 2 by +322.5, cell 11 by
-   +252.1, cell 8 by +200.9, cell 17 by +125.5, cell 5 by +142.9, cell 20 by +138.4, and
-   cell 14 by a smaller +50.6. The six largest margins alone dwarf the winner's entire
+   high-sigma cells (all but cells 23 and 26) — by margin, descending: cell 2 by +322.5,
+   cell 11 by +252.1, cell 8 by +200.9, cell 5 by +142.9, cell 20 by +138.4, cell 17 by
+   +125.5, and cell 14 by a smaller +50.6. The six largest margins alone dwarf the winner's
+   entire
    +44.50 aggregate advantage over the 0-line (`results/2026-08-20-fit-001-cpmm-fee.md` vs.
    `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`, validation avg edge). **Nobody has
    captured it.** `004b` (WHI-1223) was built specifically to, by decoupling the calm fee
@@ -897,6 +898,8 @@ through `strategies/*/NOTES.md` and closed issues.
    points in the same region are in `results/2026-08-22-fit-003b-wider-band-deeper-book.md`),
    and the full search then produced the portfolio's best number. Also worth recording:
    bit-exact containment of the parent's fitted point caught real problems, and the one
-   case where it could not be bit-exact
-   (`005b`, because the estimator itself changed) is exactly where the near-exact fallback
-   and its predicted-gap threshold earned their place.
+   case where it could not be bit-exact (`005b`, because the estimator itself changed) is
+   exactly where the near-exact fallback and its predicted-gap threshold earned their place
+   — the 0-line point reproduces at 385.63 against a predicted 385.97 ± 1, deviation −0.34,
+   well inside the family's own tolerance (`strategies/005b-elapsed-steps-divisor-fix/NOTES.md`
+   § Probe B).
