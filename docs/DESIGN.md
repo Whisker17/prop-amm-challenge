@@ -1052,7 +1052,7 @@ rely on this issue's table — verify it" instruction) gives:
 | 004 EWMA Dynamic Fee | 446.297129 | `results/2026-08-21-fit-004-ewma-shock-decay-fee.md` |
 | 003 Piecewise Linear | 432.445900 | `results/2026-08-21-fit-003-piecewise-linear.md` |
 | 005 Vol-Adaptive CPMM Fee | 425.946116 | `results/2026-08-21-fit-005-vol-adaptive-cpmm-fee.md` |
-| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its Step 0.5 probe without running the 300-point search (§6.2) |
+| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its own Step 0.5 boundary hit without running the 300-point search (§2.9, §8 finding 6) |
 | 001 CPMM @66 (0-line) | 401.800851 | `results/2026-08-20-fit-001-cpmm-fee.md` |
 | 006 Hedged PnL | 379.350266 | `results/2026-08-21-fit-006-hedged-pnl.md` |
 
@@ -1069,9 +1069,12 @@ was invoked, per this issue's own "decide before running" rule. The superseded c
 vs. fourth place; it does not describe the actual pair below.
 
 §2.10 step 3 ("open one variant for each of the top three") was already satisfied before
-this issue started: `004b`, `003b`, and `005b` are exactly the variants opened for the three
-strategies that led validation at freeze time (`004`, `003`, `005`) — recorded in §6.2, not
-repeated here.
+this issue started: `004b`, `003b`, and `005b` are exactly the variants opened for the
+three strategies that led validation once M1 had run (`004` 446.30, `003` 432.45, `005`
+425.95) — see each variant's own porting issue and `NOTES.md`
+(`004b-floor-subtracted-ewma-fee`, `003b-wider-band-deeper-book`,
+`005b-elapsed-steps-divisor-fix`); §8 finding 6 discusses `004b`'s and `007`'s outcomes but
+is not itself that record.
 
 ### 9.2 The test-segment run — spent exactly once
 
@@ -1109,26 +1112,33 @@ validation-segment margin (+56.68) for the same pair — no sign of overfitting 
 
 ### 9.3 Regime slices
 
-Both the paired-comparison's own sampling-tercile bins (27, from the `test` run above) and
-grid mode's exact regime-corner cells (deterministic, `results/2026-08-22-grid-008-lagging-vwap-fee.md`
-vs. `results/2026-08-22-grid-003b-wider-band-deeper-book.md`, both against `001`) agree:
-`008` leads in every bin except the extreme high-fee/high-liquidity/high-sigma corner, where
-neither family beats the `001` 0-line (both still have positive absolute edge there — see
-grid cell 26 below — the loss is relative to `001`, not an outright negative edge).
+Two different measurements bear on this, and they answer different questions — kept
+separate rather than merged into one "leads/loses" claim, since they disagree on where (if
+anywhere) `008` fails to lead:
 
+- **The direct paired comparison** (the `test`-segment `compare` run above, 27
+  sampling-tercile bins spanning the *range* of each axis, not a single point) shows `008`
+  with a **positive point estimate in all 27 bins** — on this measurement it does not lose
+  to `003b` outright anywhere, corner included. Two bins' 95% CIs include zero, meaning the
+  pairing does not statistically separate the two families there even though the point
+  estimate still favours `008`: `fee=High liq=High sigma=Low` (n=39, diff 3.69
+  `[−2.27, 9.64]`) and `fee=High liq=High sigma=High` (n=45, diff 7.39 `[−2.92, 17.69]`). The
+  adjacent `fee=High liq=High sigma=Mid` bin *does* separate them (diff 7.20
+  `[3.73, 10.67]`, excludes zero) — so this is not a uniformly unresolved corner of the
+  tercile grid, only two of its bins are ties, and one of those two (`sigma=Low`) is not
+  the high-sigma corner discussed next — it is a calmer regime that happens to tie for an
+  unrelated reason.
 - **The unsolved cell** — `norm_fee_bps = 80` x `norm_liquidity_mult = 2.0` x
-  `gbm_sigma = 0.0070` (grid cell 26, the address every prior M1 entry also lost at, §8
-  finding 2) — stays negative for **both** candidates against the `001` 0-line: `008`
-  116.44 vs `001` 152.43 (diff **−35.99** `[−43.10, −28.88]`); `003b` 138.78 vs `001` 152.43
-  (diff **−13.65** `[−19.55, −7.76]`). This is not a defect introduced by the winner — it is
-  the one corner nothing in the portfolio has solved, and `008` loses there by a wider
-  margin than the runner-up does, worth stating plainly rather than glossing over because
-  `008` otherwise wins everywhere else.
-- On the `test`-segment paired-comparison's own regime bins, the two bins covering that same
-  corner are the only ones whose 95% CI includes zero: `fee=High liq=High sigma=Low` (n=39,
-  diff 3.69 `[−2.27, 9.64]`) and `fee=High liq=High sigma=High` (n=45, diff 7.39 `[−2.92,
-  17.69]`) — consistent with the grid's exact-cell finding that this corner does not
-  separate the two families even though `008` wins decisively everywhere else.
+  `gbm_sigma = 0.0070` (grid cell 26, the exact deterministic address every prior M1 entry
+  also lost at, §8 finding 2 — not the same thing as a tercile bin above, which buckets a
+  *range* of values rather than this one point) — stays negative for **both** candidates
+  against the `001` 0-line: `008` 116.44 vs `001` 152.43 (diff **−35.99**
+  `[−43.10, −28.88]`); `003b` 138.78 vs `001` 152.43 (diff **−13.65** `[−19.55, −7.76]`).
+  Both absolute edges are positive — the loss is relative to `001`, not an outright negative
+  edge. This is not a defect introduced by the winner: it is the one address nothing in the
+  portfolio has solved, and `008` loses there by a wider margin than the runner-up does,
+  worth stating plainly rather than glossing over because `008` otherwise wins everywhere
+  else — including, per the point above, every bin of the direct `008`-vs-`003b` pairing.
 
 ### 9.4 Observation row (reporting only — not a decision input, §2.2)
 
@@ -1146,17 +1156,22 @@ figure only; it did not, and must not, influence the winner/runner-up choice abo
 2. ✅ **0-line established.** `001-cpmm-fee` fitted under the full protocol; fee↔edge is
    single-peaked (`results/2026-08-20-fit-001-cpmm-fee.md`, §2.8).
 3. ✅ **Every frozen-list strategy reached a terminal state.** `002` Canceled by owner
-   decision (§6.2); `003`, `003b`, `004`, `005`, `006`, `007`, `008` fitted with
-   train/validation numbers; `004b`, `005b` closed as pre-registered negatives without
-   spending their search budgets (§6.2, §2.9/§2.10).
+   decision (§6.2); `003`, `004`, `005`, `006`, `008` fitted via the full 300-point search
+   with train/validation numbers; `007` reached a terminal state via its own pre-registered
+   Step 0.5 probe *without* running the search (§6.2, §8 finding 6) — §1.4 item 3 accepts an
+   explicit recorded stop as terminal, not only a completed search. The §2.9 variants opened
+   under §2.10 step 3 (above) are likewise terminal: `003b` fitted via its own search;
+   `004b`, `005b` closed as pre-registered negatives with 0 of their 300-point budgets spent
+   (§2.9/§2.10).
 4. ✅ **Winner named from a single use of `test`.** `008`, paired **+61.74 `[56.87,
    66.62]`** over runner-up `003b`, n=1000, regime slices reported (§9.2–§9.3 above).
    **Does `008` beat the best fixed-fee CPMM?** Yes — by **+102.11 on validation**
    (503.907498 vs. `001`'s 401.800851), the same segment every other entry's 0-line margin
    in this project is reported on (§2.8); `001` is not re-measured on `test` since the
-   protocol reserves it for the winner/runner-up pair only (WHI-1226's own "one run, two
-   candidates" rule, restating §2.2's single-use `test` segment — a third candidate
-   touching `test` would reintroduce the selection bias the segment exists to remove).
+   protocol reserves it for the winner/runner-up pair only (§2.10 step 4 names that pair
+   specifically; §2.2 establishes `test`'s single-use rule more generally; WHI-1226's own
+   "one run, two candidates" restates both — a third candidate touching `test` would
+   reintroduce the selection bias the segment exists to remove).
 5. ✅ **`results/` holds the snapshot.** Three reports committed this issue, each carrying
    commit sha `77bef05`, segment, sim/step counts, and execution path (§3.3):
    `-validation.md`, `-test.md`, `-observation.md` (all three: `008` vs `003b`), on top of
