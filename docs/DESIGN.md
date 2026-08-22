@@ -176,7 +176,18 @@ Each strategy therefore delivers:
 
 1. the parameterised `compute_swap` (and `after_swap`, if the mechanism needs state),
 2. a **parameter space declared in `NOTES.md` and frozen before any search runs**,
-3. the fitted point, committed as the strategy's `lib.rs`,
+3. the fitted point, committed as the strategy's `lib.rs` — the best point measured within
+   that frozen space by the family's own declared protocol, which is usually the 300-point
+   search's own convergence result but is not required to be: a pre-registered probe (this
+   issue's own required P0-style step) run before the search can measure a point the
+   search's coarse grid never touches and that beats everything the search finds within its
+   budget. §2.5's own equal-budget invariant still applies to whichever point is committed:
+   a `--max-points`/`--no-report` quick check is never sufficient on its own (§2.5 says so
+   explicitly) — the committed point's own numbers must also come from a genuine,
+   non-bypassed `bench fit`/`bench compare`/`bench parity` invocation with its own
+   `results/*.md` report, even when that invocation is run against a purpose-built
+   degenerate-range copy that pins the declared space to the single point being confirmed.
+   §8's "protocol lesson" 7 records the first instance and the reasoning,
 4. its train and validation numbers, and its CLI parity reproduction (§2.6).
 
 Freezing the space *before* searching is what makes the seed segmentation of §2.2 worth
@@ -643,7 +654,7 @@ before search runs.
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
 | `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
 | `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219); supersedes `002`'s earmark, see below** | Solidity (to port) | `docs/references/007-dodo-pmm/` (created by WHI-1219, per its own snapshot-at-porting-start) — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
-| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (to be created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` |
+| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below; measured new M1 leader on validation, see §8** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` (committed at the source's own unmodified `P0` anchor — `strategies/008-lagging-vwap-fee/NOTES.md` § 5 for why the 300-point search's own winner was not adopted) |
 
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
@@ -856,22 +867,30 @@ through `strategies/*/NOTES.md` and closed issues.
    orphan (§2.10), so no v0.2.0 issue is opened against this finding.
 
    **External corroboration, vintage-bound (WHI-1236) — third-party reported, not measured
-   under §3.3's protocol.** While scoping `008` — added post-freeze by exception (§6.2,
-   WHI-1237) once its provenance gate was approved, but not yet ported and still with no
-   reference material copied into this repo (WHI-1236) — its issue body cites
-   `houseofjiao/prop-amm-challenge`'s own `LEARNINGS.md` (source pinned at
-   `152697153d`), a measured dead-end corpus from that author's tuning campaign on their
-   **pre-2026-02-16 harness**. It reports this same flow-share-inference premise measured
-   directly there: `cnt_ema -> norm_fee` r = 0.662 and `arb_prefers_us -> norm_fee` r =
-   0.828 — the inference is real and strong there too. That author then tried to exploit it
-   with a fee boost and it **regressed at their own optimum**, via a named mechanism: a
-   slow-decaying fee floor overshoots the opponent's fee and routes retail away. These
-   figures carry none of §3.3's own-measurement provenance (no seed segment, sim/step
-   count, or execution path is available for them) precisely because they are *not* a
-   number produced under this project's protocol — they are cited as a third party's report
-   for context only, not as evidence for any claim about this harness. It is nonetheless a
-   recorded failed attempt with a named failure mode, so a v0.2.0 attempt at this axis does
-   not have to restart from zero.
+   under §3.3's protocol.** `008` — added post-freeze by exception (§6.2, WHI-1237) once its
+   provenance gate was approved — cites `houseofjiao/prop-amm-challenge`'s own
+   `LEARNINGS.md` (source pinned at `152697153d`), a measured dead-end corpus from that
+   author's tuning campaign on their **pre-2026-02-16 harness**. It reports this same
+   flow-share-inference premise measured directly there: `cnt_ema -> norm_fee` r = 0.662 and
+   `arb_prefers_us -> norm_fee` r = 0.828 — the inference is real and strong there too. That
+   author then tried to exploit it with a fee boost and it **regressed at their own
+   optimum**, via a named mechanism: a slow-decaying fee floor overshoots the opponent's fee
+   and routes retail away. These figures carry none of §3.3's own-measurement provenance (no
+   seed segment, sim/step count, or execution path is available for them) precisely because
+   they are *not* a number produced under this project's protocol — they are cited as a
+   third party's report for context only, not as evidence for any claim about this harness.
+   It is nonetheless a recorded failed attempt with a named failure mode, so a v0.2.0
+   attempt at this axis does not have to restart from zero.
+
+   **Not answered by `008`'s own port, despite the shared source.** `008` accumulates a
+   flow-share-shaped signal of its own (`cnt_ema`, an EMA of trades-per-step, storage offset
+   144) but never reads it into any fee or profile decision — the source's own
+   `LEARNINGS.md` records that exploiting it via a fee boost regressed at their optimum
+   (immediately above), and the committed mechanism reflects that: `cnt_ema` is persisted
+   but dead for decision-making. `008`'s own strong measured result (finding 5 below) is
+   real, but it is evidence for a *different* gap — the arb-vs-retail directional classifier
+   finding 5 names as missing, not this finding's flow-share/competitor-inference axis. This
+   finding's own v0.2.0 candidate remains unattacked by any measured M1 entry.
 
 *Resolved negatives*
 
@@ -909,17 +928,30 @@ through `strategies/*/NOTES.md` and closed issues.
    under §3.3's protocol.** A second, unrelated codebase reached the same conclusion from
    the opposite direction and made it structural: `008`'s source
    (`houseofjiao/prop-amm-challenge`, source pinned at `152697153d`; added post-freeze by
-   exception per §6.2/WHI-1237, porting not yet started, no material copied here) reports,
-   on that author's own
+   exception per §6.2/WHI-1237) reports, on that author's own
    **pre-2026-02-16 harness**, in its own `LEARNINGS.md` § "Signed Flow Price Estimation",
    that making *their* price estimate more accurate reduced *their* edge, because in their
    mechanism the deviation term `(spot - p_ref)^2` **is** the fee signal — a lagging
    estimate is load-bearing there, not a defect. Two codebases on two different harness
    vintages, two different mechanisms, the same conclusion stated at class level rather than
    at the level of one family: a more accurate volatility or price estimate is not
-   automatically a better strategy for this class of fee — this project's own measurement
-   (above) is the one that counts as evidence for *this* harness; the second is corroboration
-   only.
+   automatically a better strategy for this class of fee — this finding's own `005b`
+   measurement (immediately above) is the one that counts as evidence for *this* harness;
+   the second is corroboration only.
+
+   **`008`'s own port and measurement (WHI-1236, complete) is a strong result for a
+   mechanism *built around* the lagging-estimate premise, though not itself an ablation of
+   it.** The lagging VWAP is not incidental to `008`'s mechanism — the source's own
+   `LEARNINGS.md` states it is deliberately kept lagging for the same reason cited above —
+   but `008`'s own measured edge is for the mechanism as a whole (the lagging VWAP, the
+   directional classifier built on it, the fee ratchet, and the 3-profile ensemble
+   together); no lag-vs-accurate-estimate ablation was run here, so this number is not
+   directional evidence isolating the lag's own contribution the way the two corroborations
+   above are. What it *is* — carrying full §3.3 own-measurement provenance, unlike either
+   corroboration — is measured, first-party evidence that a family holding this premise
+   performs strongly on this harness: validation avg edge **503.907498**, the largest margin
+   over the current leader of any M1 entry (paired **+57.61** `[53.21, 62.01]` over `004`,
+   n=1,000).
 5. **Two axes measured net-harmful, so nobody retries them.** Concentration / virtual-reserve
    amplification (`007`, WHI-1219): net-harmful at every tested point; the family closed at
    its own `k = 1` CPMM boundary (`results/2026-08-21-grid-007-dodo-pmm.md`,
@@ -932,6 +964,28 @@ through `strategies/*/NOTES.md` and closed issues.
    decay makes the surcharge's duration a function of arrival rate. Any repair needs an
    arb-vs-retail classifier, which needs the fair price, which the interface does not
    provide — so a repair would be a new strategy family, not a variant.
+
+   **`008` (WHI-1236, complete) is a new family holding the named classifier, though not a
+   full repair of this finding's own shock-surcharge complaint specifically.** Its
+   `compute_swap` classifies each quote's direction against a deliberately lagging
+   Kalman-filtered VWAP — the fair-price substitute this finding says the interface
+   otherwise withholds — surcharging the presumptively-informed direction (`+arb_k*dev^2`)
+   and rebating the presumptively-uninformed one (`-counter_k*(...)*dev^2`)
+   (`strategies/008-lagging-vwap-fee/lib.rs::quote_profile`). But the classifier only gates
+   that `dev^2` term: the raw `shock_read_k*shock_hat`/`tox_read_k*tox_hat` additive reads
+   in the same formula are unconditional, applied to both directions exactly like this
+   finding's own complaint about `004`'s undirected shock surcharge — so `008` adds a
+   directional layer alongside the undirected one this finding named, rather than replacing
+   it. Measured at the source's own unmodified anchor point: validation avg edge
+   **503.907498**, a paired **+57.61** `[53.21, 62.01]` over the current leader `004`
+   (n=1,000, CI excludes zero) and a 26-of-27 win rate on the grid fragility matrix against
+   `001-cpmm-fee` — the largest margin of any M1 entry, and this project's own measurement
+   under §3.3's protocol. It does not, by itself, isolate how much of that margin comes from
+   the directional classifier specifically versus the rest of the mechanism (the still-
+   undirected tox/shock reads, the fee ratchet, the 3-profile ensemble) — no ablation
+   separating them was run — but it is direct evidence that a family holding a version of
+   this finding's own named gap performs strongly here, which is more than this finding had
+   before `008`.
 
 *Protocol lesson*
 
@@ -956,3 +1010,18 @@ through `strategies/*/NOTES.md` and closed issues.
    — the 0-line point reproduces at 385.63 against a predicted 385.97 ± 1, deviation −0.34,
    well inside the family's own tolerance (`strategies/005b-elapsed-steps-divisor-fix/NOTES.md`
    § Probe B).
+
+7. **A pre-search anchor can beat the search that was supposed to refine it — the inverse
+   of lesson 6, first seen in `008` (WHI-1236).** Every other entry's P0-style probe either
+   killed the lane (lesson 6) or handed off to a search expected to improve on it. `008`'s
+   own 300-point search converged (172/300 points, 0 invalid) to a point measurably *worse*
+   on every segment than the source's own unmodified anchor, which the search's coarse grid
+   never evaluates at all (`strategies/008-lagging-vwap-fee/NOTES.md` § 5) — because the
+   family's own profile-ensemble switcher makes changing the searched profile's constants
+   also change how often that profile gets selected against two other profiles held fixed
+   at the source author's own jointly-tuned values, a differently-shaped surface than the
+   one those values were tuned against. The anchor was committed instead of the search's
+   own winner, with the reasoning recorded rather than silently substituted. Worth watching
+   for in any future ensemble-shaped family: an "improve one member, hold the rest fixed"
+   search can converge to a real but inferior local optimum while a jointly-tuned anchor sits
+   unexplored in the same declared space.
