@@ -657,7 +657,7 @@ before search runs.
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
 | `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
 | `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219); supersedes `002`'s earmark, see below** | Solidity (to port) | `docs/references/007-dodo-pmm/` (created by WHI-1219, per its own snapshot-at-porting-start) — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
-| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below; measured new M1 leader on validation, see §8** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` (committed at the source's own unmodified `P0` anchor — `strategies/008-lagging-vwap-fee/NOTES.md` § 5 for why the 300-point search's own winner was not adopted) |
+| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below; measured new M1 leader on validation, see §8; named the v1 winner over runner-up `003b`, see §9 (WHI-1226)** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` (committed at the source's own unmodified `P0` anchor — `strategies/008-lagging-vwap-fee/NOTES.md` § 5 for why the 300-point search's own winner was not adopted) |
 
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
@@ -1052,7 +1052,7 @@ rely on this issue's table — verify it" instruction) gives:
 | 004 EWMA Dynamic Fee | 446.297129 | `results/2026-08-21-fit-004-ewma-shock-decay-fee.md` |
 | 003 Piecewise Linear | 432.445900 | `results/2026-08-21-fit-003-piecewise-linear.md` |
 | 005 Vol-Adaptive CPMM Fee | 425.946116 | `results/2026-08-21-fit-005-vol-adaptive-cpmm-fee.md` |
-| 007 DODO PMM | 403.26 | `results/2026-08-21-compare-007-dodo-pmm-vs-001-cpmm-fee.md` |
+| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its Step 0.5 probe without running the 300-point search (§6.2) |
 | 001 CPMM @66 (0-line) | 401.800851 | `results/2026-08-20-fit-001-cpmm-fee.md` |
 | 006 Hedged PnL | 379.350266 | `results/2026-08-21-fit-006-hedged-pnl.md` |
 
@@ -1067,6 +1067,11 @@ this ranking does not rely on. **The real test-segment pair is `008` (winner) an
 was invoked, per this issue's own "decide before running" rule. The superseded comment's
 `003b`-vs-`004` "inside the noise floor" framing still holds as a true statement about third
 vs. fourth place; it does not describe the actual pair below.
+
+§2.10 step 3 ("open one variant for each of the top three") was already satisfied before
+this issue started: `004b`, `003b`, and `005b` are exactly the variants opened for the three
+strategies that led validation at freeze time (`004`, `003`, `005`) — recorded in §6.2, not
+repeated here.
 
 ### 9.2 The test-segment run — spent exactly once
 
@@ -1085,10 +1090,12 @@ requires this outside a nested `.claude/worktrees/` checkout). Result, committed
 - Paired mean difference **+61.743094**, 95% CI **[56.869632, 66.616555]**, n=1000.
 
 **The margin is decisively outside the ~±4–5 cross-family noise floor this issue itself
-cites** — the CI's own half-width here is ~2.5, an order of magnitude tighter than that
-floor, and the point estimate is more than 10 floor-widths from zero. This is **not** the
-"indistinguishable" outcome the superseded candidate pair was headed toward: **`008` beats
-`003b` on held-out data, clearly.**
+cites** — the point estimate (+61.74) is roughly 12–15x that floor, and even the CI's own
+lower bound (56.87) sits more than 11 floor-widths from zero; the floor describes how far a
+truly-tied pair's margin would plausibly land from zero, not the width of this CI (which is
+a separate quantity, ±4.87, of the same rough magnitude as the floor and not itself
+evidence either way). This is **not** the "indistinguishable" outcome the superseded
+candidate pair was headed toward: **`008` beats `003b` on held-out data, clearly.**
 
 Before spending `test`, the same invocation was rehearsed once on `--segment validation`
 (reusable) to confirm the harness end-to-end: it reproduced `008`'s and `003b`'s
@@ -1106,7 +1113,8 @@ Both the paired-comparison's own sampling-tercile bins (27, from the `test` run 
 grid mode's exact regime-corner cells (deterministic, `results/2026-08-22-grid-008-lagging-vwap-fee.md`
 vs. `results/2026-08-22-grid-003b-wider-band-deeper-book.md`, both against `001`) agree:
 `008` leads in every bin except the extreme high-fee/high-liquidity/high-sigma corner, where
-neither family has a positive edge.
+neither family beats the `001` 0-line (both still have positive absolute edge there — see
+grid cell 26 below — the loss is relative to `001`, not an outright negative edge).
 
 - **The unsolved cell** — `norm_fee_bps = 80` x `norm_liquidity_mult = 2.0` x
   `gbm_sigma = 0.0070` (grid cell 26, the address every prior M1 entry also lost at, §8
@@ -1146,13 +1154,13 @@ figure only; it did not, and must not, influence the winner/runner-up choice abo
    **Does `008` beat the best fixed-fee CPMM?** Yes — by **+102.11 on validation**
    (503.907498 vs. `001`'s 401.800851), the same segment every other entry's 0-line margin
    in this project is reported on (§2.8); `001` is not re-measured on `test` since the
-   protocol reserves it for the winner/runner-up pair only (§2.2, "one run, two
-   candidates" — a third candidate touching `test` would reintroduce the selection bias
-   the segment exists to remove).
-5. ✅ **`results/` holds the snapshot.** Four reports committed this issue, each carrying
+   protocol reserves it for the winner/runner-up pair only (WHI-1226's own "one run, two
+   candidates" rule, restating §2.2's single-use `test` segment — a third candidate
+   touching `test` would reintroduce the selection bias the segment exists to remove).
+5. ✅ **`results/` holds the snapshot.** Three reports committed this issue, each carrying
    commit sha `77bef05`, segment, sim/step counts, and execution path (§3.3):
-   `-validation.md`, `-test.md`, `-observation.md` (all three: `008` vs `003b`), plus the
-   pre-existing grid/fit reports cited above.
+   `-validation.md`, `-test.md`, `-observation.md` (all three: `008` vs `003b`), on top of
+   the pre-existing grid/fit reports cited throughout this section.
 
 **v1 is done.**
 
