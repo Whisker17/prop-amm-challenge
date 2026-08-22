@@ -80,6 +80,9 @@ v1 is done when all of the following hold:
 5. `results/` holds the snapshot backing that claim, carrying the commit sha it was
    produced at.
 
+**All five hold as of WHI-1226 — v1 is done.** See §9 for the checked-off record, the
+named winner (`008`), and its paired test-segment interval over runner-up `003b`.
+
 ## 2. Requirements / Specification
 
 This section is the measurement protocol. It is the part of the repo most likely to be
@@ -654,7 +657,7 @@ before search runs.
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
 | `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
 | `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219); supersedes `002`'s earmark, see below** | Solidity (to port) | `docs/references/007-dodo-pmm/` (created by WHI-1219, per its own snapshot-at-porting-start) — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
-| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below; measured new M1 leader on validation, see §8** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` (committed at the source's own unmodified `P0` anchor — `strategies/008-lagging-vwap-fee/NOTES.md` § 5 for why the 300-point search's own winner was not adopted) |
+| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below; measured new M1 leader on validation, see §8; named the v1 winner over runner-up `003b`, see §9 (WHI-1226)** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` (committed at the source's own unmodified `P0` anchor — `strategies/008-lagging-vwap-fee/NOTES.md` § 5 for why the 300-point search's own winner was not adopted) |
 
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
@@ -1025,3 +1028,195 @@ through `strategies/*/NOTES.md` and closed issues.
    for in any future ensemble-shaped family: an "improve one member, hold the rest fixed"
    search can converge to a real but inferior local optimum while a jointly-tuned anchor sits
    unexplored in the same declared space.
+
+## 9. v1 Closure — M2 Test-Segment Result (WHI-1226)
+
+§2.10 step 4, the last step of v1: rank the frozen list on validation, spend the `test`
+segment exactly once on the winner and runner-up, report the paired interval and regime
+slices, and check off §1.4. This section is that record.
+
+### 9.1 Candidate set — corrected before the test segment was touched
+
+WHI-1226's own working comment (posted ~12:05 +0800, 2026-08-22) named the pair as `003b`
+(winner, 447.22 validation) vs `004` (runner-up, 446.30), and framed the whole report around
+a near-tie "indistinguishable on held-out data" outcome. Strategy `008` (WHI-1236/1237, a
+second post-freeze §2.10 exception, approved while `test` was still unspent) merged
+~3 hours **after** that comment (`77bef05`) and is not in its table. Recomputing the
+validation ranking from every committed `results/` fit report (per this issue's own "do not
+rely on this issue's table — verify it" instruction) gives:
+
+| Strategy | validation avg edge | source |
+| --- | --- | --- |
+| **008** Lagging-VWAP Fee | **503.907498** | `results/2026-08-22-fit-008-lagging-vwap-fee-anchor.md` |
+| **003b** Wider Band x Deeper Book | **447.224660** | `results/2026-08-22-fit-003b-wider-band-deeper-book.md` |
+| 004 EWMA Dynamic Fee | 446.297129 | `results/2026-08-21-fit-004-ewma-shock-decay-fee.md` |
+| 003 Piecewise Linear | 432.445900 | `results/2026-08-21-fit-003-piecewise-linear.md` |
+| 005 Vol-Adaptive CPMM Fee | 425.946116 | `results/2026-08-21-fit-005-vol-adaptive-cpmm-fee.md` |
+| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its own Step 0.5 boundary hit without running the 300-point search (§2.9, §8 finding 6) |
+| 001 CPMM @66 (0-line) | 401.800851 | `results/2026-08-20-fit-001-cpmm-fee.md` |
+| 006 Hedged PnL | 379.350266 | `results/2026-08-21-fit-006-hedged-pnl.md` |
+
+`008` is eligible: added post-freeze by a recorded owner-approved exception while `test` was
+unspent (§6.2, §2.10), reached a terminal state (fitted, committed at the source's own P0
+anchor — `strategies/008-lagging-vwap-fee/NOTES.md` §5, §8 lesson 7 above), and its
+503.907498 is our own §3.3-provenance measurement verified to match the committed `lib.rs`
+constants exactly — not a citation of the source repository's own numbers, which are barred
+from evidentiary use for an unrelated reason (their pre-fix harness vintage, §8) and which
+this ranking does not rely on. **The real test-segment pair is `008` (winner) and `003b`
+(runner-up)**, recorded as a correction on WHI-1226 before `bench compare --segment test`
+was invoked, per this issue's own "decide before running" rule. The superseded comment's
+`003b`-vs-`004` "inside the noise floor" framing still holds as a true statement about
+second vs. third place (per the corrected table above); it does not describe the actual
+pair below, and it is exactly why `003b`'s own runner-up status carries a caveat — see §9.6.
+
+§2.10 step 3 ("open one variant for each of the top three") was already satisfied before
+this issue started: `004b`, `003b`, and `005b` are exactly the variants opened for the
+three strategies that led validation once M1 had run (`004` 446.30, `003` 432.45, `005`
+425.95) — see each variant's own porting issue and `NOTES.md`
+(`004b-floor-subtracted-ewma-fee`, `003b-wider-band-deeper-book`,
+`005b-elapsed-steps-divisor-fix`); §8 finding 6 discusses all three variants' (`004b`,
+`005b`, `003b`) and `007`'s outcomes but is not itself the record of when each was opened.
+
+### 9.2 The test-segment run — spent exactly once
+
+```
+cargo run -p prop-amm-bench --release -- compare \
+  --candidate strategies/008-lagging-vwap-fee/lib.rs \
+  --reference strategies/003b-wider-band-deeper-book/lib.rs \
+  --segment test --i-am-spending-the-test-segment
+```
+
+Run from a detached scratch worktree at `77bef05` (`bench compare`'s isolated-build path
+requires this outside a nested `.claude/worktrees/` checkout). Result, committed at
+`results/2026-08-22-compare-008-lagging-vwap-fee-vs-003b-wider-band-deeper-book-test.md`:
+
+- `008` (candidate) avg edge **530.83**; `003b` (reference) avg edge **469.09**.
+- Paired mean difference **+61.743094**, 95% CI **[56.869632, 66.616555]**, n=1000.
+
+**The margin is decisively outside the ~±4–5 cross-family noise floor this issue itself
+cites** — the point estimate (+61.74) is roughly 12–15x that floor, and even the CI's own
+lower bound (56.87) sits more than 11 floor-widths from zero; the floor describes how far a
+truly-tied pair's margin would plausibly land from zero, not the width of this CI (which is
+a separate quantity, ±4.87, of the same rough magnitude as the floor and not itself
+evidence either way). This is **not** the "indistinguishable" outcome the superseded
+candidate pair was headed toward: **`008` beats `003b` on held-out data, clearly.**
+
+Before spending `test`, the same invocation was rehearsed once on `--segment validation`
+(reusable) to confirm the harness end-to-end: it reproduced `008`'s and `003b`'s
+already-committed validation numbers exactly (503.91 / 447.22), and additionally produced a
+direct paired validation-segment comparison of the two (previously only compared as
+committed averages against each other, not as a paired `bench compare` run: `008` had been
+paired via `bench compare` against `004` only, and `003b` had only ever been paired against
+`001` at grid mode's per-cell resolution, not as a single whole-segment aggregate) — paired
+**+56.682838** `[52.176061, 61.189614]`, n=1000, committed at
+`results/2026-08-22-compare-008-lagging-vwap-fee-vs-003b-wider-band-deeper-book-validation.md`.
+The test-segment margin (+61.74) is consistent with, and slightly larger than, the
+validation-segment margin (+56.68) for the same pair — no sign of overfitting to validation.
+
+### 9.3 Regime slices
+
+Two different measurements bear on this, and they answer different questions — kept
+separate rather than merged into one "leads/loses" claim, since they disagree on where (if
+anywhere) `008` fails to lead:
+
+- **The direct paired comparison** (the `test`-segment `compare` run above, 27
+  sampling-tercile bins spanning the *range* of each axis, not a single point) shows `008`
+  with a **positive point estimate in all 27 bins** — on this measurement it does not lose
+  to `003b` outright anywhere, corner included. Two bins' 95% CIs include zero, meaning the
+  pairing does not statistically separate the two families there even though the point
+  estimate still favours `008`: `fee=High liq=High sigma=Low` (n=39, diff 3.69
+  `[−2.27, 9.64]`) and `fee=High liq=High sigma=High` (n=45, diff 7.39 `[−2.92, 17.69]`). The
+  adjacent `fee=High liq=High sigma=Mid` bin *does* separate them (diff 7.20
+  `[3.73, 10.67]`, excludes zero) — so this is not a uniformly unresolved corner of the
+  tercile grid, only two of its bins are ties, and one of those two (`sigma=Low`) is a
+  different, calmer regime from the high-sigma corner discussed next, not the same address.
+- **The near-unsolved cell** — `norm_fee_bps = 80` x `norm_liquidity_mult = 2.0` x
+  `gbm_sigma = 0.0070` (grid cell 26, the exact deterministic address — not the same thing
+  as a tercile bin above, which buckets a *range* of values rather than this one point) —
+  stays negative against the `001` 0-line for every fee-dynamics entry in the portfolio
+  except one: `003` −19.00, `004`/`004b` −41.62, `005` −120.89, `006` −191.24, `003b`
+  −13.65 (`[−19.55, −7.76]`), `008` −35.99 (`[−43.10, −28.88]`). The sole exception is `007`,
+  which collapses to a near-CPMM boundary (`k≈1`) at this cell and edges `001` by a narrow
+  **+0.87** `[0.69, 1.05]` (`results/2026-08-21-grid-007-dodo-pmm.md` cell 26) — consistent
+  with `007`'s own closure at that same `k=1` boundary (§2.9, §8 finding 6) rather than a
+  distinguishing feature of any fee curve. Both `008`'s and `003b`'s absolute edges here are
+  positive (116.44 / 138.78) — the loss is relative to `001`, not an outright negative edge.
+  This is not a defect introduced by the winner: `008` loses here by a wider margin than the
+  runner-up does, worth stating plainly rather than glossing over because `008` otherwise
+  wins everywhere else — including, per the point above, every bin of the direct
+  `008`-vs-`003b` pairing.
+
+### 9.4 Observation row (reporting only — not a decision input, §2.2)
+
+`--segment observation` (reusable), same pair, committed at
+`results/2026-08-22-compare-008-lagging-vwap-fee-vs-003b-wider-band-deeper-book-observation.md`:
+`008` avg edge **501.57**, `003b` avg edge **446.60** (matching this issue's own prior
+table exactly), paired **+54.963301** `[50.877495, 59.049108]`, n=1000. Leaderboard-comparable
+figure only; it did not, and must not, influence the winner/runner-up choice above.
+
+### 9.5 §1.4 success criteria — checked off
+
+1. ✅ **Parity gate.** `tools/bench` reproduces `prop-amm run` per seed for the starter
+   program (WHI-1193/1194, `results/2026-08-20-parity-001-cpmm-fee.md` and every
+   subsequent `bench parity` run against a committed strategy).
+2. ✅ **0-line established.** `001-cpmm-fee` fitted under the full protocol; fee↔edge is
+   single-peaked (`results/2026-08-20-fit-001-cpmm-fee.md`, §2.8).
+3. ✅ **Every frozen-list strategy reached a terminal state.** `002` Canceled by owner
+   decision (§6.2); `003`, `004`, `005`, `006` fitted via the full 300-point search with
+   train/validation numbers; `007` reached a terminal state via its own pre-registered
+   Step 0.5 probe *without* running the search (§6.2, §8 finding 6) — §1.4 item 3 accepts an
+   explicit recorded stop as terminal, not only a completed search. `008` ran its own
+   300-point search (172/300 spent, 0 invalid) but is committed at the source's own
+   pre-registered anchor rather than the search's own winner, which measured worse on every
+   segment (§8 lesson 7, §9.6) — still fitted and terminal, just not at the search's own
+   argmax. The §2.9 variants opened under §2.10 step 3 (above) are likewise terminal: `003b`
+   fitted via its own search;
+   `004b`, `005b` closed as pre-registered negatives with 0 of their 300-point budgets spent
+   (§2.9/§2.10).
+4. ✅ **Winner named from a single use of `test`.** `008`, paired **+61.74 `[56.87,
+   66.62]`** over runner-up `003b`, n=1000, regime slices reported (§9.2–§9.3 above).
+   **Does `008` beat the best fixed-fee CPMM?** Yes — by **+102.11 on validation**
+   (503.907498 vs. `001`'s 401.800851), the same segment every other entry's 0-line margin
+   in this project is reported on (§2.8); `001` is not re-measured on `test` since the
+   protocol reserves it for the winner/runner-up pair only (§2.10 step 4 names that pair
+   specifically; §2.2 establishes `test`'s single-use rule more generally; WHI-1226's own
+   "one run, two candidates" restates both — a third candidate touching `test` would
+   reintroduce the selection bias the segment exists to remove).
+5. ✅ **`results/` holds the snapshot.** Three reports committed this issue, each carrying
+   commit sha `77bef05`, segment, sim/step counts, and execution path (§3.3):
+   `-validation.md`, `-test.md`, `-observation.md` (all three: `008` vs `003b`), on top of
+   the pre-existing grid/fit reports cited throughout this section.
+
+**v1 is done.**
+
+### 9.6 What the ranking rests on — required annotations
+
+- **`008`'s point is a pre-search anchor, not its own search's winner, and its provenance
+  is the least clean of any M1 entry.** Committed at
+  `(ARB_K_BPS=5200, COUNTER_K_BPS=1000, TARGET_BASE_BPS=16, SIZE_K_BPS=2900)` — the source's
+  own unmodified `P0` anchor; the 300-point search converged to a point measurably *worse*
+  on every segment (§8 lesson 7) and was correctly not adopted. The source itself
+  (`houseofjiao/prop-amm-challenge`, pinned `152697153d`) is another **live** competitor's
+  **current** submission, unlicensed (`license: null`, all-rights-reserved by default) —
+  unlike `004` (a past submission) or `007` (a licensed library) (§6.2). No number from that
+  repository is used as evidence anywhere in this ranking; `008`'s 503.907498/530.83/501.57
+  above are this project's own §3.3 measurements at the anchor point.
+- **`003b`'s number rests on three weaker links, stacked** — the noise-floor link changes
+  what it is evidence *of*, but does not disappear now that the actual pair is `008`/`003b`
+  rather than `003b`/`004`: its parent's parameter space was re-frozen once after the
+  original range lost catastrophically everywhere (screening −17,027 to −20,053,
+  `results/2026-08-21-fit-003-piecewise-linear-original-range-rejected.md`); its own
+  pre-registered probe landed in the discretionary band (`max(P1..P5) = 421.67`, against a
+  426 unconditional-open threshold), requiring an explicit owner decision to proceed rather
+  than clearing on the numbers alone; and `003b`'s own **runner-up identity** rests on
+  beating `004` by a margin squarely inside the ~±4–5 noise floor (+0.92 validation, +2.85
+  observation, §9.1) — a small perturbation in either family's number could have made `004`
+  the runner-up instead, which the winner/runner-up margin reported in §9.2 says nothing
+  about, since that margin is `008` vs. `003b`, not `003b` vs. `004`.
+- **Boundary hits are not interior optima, and neither finalist rests on one.** `003`'s
+  `W_BPS` (WHI-1207) and `005`'s `FEE_LO` (WHI-1209) each sit on their own frozen bound
+  (`strategies/README.md`; each family's own `NOTES.md` § Search) — but neither `003` nor
+  `005` is in the final pair. `003b`'s fitted point is fully interior
+  (`S0_BPS=57, W_BPS=2423, DELTA_RESERVE_BPS=763`, none at a range edge); `008` is committed
+  at a fixed pre-registered anchor rather than a search result at all, for the reason
+  above.
