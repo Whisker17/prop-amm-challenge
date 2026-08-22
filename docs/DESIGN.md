@@ -61,7 +61,7 @@ liquidity sampling, step count, the edge formula — come from the challenge and
   Original designs are v0.2.0 work; this bars our own designs, not ports of another's
   mechanism, which §2.9's fidelity contract governs instead (§6.2's `007` and `008` are
   such ports, each added post-freeze by exception per §2.10 — `008`'s licence and
-  copying-for-internal-analysis-only limits are recorded in §6.2).
+  copying-for-internal-analysis-only limits are recorded there too).
 
 ### 1.4 Success criteria
 
@@ -399,9 +399,10 @@ removals only; it does not reopen the freeze for new entries.
 
 **Addition is the mirror case, and it is likewise not a reopening.** An entry may be added
 to the frozen list after the freeze only by owner decision, recorded in a new §6.2 row
-marked "added post-freeze by exception" with the reason, and only **while the test segment
-is still unspent** — the same protection the freeze exists to preserve. Once the test
-segment is spent, no addition is possible without a fresh test segment, which by
+marked "added post-freeze by exception" with the reason — including a **stated reason why
+the entry is not redundant with what is already measured** (below) — and only **while the
+test segment is still unspent** — the same protection the freeze exists to preserve. Once
+the test segment is spent, no addition is possible without a fresh test segment, which by
 definition makes the entry v0.2.0 work (§1.3) rather than a v1 addition — the window is
 **self-closing**, not open-ended, which is what stops "one deliberate addition" from
 drifting into an unbounded list. This rule governs additions only; it does not reopen the
@@ -412,12 +413,11 @@ freeze generally.
 it attacks an axis M1 has measured as *unattacked* rather than dead (`WHI-1235` finding 6).
 One use is an exception; two is a pattern.
 
-That pattern implies a condition future uses must clear, one both prior uses happened to
-satisfy without it being stated as a requirement: as part of the owner's decision to grant
-the exception, an addition needs a **stated reason why the entry is not redundant with
-what is already measured.** Well into M1, with `WHI-1235`'s six recorded
-findings, that bar is materially higher than it was at freeze time — a candidate that only
-re-attacks an axis already measured as dead is not worth an exception.
+That pattern implies the non-redundancy condition folded into the rule above, one both
+prior uses happened to satisfy without it being stated as a requirement at the time. Well
+into M1, with `WHI-1235`'s six recorded findings, that bar is materially higher than it
+was at freeze time — a candidate that only re-attacks an axis already measured as dead is
+not worth an exception.
 
 ## 3. Cross-cutting Policies
 
@@ -616,7 +616,7 @@ single file, since several entries are multi-file source trees); each directory 
 its own `README.md` with the four fields below plus a mechanism summary, known parameters,
 and a fidelity note. That `README.md` is a **snapshot fixed at freeze time** — for the
 2026-08-21 freeze that means `002`–`006`; for the post-freeze exceptions `007` and `008` it
-means the point their own porting issue starts, since that is each entry's own freeze
+means the point each one's own porting issue starts, since that is each entry's own freeze
 moment — and it does not change once the porting issue starts. `NOTES.md` (§2.4, §2.9) is
 the living record after that: it re-declares the parameter space in the porting issue's own
 words and is the one that governs if the two ever drift, since it is what's actually frozen
