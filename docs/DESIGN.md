@@ -1065,16 +1065,17 @@ from evidentiary use for an unrelated reason (their pre-fix harness vintage, §8
 this ranking does not rely on. **The real test-segment pair is `008` (winner) and `003b`
 (runner-up)**, recorded as a correction on WHI-1226 before `bench compare --segment test`
 was invoked, per this issue's own "decide before running" rule. The superseded comment's
-`003b`-vs-`004` "inside the noise floor" framing still holds as a true statement about third
-vs. fourth place; it does not describe the actual pair below.
+`003b`-vs-`004` "inside the noise floor" framing still holds as a true statement about
+second vs. third place (per the corrected table above); it does not describe the actual
+pair below, and it is exactly why `003b`'s own runner-up status carries a caveat — see §9.6.
 
 §2.10 step 3 ("open one variant for each of the top three") was already satisfied before
 this issue started: `004b`, `003b`, and `005b` are exactly the variants opened for the
 three strategies that led validation once M1 had run (`004` 446.30, `003` 432.45, `005`
 425.95) — see each variant's own porting issue and `NOTES.md`
 (`004b-floor-subtracted-ewma-fee`, `003b-wider-band-deeper-book`,
-`005b-elapsed-steps-divisor-fix`); §8 finding 6 discusses `004b`'s and `007`'s outcomes but
-is not itself that record.
+`005b-elapsed-steps-divisor-fix`); §8 finding 6 discusses all three variants' (`004b`,
+`005b`, `003b`) and `007`'s outcomes but is not itself the record of when each was opened.
 
 ### 9.2 The test-segment run — spent exactly once
 
@@ -1103,9 +1104,11 @@ candidate pair was headed toward: **`008` beats `003b` on held-out data, clearly
 Before spending `test`, the same invocation was rehearsed once on `--segment validation`
 (reusable) to confirm the harness end-to-end: it reproduced `008`'s and `003b`'s
 already-committed validation numbers exactly (503.91 / 447.22), and additionally produced a
-direct paired validation-segment comparison of the two (not previously measured against each
-other directly, only each against `004`/`001`) — paired **+56.682838** `[52.176061,
-61.189614]`, n=1000, committed at
+direct paired validation-segment comparison of the two (previously only compared as
+committed averages against each other, not as a paired `bench compare` run: `008` had been
+paired via `bench compare` against `004` only, and `003b` had only ever been paired against
+`001` at grid mode's per-cell resolution, not as a single whole-segment aggregate) — paired
+**+56.682838** `[52.176061, 61.189614]`, n=1000, committed at
 `results/2026-08-22-compare-008-lagging-vwap-fee-vs-003b-wider-band-deeper-book-validation.md`.
 The test-segment margin (+61.74) is consistent with, and slightly larger than, the
 validation-segment margin (+56.68) for the same pair — no sign of overfitting to validation.
@@ -1125,20 +1128,23 @@ anywhere) `008` fails to lead:
   `[−2.27, 9.64]`) and `fee=High liq=High sigma=High` (n=45, diff 7.39 `[−2.92, 17.69]`). The
   adjacent `fee=High liq=High sigma=Mid` bin *does* separate them (diff 7.20
   `[3.73, 10.67]`, excludes zero) — so this is not a uniformly unresolved corner of the
-  tercile grid, only two of its bins are ties, and one of those two (`sigma=Low`) is not
-  the high-sigma corner discussed next — it is a calmer regime that happens to tie for an
-  unrelated reason.
-- **The unsolved cell** — `norm_fee_bps = 80` x `norm_liquidity_mult = 2.0` x
-  `gbm_sigma = 0.0070` (grid cell 26, the exact deterministic address every prior M1 entry
-  also lost at, §8 finding 2 — not the same thing as a tercile bin above, which buckets a
-  *range* of values rather than this one point) — stays negative for **both** candidates
-  against the `001` 0-line: `008` 116.44 vs `001` 152.43 (diff **−35.99**
-  `[−43.10, −28.88]`); `003b` 138.78 vs `001` 152.43 (diff **−13.65** `[−19.55, −7.76]`).
-  Both absolute edges are positive — the loss is relative to `001`, not an outright negative
-  edge. This is not a defect introduced by the winner: it is the one address nothing in the
-  portfolio has solved, and `008` loses there by a wider margin than the runner-up does,
-  worth stating plainly rather than glossing over because `008` otherwise wins everywhere
-  else — including, per the point above, every bin of the direct `008`-vs-`003b` pairing.
+  tercile grid, only two of its bins are ties, and one of those two (`sigma=Low`) is a
+  different, calmer regime from the high-sigma corner discussed next, not the same address.
+- **The near-unsolved cell** — `norm_fee_bps = 80` x `norm_liquidity_mult = 2.0` x
+  `gbm_sigma = 0.0070` (grid cell 26, the exact deterministic address — not the same thing
+  as a tercile bin above, which buckets a *range* of values rather than this one point) —
+  stays negative against the `001` 0-line for every fee-dynamics entry in the portfolio
+  except one: `003` −19.00, `004`/`004b` −41.62, `005` −120.89, `006` −191.24, `003b`
+  −13.65 (`[−19.55, −7.76]`), `008` −35.99 (`[−43.10, −28.88]`). The sole exception is `007`,
+  which collapses to a near-CPMM boundary (`k≈1`) at this cell and edges `001` by a narrow
+  **+0.87** `[0.69, 1.05]` (`results/2026-08-21-grid-007-dodo-pmm.md` cell 26) — consistent
+  with `007`'s own closure at that same `k=1` boundary (§2.9, §8 finding 6) rather than a
+  distinguishing feature of any fee curve. Both `008`'s and `003b`'s absolute edges here are
+  positive (116.44 / 138.78) — the loss is relative to `001`, not an outright negative edge.
+  This is not a defect introduced by the winner: `008` loses here by a wider margin than the
+  runner-up does, worth stating plainly rather than glossing over because `008` otherwise
+  wins everywhere else — including, per the point above, every bin of the direct
+  `008`-vs-`003b` pairing.
 
 ### 9.4 Observation row (reporting only — not a decision input, §2.2)
 
@@ -1156,11 +1162,15 @@ figure only; it did not, and must not, influence the winner/runner-up choice abo
 2. ✅ **0-line established.** `001-cpmm-fee` fitted under the full protocol; fee↔edge is
    single-peaked (`results/2026-08-20-fit-001-cpmm-fee.md`, §2.8).
 3. ✅ **Every frozen-list strategy reached a terminal state.** `002` Canceled by owner
-   decision (§6.2); `003`, `004`, `005`, `006`, `008` fitted via the full 300-point search
-   with train/validation numbers; `007` reached a terminal state via its own pre-registered
+   decision (§6.2); `003`, `004`, `005`, `006` fitted via the full 300-point search with
+   train/validation numbers; `007` reached a terminal state via its own pre-registered
    Step 0.5 probe *without* running the search (§6.2, §8 finding 6) — §1.4 item 3 accepts an
-   explicit recorded stop as terminal, not only a completed search. The §2.9 variants opened
-   under §2.10 step 3 (above) are likewise terminal: `003b` fitted via its own search;
+   explicit recorded stop as terminal, not only a completed search. `008` ran its own
+   300-point search (172/300 spent, 0 invalid) but is committed at the source's own
+   pre-registered anchor rather than the search's own winner, which measured worse on every
+   segment (§8 lesson 7, §9.6) — still fitted and terminal, just not at the search's own
+   argmax. The §2.9 variants opened under §2.10 step 3 (above) are likewise terminal: `003b`
+   fitted via its own search;
    `004b`, `005b` closed as pre-registered negatives with 0 of their 300-point budgets spent
    (§2.9/§2.10).
 4. ✅ **Winner named from a single use of `test`.** `008`, paired **+61.74 `[56.87,
@@ -1191,17 +1201,22 @@ figure only; it did not, and must not, influence the winner/runner-up choice abo
   unlike `004` (a past submission) or `007` (a licensed library) (§6.2). No number from that
   repository is used as evidence anywhere in this ranking; `008`'s 503.907498/530.83/501.57
   above are this project's own §3.3 measurements at the anchor point.
-- **`003b`'s number rests on two weaker links, stacked** (a third — "inside the noise
-  floor" — no longer applies now that the actual pair is `008`/`003b`, not `003b`/`004`):
-  its parent's parameter space was re-frozen once after the original range lost
-  catastrophically everywhere (screening −17,027 to −20,053,
-  `results/2026-08-21-fit-003-piecewise-linear-original-range-rejected.md`); and its own
+- **`003b`'s number rests on three weaker links, stacked** — the noise-floor link changes
+  what it is evidence *of*, but does not disappear now that the actual pair is `008`/`003b`
+  rather than `003b`/`004`: its parent's parameter space was re-frozen once after the
+  original range lost catastrophically everywhere (screening −17,027 to −20,053,
+  `results/2026-08-21-fit-003-piecewise-linear-original-range-rejected.md`); its own
   pre-registered probe landed in the discretionary band (`max(P1..P5) = 421.67`, against a
   426 unconditional-open threshold), requiring an explicit owner decision to proceed rather
-  than clearing on the numbers alone.
+  than clearing on the numbers alone; and `003b`'s own **runner-up identity** rests on
+  beating `004` by a margin squarely inside the ~±4–5 noise floor (+0.92 validation, +2.85
+  observation, §9.1) — a small perturbation in either family's number could have made `004`
+  the runner-up instead, which the winner/runner-up margin reported in §9.2 says nothing
+  about, since that margin is `008` vs. `003b`, not `003b` vs. `004`.
 - **Boundary hits are not interior optima, and neither finalist rests on one.** `003`'s
-  `W_BPS` and `005`'s `FEE_LO` both sit on a bound (§6.2, WHI-1209 precedent) — but neither
-  is in the final pair. `003b`'s fitted point is fully interior
+  `W_BPS` (WHI-1207) and `005`'s `FEE_LO` (WHI-1209) each sit on their own frozen bound
+  (`strategies/README.md`; each family's own `NOTES.md` § Search) — but neither `003` nor
+  `005` is in the final pair. `003b`'s fitted point is fully interior
   (`S0_BPS=57, W_BPS=2423, DELTA_RESERVE_BPS=763`, none at a range edge); `008` is committed
   at a fixed pre-registered anchor rather than a search result at all, for the reason
   above.
