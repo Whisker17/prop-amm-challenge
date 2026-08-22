@@ -200,6 +200,18 @@ soon — anything touching a declared high-risk path defaults to at least High),
   an observed failure — adding sanitization for a shape no real strategy directory uses
   would be speculative. Fix: sanitize (e.g. replace non-`[A-Za-z0-9_-]` bytes) if a
   strategy or ad-hoc `.rs` file with such a name is ever actually used.
+- **§2.10's "open one variant for each of the top three" has no explicit spend-tracking
+  location** (Low, WHI-1223). `docs/DESIGN.md` §2.10 authorizes exactly three §2.9 variant
+  slots (one per top-3 finalist) but names no single place that records how many have been
+  opened or which finalists they cover — each variant issue (WHI-1223 for `004b`, the
+  sibling `WHI-1224` for `003b`) is individually traceable via Linear, but there is no
+  `docs/DESIGN.md` §6.2 row or other repo-local ledger totting up the three-slot budget the
+  way the 300-point search budget has a declared cap in `config/bench.toml`'s `[search]
+  max_points`. Not fixed here: adding that ledger is a `docs/DESIGN.md` process change
+  spanning all three variant issues, not a `004b`-specific concern this issue's own
+  acceptance criteria asked for. Fix: once all three top-3 variants have opened issues, add
+  a short §2.10 addendum (or a §6.2-adjacent table) listing the three slots and the issue
+  that spent each.
 
 ---
 
