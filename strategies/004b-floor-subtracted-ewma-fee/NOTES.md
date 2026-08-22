@@ -63,13 +63,14 @@ for a single variant slot — see the issue body for that analysis; not re-deriv
 Unchanged in kind from the parent: zero-initialized storage reads `ewma_vol = 0`, so at the
 committed point (`FLOOR_1E9 = 0`) the residual is also `0` and `fee = BASE_FEE_1E9` with no
 separate sentinel branch. For garbage-state random bytes
-(`crates/cli/src/commands/validate.rs`'s randomized probe), every step —
-`saturating_sub`, the `u128` multiply/divide, `saturating_add`, and the final
-`.min(MAX_FEE_1E9)` clamp — is bounded for any `u64` state across the whole frozen range:
-the largest possible residual (`u64::MAX`) times the largest possible `VOL_MULT_NUM` (`64`)
-is ~1.18e21, comfortably inside `u128`'s ~3.4e38 ceiling, so `vol_fee` never overflows before
-the clamp. `bench fuzz` (below) confirms this empirically, the same way it did for the
-parent.
+(`crates/cli/src/commands/validate.rs`'s randomized probe): `residual`'s `saturating_sub`
+never underflows; `vol_fee`'s multiply/divide and the final three-term sum are plain `u128`
+arithmetic (not saturating) that relies on headroom rather than clamping — the largest
+possible residual (`u64::MAX`) times the largest possible `VOL_MULT_NUM` (`64`) is
+~1.18e21, comfortably inside `u128`'s ~3.4e38 ceiling, so nothing overflows before the final
+`.min(MAX_FEE_1E9)` clamp bounds the result. Only `shock_fee`'s `shock_steps.saturating_mul`
+is actually saturating (inherited unchanged from the parent). `bench fuzz` (below) confirms
+this empirically, the same way it did for the parent.
 
 ## Shape-safety rule (docs/DESIGN.md §2.9, cross-cutting finding #3) — unchanged
 
@@ -103,6 +104,17 @@ quantization choice, a power of two so `NUM/DEN` lowers to a shift) and
 Also frozen at the parent's own source anchors: `ALPHA_1E9` (0.20), `SHOCK_THRESHOLD_1E9`
 (0.5%), `SHOCK_DECAY_STEPS` (8).
 
+**`MAX_FEE_BPS`'s upper bound widens relative to the parent's own frozen range** (the
+parent froze `66..=400`; this variant freezes `66..=500`), which is results-informed in the
+sense that the issue's own reasoning for the new bound cites the parent's committed fit
+curve (the cap converged to 391, an interior point, not a boundary hit — `strategies/004-
+ewma-shock-decay-fee/NOTES.md` § Search) to argue 500 is a safe, still-anchored ceiling
+(the largest fee with any committed strong-high-sigma measurement, per the issue's Objective
+table above). This is legitimate as this variant's own newly-declared frozen space (§2.4
+requires freezing *before this issue's own search*, which this range does), not a
+retroactive widening of the parent's already-closed search — moot in practice here, since
+the kill rule below stops the search before any point actually exercises the new headroom.
+
 Budget: 4 dims, 300 points -> coarse grid 3 levels/axis = 81 points, ~219 for descent (never
 spent — see § Negative result below).
 
@@ -110,7 +122,15 @@ spent — see § Negative result below).
 
 Evaluated via the scratch degenerate-range method (`bench-fit-degenerate-range-evaluates-
 one-exact-point` technique: a throwaway copy with every PARAMS range collapsed to
-`MIN==MAX`, `bench fit --max-points 1 --no-report`, never committed):
+`MIN==MAX`, `bench fit --max-points 1 --no-report`, never committed). Every number in this
+section and in § Pre-registered stop rules below uses the `screening` segment (n=200) or
+the `train`/`validation` segments (n=1,000 each, `config/bench.toml`), 10,000 steps
+(`BASELINE_STEPS`), the native fast-compile path, run against the repo at commit `2d32177`
+(`origin/dev` tip) — the technique is inherently pre-commit (a throwaway scratch copy is
+evaluated before this issue's own `strategies/004b-floor-subtracted-ewma-fee/lib.rs` exists
+as a committed file, so no `results/*.md` report is written or possible for these points;
+`bench fit --no-report` and a `bench fuzz` PASS are both designed to write none, per
+docs/DESIGN.md §2.9/§2.5).
 
 **P0 — the parent's fitted point, `(BASE_BPS=34, VOL_MULT_NUM=8, FLOOR_BPS=0,
 MAX_FEE_BPS=391)`:** at `FLOOR_1E9=0` the `saturating_sub` is an identity and

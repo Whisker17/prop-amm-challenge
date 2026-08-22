@@ -42,8 +42,9 @@ const MAX_FEE_BPS: u64 = 391; // range: 66..=500
 const VOL_MULT_DEN: u64 = 8;
 // Frozen dead at 0: the parent's own fit priced the shock layer negative, and both
 // candidate repairs are out of scope for a §2.9 variant (NOTES.md § Objective). Kept as a
-// named term (rather than deleted) so `after_swap`'s counter keeps ticking harmlessly and
-// the state trajectory stays byte-identical to the parent's.
+// named term in `fee_from_storage` (rather than deleting `shock_fee` outright) purely for
+// structural continuity with the parent's formula — `after_swap`'s counter keeps ticking
+// regardless of this constant's value, since nothing in `after_swap` reads it.
 const SHOCK_FEE_PER_STEP_BPS: u64 = 0;
 
 // Derived, not independent parameters: the fee arithmetic runs on a 1e9 scale (1 bps =
@@ -183,8 +184,10 @@ pub fn compute_swap(data: &[u8]) -> u64 {
 /// `fee = BASE_FEE_1E9` with no separate sentinel/fallback branch needed — see the parent's
 /// NOTES.md § Cold start and garbage-state handling (inherited unchanged) for why this also
 /// sanitises random-byte storage (`crates/cli/src/commands/validate.rs`'s randomized probe)
-/// without a magic check: `saturating_sub`/`saturating_mul`/`saturating_add` and a final
-/// `.min(MAX_FEE_1E9)` clamp bound the output for any `u64` state, garbage or not.
+/// without a magic check: `residual`'s `saturating_sub` never underflows, the largest
+/// possible `residual * VOL_MULT_NUM` (`u64::MAX * 64 ~= 1.18e21`) stays far inside `u128`'s
+/// ~3.4e38 ceiling so the plain multiply/divide/add never overflows either, and a final
+/// `.min(MAX_FEE_1E9)` clamp bounds the output for any `u64` state, garbage or not.
 fn fee_from_storage(storage: &[u8]) -> u128 {
     if storage.len() < STATE_END {
         return BASE_FEE_1E9 as u128;
