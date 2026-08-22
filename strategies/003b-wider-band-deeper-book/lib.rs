@@ -95,11 +95,14 @@ const DELTA_RESERVE_BPS: u128 = 763; // range: 50..=1000
 // exhaustive coarse-grid search over its issue's original `25..=100` depth range measured
 // catastrophic loss (-17027 to -20053 screening) everywhere in it, and the corrected
 // `1..=10` percent depth is what this variant's `DELTA_RESERVE_BPS` re-expresses at 20x
-// finer resolution (`50..=1000` bps = `0.5..=10` percent — the same viability ceiling,
-// just quantized in bps instead of whole percent). See this variant's own NOTES.md §
-// Frozen parameter space for why the lower bound stays 50 (0.5%, the flow-share-collapse
-// floor) and the upper stays 1000 (10%, the same corrected ceiling) rather than reopening
-// either bound.
+// finer resolution. The UPPER bound is exactly the parent's own corrected ceiling (`1000`
+// bps = 10%, unchanged). The LOWER bound is NOT the same as the parent's: this variant's
+// own frozen space (declared in the issue, not derived here) drops it to `50` bps (0.5%),
+// below the parent's own `1..=10` percent floor — a genuine, if small, widening downward,
+// not merely a bps re-expression of the parent's own `1%` minimum. See this variant's own
+// NOTES.md § Frozen parameter space for why: the parent's own measured flow-share-collapse
+// trend (0.281 at 1% and falling) was measured only down to 1%, so 0.5%'s own viability is
+// judgment extrapolated from that trend's direction, not a point the parent itself measured.
 
 // `W_BPS`'s upper bound widens to 2500 from the parent's own frozen 1000, which the
 // parent's fit converged to on a still-rising, non-degenerate plateau (`[56,941,3] ->
@@ -305,17 +308,23 @@ fn finish_ladder(rx: u128, p_low: u128, p_high: u128) -> Option<Ladder> {
     // truncating division's floor is invariant under common scaling of numerator and
     // denominator), verified directly by this variant's own containment probe (NOTES.md §
     // Containment). Still one division, as before.
-    let total_qty = rx.saturating_mul(DELTA_RESERVE_BPS) / 10_000;
+    let total_qty = rx.saturating_mul(DELTA_RESERVE_BPS) / BPS_DENOM;
     if total_qty == 0 {
         return None;
     }
     // calculate_k (docs/references/003-piecewise-linear/math/mod.rs:30), evaluated once over
     // the whole collapsed [p_low, p_high] span rather than once per (identical) segment.
-    // Width up to 2.5x larger and `total_qty` down to 1/6 of the parent's own minimum (at
-    // `DELTA_RESERVE_BPS`'s floor of 50 vs the parent's floor of 1%) mean `k` can be ~15x
-    // smaller than under the parent — the `k == 0` guard below is more reachable at
-    // tiny-spot drift states than it was for the parent, confirmed still uniform (monotone-
-    // safe) by `bench fuzz` at this variant's own box corners (NOTES.md § Shape and CU risk).
+    // At this variant's own worst corner (`DELTA_RESERVE_BPS=50` and `W_BPS=2500`, box
+    // Corner A — the smallest-`k` of the four declared corners), `total_qty` is 1/6 of the
+    // parent's own COMMITTED value (50 vs the
+    // parent's fitted 300, i.e. 0.5% vs 3% of `reserve_x`) and `width` can be 2.5x the
+    // parent's own committed `W_BPS` (2500 vs 1000), so `k` there can be ~15x smaller than
+    // at the PARENT'S OWN fitted point — a materially different, and more informative,
+    // comparison than against the parent's own frozen-range floor (50 vs the parent's own
+    // range minimum of 100 bps is only a 2x difference). The `k == 0` guard below is
+    // therefore more reachable at tiny-spot drift states than it was for the parent,
+    // confirmed still uniform (monotone-safe) by `bench fuzz` PASSing at exactly that corner
+    // (NOTES.md § Shape and CU risk).
     let k = total_qty.saturating_mul(PRICE_SCALE) / width;
     if k == 0 {
         return None;

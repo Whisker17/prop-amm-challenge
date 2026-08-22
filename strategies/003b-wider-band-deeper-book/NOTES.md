@@ -124,7 +124,7 @@ parent port is the accurate provenance statement here, not a stylistic default.
 | --- | --- | --- |
 | `S0_BPS` | 5..=200 (**unchanged**) | no candidate change touches the near-spot price axis; the parent's own interior optimum (56) and this variant's own vicinity (57) both sit well inside it. |
 | `W_BPS` | 50..=**2500** (widened from the parent's 1000) | the parent's fit converged to its own frozen upper bound on a still-rising, non-degenerate plateau (`[56,941,3] -> 411.80`, `[56,986,3] -> 412.33`, `[56,1000,3] -> 412.46`) — genuine unresolved headroom. 2500 is a ridge-collapse bound: this port's 6 segments collapse to one linear-density span, so once `W` exceeds the largest inter-anchor mispricing the simulation can produce, `(W, DELTA_RESERVE_BPS)` enter the economics only through their ratio and further widening is pure reparameterization. 2500 bps covers a 3.5-sigma, ~100-step arb-free stretch at `gbm_sigma_max=0.007` — a gap that cannot persist un-arbitraged given the arbitrageur re-anchors at >=1 cent profit. **The 100-step/3.5-sigma choice is judgment, not measurement** — committed evidence (this variant's own search) only reaches the fitted `W_BPS=2423`, itself interior to the bound, not resting on it. |
-| `DELTA_RESERVE_BPS` | 50..=1000 bps (0.5%-10%) | re-expresses the parent's own corrected `DELTA_PCT` range (`1..=10` percent) at 20x finer resolution — same viability ceiling (the parent's own train sweep measured -4600 at 10% even behind `W=1000`), same flow-share-collapse floor (0.281 at 1% and falling), just quantized in bps rather than whole percent so the search can resolve the parent's own ~3.25%-interior peak. Not reopened by this issue — inherited from the parent's own pre-freeze correction. |
+| `DELTA_RESERVE_BPS` | 50..=1000 bps (0.5%-10%) | the UPPER bound (1000 bps = 10%) is exactly the parent's own corrected `DELTA_PCT` ceiling, just re-expressed at 20x finer resolution (the parent's own train sweep measured -4600 at 10% even behind `W=1000`). The LOWER bound (50 bps = 0.5%) is **not** the same as the parent's own `1%` floor — it is a genuine, small widening downward, declared in this issue rather than independently re-derived here. The parent's own flow-share-collapse trend (0.281 at 1% and falling) was measured only down to 1%; 0.5%'s own viability extrapolates that trend's direction rather than resting on a point the parent itself measured. |
 
 **Frozen, recorded as deliberately un-searched (unchanged from the parent):**
 `PRICE_SCALE`, `BPS_DENOM`, `NUM_PRICE_POINTS`/`NUM_SEGMENTS`, `MIN_GAP_BPS`,
@@ -140,9 +140,18 @@ points; screening segment `1_000_000..=1_000_199`, common random numbers). Coars
 `results/2026-08-22-fit-003b-wider-band-deeper-book.md`.
 
 **Converged after 176 of 300 points** (budget never exhausted); **zero invalid points** —
-every evaluated parameter vector produced a valid edge, consistent with the pre-search fuzz
-gate having already cleared this variant at the parent point and all four declared box
-corners.
+every evaluated parameter vector produced a valid edge (no panic), i.e. no point tripped
+`docs/DESIGN.md` §2.9's shape checks or WHI-1213's `Invalid` handling anywhere in the 176
+points visited. **This is a distinct claim from "shape-safe" or "not catastrophic" — the
+evaluated curve does contain a large, expected cliff region** (e.g. `[5,50,525] -> -20043`,
+`[103,50,525] -> -20077`, roughly 28 of the 176 points land in the -19,000 to -20,077 range
+— the same thin-book-behind-a-narrow-effective-band failure mode `003`'s own parent
+NOTES.md § DELTA_PCT range correction documents): a *valid* (non-panicking) edge, just an
+economically bad one, exactly as `results/2026-08-22-fit-003b-wider-band-deeper-book.md`'s
+own committed curve shows. The actual shape-safety evidence is the `bench fuzz` PASSes
+above, run specifically at the box's four corners (including the thinnest-`k` corner,
+Corner C) and the fitted point — not this "zero invalid" count, which only rules out
+panics.
 
 **Winning point: `S0_BPS = 57, W_BPS = 2423, DELTA_RESERVE_BPS = 763`.**
 
@@ -165,7 +174,9 @@ was not at infinity, it was at ~2423 bps (~24.2%) once paired with proportionall
 — confirming the issue's own single falsifiable thesis (the width x depth interaction, not
 either dimension alone).
 
-**Compile timing:** 176 warm compiles, min=0.385s, mean=0.733s, max=4.184s — exceeds
+**Compile timing:** 178 warm compiles (176 search-phase points plus the two final
+train/validation builds — the figure `results/2026-08-22-fit-003b-wider-band-deeper-book.md`
+itself reports), min=0.385s, mean=0.750s, max=4.184s — exceeds
 docs/DESIGN.md §2.6's `<1s` target on the max sample, consistent with the same session-load
 explanation `001`/`003`/`005`'s own `NOTES.md` files already document as a standing,
 previously-investigated non-issue with the fast path's own mechanism (concurrent build
@@ -231,9 +242,13 @@ point (`S0_BPS=57, W_BPS=2423, DELTA_RESERVE_BPS=763`), not just the box corners
   bound's own edge, not just at this interior winner.
 - **`finish_ladder`'s `k` guard:** at the fitted point, `k = 322,485,207` (computed directly,
   see § Validate buy-side check below) — far from the `k==0` degenerate case even at this
-  variant's much wider `width` than the parent's. The `bench fuzz` PASS at Corner C
-  (`S0=5, W=50, DELTA=1000`, the thinnest-`k` corner in the declared box) is what confirms
-  the guard itself, not the fitted point, since the fitted point is comfortably interior.
+  variant's much wider `width` than the parent's. Computed directly at `validate.rs`'s own
+  default state, the thinnest-`k` corner in the declared box is actually **Corner A**
+  (`S0=5, W=2500, DELTA=50`, `k=20,040,080` — the largest width paired with the smallest
+  depth), not Corner C (`S0=5, W=50, DELTA=1000`, `k=22,222,222,222`, the LARGEST `k` of the
+  four corners, since it pairs the smallest width with the largest depth). The `bench fuzz`
+  PASS at Corner A is what confirms the guard itself, not the fitted point, since the fitted
+  point is comfortably interior.
 - **`cost_of_base`'s term2 `base^2/(2k)`:** at the fitted point, `base <= total_qty ~=
   7.63e9` nano and `k ~= 3.2e8`, well inside the squaring bound
   (`(1.8e18)^2 ~ 3.4e36 << u128::MAX`) that carries over unchanged from the parent — the
