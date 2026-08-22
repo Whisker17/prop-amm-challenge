@@ -8,6 +8,7 @@ use prop_amm_shared::normalizer;
 use prop_amm_shared::result::BatchResult;
 use prop_amm_sim::runner;
 
+use crate::estimator_probe;
 use crate::telemetry::{self, L1Sim};
 
 // Must match crates/cli/src/commands/compile.rs's exported symbol names. tools/bench can't
@@ -114,6 +115,26 @@ impl LoadedNative {
         configs: Vec<SimulationConfig>,
     ) -> anyhow::Result<(BatchResult, Vec<L1Sim>)> {
         telemetry::run_batch_native_with_l1(self.swap_fn, self.after_swap_fn, configs)
+    }
+
+    /// WHI-1225's Probe A: runs this candidate (expected to be `005-vol-adaptive-cpmm-fee`)
+    /// alongside a shadow accumulator that replicates both variance normalizations from the
+    /// same `after_swap` payload — see `estimator_probe.rs`.
+    pub fn run_batch_with_005_estimator_probe(
+        &self,
+        configs: &[SimulationConfig],
+    ) -> anyhow::Result<Vec<estimator_probe::Vol005ProbeSim>> {
+        estimator_probe::run_005_dual_estimator_probe(self.swap_fn, self.after_swap_fn, configs)
+    }
+
+    /// WHI-1225's Probe A "Added scope": runs this candidate (expected to be
+    /// `004-ewma-shock-decay-fee`) alongside a shadow accumulator that replicates its own
+    /// `ewma_vol` EWMA and records its floor-sweep distribution — see `estimator_probe.rs`.
+    pub fn run_batch_with_004_floor_probe(
+        &self,
+        configs: &[SimulationConfig],
+    ) -> anyhow::Result<Vec<estimator_probe::Ewma004ProbeSim>> {
+        estimator_probe::run_004_floor_probe(self.swap_fn, self.after_swap_fn, configs)
     }
 }
 

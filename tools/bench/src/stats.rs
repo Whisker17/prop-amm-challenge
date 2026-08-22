@@ -91,6 +91,84 @@ pub fn paired_stat(candidate: &[SimResult], reference: &[SimResult]) -> anyhow::
     })
 }
 
+/// The median of `values` (average of the two middle elements on an even-length input) —
+/// used by WHI-1225's Probe A kill rule ("median `count / n_steps > 0.9` on the low-sigma
+/// tercile"), which the mean would answer a different, more outlier-sensitive question than
+/// the issue's own wording asks. Does not mutate `values`; sorts a local copy.
+pub fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("median input must not contain NaN"));
+    let n = sorted.len();
+    Some(if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    })
+}
+
+/// Average (fractional) rank of each value in `values`, tied values sharing the mean of the
+/// ranks they'd occupy — the standard tie-handling `spearman_rank_correlation` needs so equal
+/// `sigma_hat` values (a real possibility at the estimator's integer-`isqrt` resolution) don't
+/// bias the correlation from an arbitrary tie-break order.
+fn fractional_ranks(values: &[f64]) -> Vec<f64> {
+    let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .expect("ranks input must not contain NaN")
+    });
+
+    let mut ranks = vec![0.0; values.len()];
+    let mut i = 0;
+    while i < indexed.len() {
+        let mut j = i;
+        while j + 1 < indexed.len() && indexed[j + 1].1 == indexed[i].1 {
+            j += 1;
+        }
+        // Ranks are 1-based; positions i..=j (0-based) occupy ranks (i+1)..=(j+1).
+        let avg_rank = ((i + 1) + (j + 1)) as f64 / 2.0;
+        for slot in indexed.iter().take(j + 1).skip(i) {
+            ranks[slot.0] = avg_rank;
+        }
+        i = j + 1;
+    }
+    ranks
+}
+
+/// Spearman's rank correlation between two equal-length, paired series — used by WHI-1225's
+/// Probe A kill (ii) to compare `sigma_hat_old`/`sigma_hat_new` against `true_sigma` without
+/// assuming either estimator is linear in the truth (only monotone). Returns `None` for
+/// fewer than 2 points or when either series has zero rank variance (a constant series has no
+/// defined correlation, not a `0.0` one).
+pub fn spearman_rank_correlation(a: &[f64], b: &[f64]) -> Option<f64> {
+    if a.len() != b.len() || a.len() < 2 {
+        return None;
+    }
+    let ranks_a = fractional_ranks(a);
+    let ranks_b = fractional_ranks(b);
+    let n = ranks_a.len() as f64;
+
+    let mean_a = ranks_a.iter().sum::<f64>() / n;
+    let mean_b = ranks_b.iter().sum::<f64>() / n;
+
+    let mut cov = 0.0;
+    let mut var_a = 0.0;
+    let mut var_b = 0.0;
+    for i in 0..ranks_a.len() {
+        let da = ranks_a[i] - mean_a;
+        let db = ranks_b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+    if var_a == 0.0 || var_b == 0.0 {
+        return None;
+    }
+    Some(cov / (var_a.sqrt() * var_b.sqrt()))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -189,5 +267,76 @@ pub(crate) mod tests {
     #[test]
     fn t_table_df_1() {
         assert!((t_critical(1) - 12.706).abs() < 1e-9);
+    }
+
+    #[test]
+    fn median_of_empty_is_none() {
+        assert_eq!(median(&[]), None);
+    }
+
+    #[test]
+    fn median_odd_length_is_the_middle_element() {
+        assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
+    }
+
+    #[test]
+    fn median_even_length_averages_the_two_middle_elements() {
+        assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), Some(2.5));
+    }
+
+    #[test]
+    fn median_does_not_require_pre_sorted_input() {
+        assert_eq!(median(&[5.0, 1.0, 4.0, 2.0, 3.0]), Some(3.0));
+    }
+
+    #[test]
+    fn fractional_ranks_break_ties_with_the_average_rank() {
+        // Values 10,10,20 -> ranks 1,2,3 for the sorted order, but the tied 10s share rank
+        // 1.5 each; the untied 20 keeps rank 3.
+        let ranks = fractional_ranks(&[10.0, 20.0, 10.0]);
+        assert_eq!(ranks, vec![1.5, 3.0, 1.5]);
+    }
+
+    #[test]
+    fn spearman_of_a_perfectly_monotone_pair_is_one() {
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        assert!((spearman_rank_correlation(&a, &b).unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spearman_of_a_perfectly_inverse_monotone_pair_is_negative_one() {
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = vec![50.0, 40.0, 30.0, 20.0, 10.0];
+        assert!((spearman_rank_correlation(&a, &b).unwrap() - (-1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spearman_is_robust_to_a_nonlinear_but_monotone_transform() {
+        // b = a^3 is nonlinear (Pearson would be < 1) but strictly monotone in a — Spearman
+        // must still read exactly 1.0, which is the whole reason WHI-1225's kill (ii) uses it
+        // rather than a linear correlation.
+        let a: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b: Vec<f64> = a.iter().map(|x| x * x * x).collect();
+        assert!((spearman_rank_correlation(&a, &b).unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spearman_requires_at_least_two_points() {
+        assert_eq!(spearman_rank_correlation(&[1.0], &[1.0]), None);
+        assert_eq!(spearman_rank_correlation(&[], &[]), None);
+    }
+
+    #[test]
+    fn spearman_requires_equal_length_series() {
+        assert_eq!(spearman_rank_correlation(&[1.0, 2.0], &[1.0]), None);
+    }
+
+    #[test]
+    fn spearman_is_none_for_a_constant_series() {
+        assert_eq!(
+            spearman_rank_correlation(&[1.0, 1.0, 1.0], &[1.0, 2.0, 3.0]),
+            None
+        );
     }
 }
