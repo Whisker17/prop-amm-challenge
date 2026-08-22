@@ -342,8 +342,10 @@ single-peakedness.
 and `strategies/README.md`'s registry records which one applies: *loses to the 0-line*
 (`006`, avg edge 369.79 < `001`'s 399.97), *ties its parent bit-exact* (`004b`, `bench
 compare` vs. `004` measures a paired mean diff of exactly 0.000000, CI `[0.000000,
-0.000000]`), and *closes on a pre-registered probe without running a search* (`007`,
-`005b` — §2.5's kill rule fires before the 300-point budget is spent). The distinction
+0.000000]`), and *closes on a probe-stage measurement without running a search*
+(`007`'s Step 0.5 boundary hit; `005b`'s Probe A survives its own literal kill conditions,
+but a paired `bench compare` CI computed at the probe stage shows a real net loss — either
+way, none of §2.5's 300-point budget is spent). The distinction
 matters for how much weight the negative carries: a bit-exact tie is not evidence the
 modification was wrong, only that it was untested past the probe; a probe-closed negative
 spent none of the search budget, unlike `006`'s fully-searched negative. See §8 for the
@@ -775,10 +777,11 @@ through `strategies/*/NOTES.md` and closed issues.
    fixed-addressed (`base + cell*1000 + i`, WHI-1195), so raw candidate averages are
    comparable across grid reports. Comparing `results/2026-08-20-grid.md` (starter@500)
    against `results/2026-08-21-grid-004-ewma-shock-decay-fee.md` (the fitted M1 winner) at
-   `gbm_sigma = 0.0070`: a flat 500 bps out-earns the winner in six of nine high-sigma
-   cells — cell 2 by +322.5, cell 11 by +252.1, cell 8 by +200.9, cell 17 by +125.5, cell 5
-   by +142.9, cell 20 by +138.4. Those margins dwarf the winner's entire +44.50 aggregate
-   advantage over the 0-line (`results/2026-08-20-fit-001-cpmm-fee.md` vs.
+   `gbm_sigma = 0.0070`: a flat 500 bps out-earns the winner in **seven of the nine**
+   high-sigma cells (all but cells 23 and 26) — by margin: cell 2 by +322.5, cell 11 by
+   +252.1, cell 8 by +200.9, cell 17 by +125.5, cell 5 by +142.9, cell 20 by +138.4, and
+   cell 14 by a smaller +50.6. The six largest margins alone dwarf the winner's entire
+   +44.50 aggregate advantage over the 0-line (`results/2026-08-20-fit-001-cpmm-fee.md` vs.
    `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`, validation avg edge). **Nobody has
    captured it.** `004b` (WHI-1223) was built specifically to, by decoupling the calm fee
    level from the high-sigma response slope, and it failed measurably (screening P1
@@ -788,9 +791,10 @@ through `strategies/*/NOTES.md` and closed issues.
    it failed, and the failure is itself now measured.
 2. **Competitor-blindness is what the class is actually missing — triple-corroborated.**
    Three independent variant assessments converged on the same binding constraint from
-   different directions: `005b`'s 8-cell loss cluster, all with `norm_liquidity_mult >=
-   1.0`, is untouched by any change to the estimator (`strategies/005-vol-adaptive-cpmm-fee/NOTES.md`);
-   `003b`'s cells 21/22 are inner-margin cells no candidate change reaches, confirmed
+   different directions: `005`'s own 8-cell loss cluster, all with `norm_liquidity_mult >=
+   1.0` (`strategies/005-vol-adaptive-cpmm-fee/NOTES.md`), is left untouched by `005b`'s
+   estimator correction — the cluster sits on the parent's grid, not on any change `005b`
+   made; `003b`'s cells 21/22 are inner-margin cells no candidate change reaches, confirmed
    after the fact at −30.30 / −30.30 (`results/2026-08-22-grid-003b-wider-band-deeper-book.md`);
    `004b`'s floor-decoupling only partially reaches the `fee=80` calm cells. No submission
    can observe `norm_fee_bps` or `norm_liquidity_mult`, but flow share is inferable from
@@ -799,19 +803,22 @@ through `strategies/*/NOTES.md` and closed issues.
    scheduled** — the v0.2.0 list is unfrozen and an issue outside a frozen list is an
    orphan (§2.10), so no v0.2.0 issue is opened against this finding.
 
-   **External corroboration, vintage-bound (WHI-1236).** While scoping `008` — a candidate
-   still blocked on an owner provenance decision, so no reference material has been copied
-   into this repo — its issue body cites `houseofjiao/prop-amm-challenge`'s own
-   `LEARNINGS.md`, a measured dead-end corpus from that author's tuning campaign on their
-   **pre-2026-02-16 harness**. It measured this same flow-share-inference premise directly:
-   `cnt_ema -> norm_fee` r = 0.662 and `arb_prefers_us -> norm_fee` r = 0.828 — the
-   inference is real and strong there too. That author then tried to exploit it with a fee
-   boost and it **regressed at their own optimum**, via a named mechanism: a slow-decaying
-   fee floor overshoots the opponent's fee and routes retail away. That is evidence about
-   *their* local equilibrium, on a harness vintage this project does not use, not proof our
-   leaders cannot use the signal here — and no number of theirs is evidence for a claim
-   about this harness. But it is a recorded failed attempt with a named failure mode, so a
-   v0.2.0 attempt at this axis does not have to restart from zero.
+   **External corroboration, vintage-bound (WHI-1236) — third-party reported, not measured
+   under §3.3's protocol.** While scoping `008` — a candidate still blocked on an owner
+   provenance decision, so no reference material has been copied into this repo — its issue
+   body cites `houseofjiao/prop-amm-challenge`'s own `LEARNINGS.md` (source pinned at
+   `152697153d`), a measured dead-end corpus from that author's tuning campaign on their
+   **pre-2026-02-16 harness**. It reports this same flow-share-inference premise measured
+   directly there: `cnt_ema -> norm_fee` r = 0.662 and `arb_prefers_us -> norm_fee` r =
+   0.828 — the inference is real and strong there too. That author then tried to exploit it
+   with a fee boost and it **regressed at their own optimum**, via a named mechanism: a
+   slow-decaying fee floor overshoots the opponent's fee and routes retail away. These
+   figures carry none of §3.3's own-measurement provenance (no seed segment, sim/step
+   count, or execution path is available for them) precisely because they are *not* a
+   number produced under this project's protocol — they are cited as a third party's report
+   for context only, not as evidence for any claim about this harness. It is nonetheless a
+   recorded failed attempt with a named failure mode, so a v0.2.0 attempt at this axis does
+   not have to restart from zero.
 
 *Resolved negatives*
 
@@ -819,8 +826,9 @@ through `strategies/*/NOTES.md` and closed issues.
    `results/2026-08-22-estimator-probe-005b.md` § Added scope measured `004`'s `ewma_vol`
    against a floor sweep, bucketed by true-sigma tercile and volume-weighted (the weighting
    that matters, since the fee only bites where flow arrives): at the two floors `004b`
-   actually probed (30 for P1, 25 for P2), 31–44% of executed volume in the calm terciles
-   has its residual zeroed (Low: 44.1% ≤30bps / 30.7% ≤25bps; Mid: 30.9% / 17.3%; High:
+   actually probed (30 for P1, 25 for P2), 31–44% of executed volume in the low-sigma
+   tercile alone has its residual zeroed (44.1% ≤30bps, 30.7% ≤25bps) — and a material,
+   if smaller, share in the mid tercile too (30.9% ≤30bps, 17.3% ≤25bps; high tercile:
    12.8% / 5.7%), pinning the fee at `BASE` exactly where the parent already loses to
    `001@66`. This substantiates `004b`'s own closing hypothesis (WHI-1223), which its
    `NOTES.md` correctly flagged as unverified at the time. Generalised form: any
@@ -844,23 +852,28 @@ through `strategies/*/NOTES.md` and closed issues.
    improvement available from better estimation (8.72% decompression) is small next to what
    the class is actually missing (finding 2).
 
-   **Independent convergence, vintage-bound (WHI-1236).** A second, unrelated codebase
-   reached the same conclusion from the opposite direction and made it structural: `008`'s
-   source (`houseofjiao/prop-amm-challenge`, evaluation blocked on an owner provenance
-   decision, no material copied here) reports in its own `LEARNINGS.md` § "Signed Flow
-   Price Estimation" that making *their* price estimate more accurate reduced *their* edge,
-   because in their mechanism the deviation term `(spot - p_ref)^2` **is** the fee signal —
-   a lagging estimate is load-bearing there, not a defect. Two codebases, two different
-   mechanisms, the same conclusion at class level rather than at the level of one family: in
-   this harness, a more accurate volatility or price estimate is not automatically a better
-   strategy.
+   **Independent convergence, vintage-bound (WHI-1236) — third-party reported, not measured
+   under §3.3's protocol.** A second, unrelated codebase reached the same conclusion from
+   the opposite direction and made it structural: `008`'s source
+   (`houseofjiao/prop-amm-challenge`, source pinned at `152697153d`, evaluation blocked on
+   an owner provenance decision, no material copied here) reports, on that author's own
+   **pre-2026-02-16 harness**, in its own `LEARNINGS.md` § "Signed Flow Price Estimation",
+   that making *their* price estimate more accurate reduced *their* edge, because in their
+   mechanism the deviation term `(spot - p_ref)^2` **is** the fee signal — a lagging
+   estimate is load-bearing there, not a defect. Two codebases on two different harness
+   vintages, two different mechanisms, the same conclusion stated at class level rather than
+   at the level of one family: a more accurate volatility or price estimate is not
+   automatically a better strategy for this class of fee — this project's own measurement
+   (above) is the one that counts as evidence for *this* harness; the second is corroboration
+   only.
 5. **Two axes measured net-harmful, so nobody retries them.** Concentration / virtual-reserve
    amplification (`007`, WHI-1219): net-harmful at every tested point; the family closed at
    its own `k = 1` CPMM boundary (`results/2026-08-21-grid-007-dodo-pmm.md`,
    `strategies/007-dodo-pmm/NOTES.md` § Negative result) — this also closes the v0.2.0
    earmark §6.2 recorded when `002` was cancelled, per §6.2's own update above.
    Event-driven shock surcharge (`004`'s own search): ablated to exactly 0 by the search
-   (`strategies/004-ewma-shock-decay-fee/NOTES.md` § Search), with a mechanism — it re-arms
+   (`SHOCK_FEE_PER_STEP_BPS = 0` at the fitted point, `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`;
+   `strategies/004-ewma-shock-decay-fee/NOTES.md` § Search), with a mechanism — it re-arms
    on large *retail* prints, raising the fee right after uninformed flow, and its per-trade
    decay makes the surcharge's duration a function of arrival rate. Any repair needs an
    arb-vs-retail classifier, which needs the fair price, which the interface does not
@@ -868,13 +881,21 @@ through `strategies/*/NOTES.md` and closed issues.
 
 *Protocol lesson*
 
-6. **Pre-registered probes with numeric kill rules saved most of the search budget.** Four
-   of the seven ranked entries terminated on a probe without running their 300-point search
-   (`004b`, `005b`, `007`, and `002` before it started), and in each case the probe number,
-   not an argument, is what closed the lane. `003b` is the counter-case that justifies the
-   two-tier band: its probe landed at 421.67, in the discretionary range
-   (`strategies/003b-wider-band-deeper-book/NOTES.md`), and the full search then produced
-   the portfolio's best number. Also worth recording: bit-exact containment of the parent's
-   fitted point caught real problems, and the one case where it could not be bit-exact
+6. **Pre-registered probes with numeric kill rules saved most of the search budget.** Three
+   of the nine post-freeze entries closed on a pre-search measurement without running their
+   300-point search: `004b`'s kill rule fired (WHI-1223); `005b`'s Probe A survived its own
+   literal kill conditions, but a paired `bench compare` CI computed at the probe stage
+   showed a real net loss (WHI-1225); `007` closed at its own Step 0.5 boundary hit
+   (WHI-1219). In each of these three, a number produced before the search phase — not a
+   subjective argument — is what closed the lane. `002` is a fourth, differently-mechanised
+   case: it never reached a probe at all, being struck by **owner decision** before any
+   measurement (§2.10's removal clause, §6.2) — worth keeping distinct from the other three,
+   since a governance call and a numeric kill rule are not the same protection. `003b` is the
+   counter-case that justifies the two-tier band: its P3 probe landed at 421.673537, in the
+   discretionary range (`strategies/003b-wider-band-deeper-book/NOTES.md`; nearby search
+   points in the same region are in `results/2026-08-22-fit-003b-wider-band-deeper-book.md`),
+   and the full search then produced the portfolio's best number. Also worth recording:
+   bit-exact containment of the parent's fitted point caught real problems, and the one
+   case where it could not be bit-exact
    (`005b`, because the estimator itself changed) is exactly where the near-exact fallback
    and its predicted-gap threshold earned their place.
