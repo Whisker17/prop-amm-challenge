@@ -85,9 +85,9 @@ const NUM_SEGMENTS: u128 = 6;
 const _: () = assert!(NUM_PRICE_POINTS == NUM_SEGMENTS + 1);
 
 // === PARAMS BEGIN ===
-const S0_BPS: u128 = 56; // range: 5..=200
-const W_BPS: u128 = 1000; // range: 50..=2500
-const DELTA_RESERVE_BPS: u128 = 300; // range: 50..=1000
+const S0_BPS: u128 = 57; // range: 5..=200
+const W_BPS: u128 = 2423; // range: 50..=2500
+const DELTA_RESERVE_BPS: u128 = 763; // range: 50..=1000
                                      // === PARAMS END ===
 
 // `S0_BPS`'s range (5..=200) is unchanged from the parent's own pre-freeze correction
