@@ -224,6 +224,17 @@ files contain a direct measurement of `ewma_vol`'s time-distribution across sigm
 so this account should be read as a hypothesis consistent with the measured P1/P2 losses,
 not as an independently confirmed causal chain.
 
+**Addendum (2026-08-22, WHI-1225): this is now a direct measurement, not just a hypothesis.**
+`WHI-1225`'s own Probe A (`bench estimator-probe`, `strategies/005b-elapsed-steps-divisor-fix/
+NOTES.md` § Added scope) replicates `ewma_vol` from a real run and records its time- and
+volume-weighted distribution against a floor sweep, bucketed by true-sigma tercile. Result:
+even in the **Low** sigma tercile (the calmest third of the sampled range, not an extreme
+tail), `ewma_vol` sits at or below 25 bps on **56.2%** of sampled steps (30.7% of executed
+volume) and at or below 30 bps on **70.3%** of steps (44.1% of volume) — exactly the two
+floors P2 and P1 used above. The proposed mechanism is confirmed: at these floor levels the
+residual is zeroed on a majority of calm-regime steps, which is why both probe points lost.
+Full table: `results/2026-08-22-estimator-probe-005b.md`.
+
 **The committed value is the containment point, `(BASE_BPS=34, VOL_MULT_NUM=8,
 FLOOR_BPS=0, MAX_FEE_BPS=391)` — a bit-exact tie with the parent, not an interior optimum.**
 Per the `WHI-1209` boundary-hit precedent this issue's own Prediction section names
