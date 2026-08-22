@@ -150,6 +150,21 @@ soon — anything touching a declared high-risk path defaults to at least High),
   `strategies/*/lib.rs` files by hand whenever either changes; revisit if this probe is ever
   reused for a future issue, at which point a shared regression fixture (mirroring
   `curve_checks.rs`'s ported-test approach) would be worth the added coupling.
+- **`strategies/005-vol-adaptive-cpmm-fee/lib.rs`'s inherited "MLE of stationary variance"
+  header comment is not softened, despite WHI-1225 measuring exactly why it's imprecise**
+  (Low, WHI-1225). WHI-1225's own acceptance criteria asked for this comment (`fee_from_state`'s
+  `variance` line, `lib.rs:257`) to be softened to "consistent moment estimator" — `var_sum /
+  count` is not the MLE of a per-step variance whenever a sample spans a multi-step gap, which
+  is precisely what that issue measured (a 35.6% average `sigma_hat` inflation, `strategies/
+  005b-elapsed-steps-divisor-fix/NOTES.md` § Probe A). Left unfixed: WHI-1225 committed no
+  `005b` `lib.rs` to carry an edited comment, and `005` itself is a shipped, ranked strategy —
+  editing its source as a side effect of a probe-gated ablation issue is out of §2.9's
+  minimum-change scope for a faithful port. `strategies/005-vol-adaptive-cpmm-fee/NOTES.md`
+  § Estimator bias has an addendum explaining the imprecision, which defends the comment's
+  accuracy as a statement of intent rather than softening it — so the criterion's literal text
+  is not satisfied. Fix: the next issue that touches `005`'s own `lib.rs` (a genuine `005b`
+  variant that ships a corrected estimator, or a governance-scoped comment sweep) should
+  soften this line then, not as an unrelated side effect of a different issue.
 - **`bench fuzz`'s golden-section-shaped sampling is a faithful-shape mirror, not a literal
   port of `crates/sim/src/arbitrageur.rs`'s bracket-then-golden-section search or
   `crates/sim/src/router.rs`'s alpha-split objective** (Low, WHI-1212). `tools/bench/src/

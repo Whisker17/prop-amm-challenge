@@ -299,7 +299,12 @@ pub fn run(args: EstimatorProbeArgs) -> anyhow::Result<()> {
     let sims_005 = loaded_005.run_batch_with_005_estimator_probe(&configs)?;
 
     println!("Building {} (004 floor probe)...", args.candidate_004);
-    let loaded_004 = compile::build_and_load(&args.candidate_004, Slot::Zero)?;
+    // `Slot::One`, not `Zero` — `loaded_005`'s `swap_fn`/`after_swap_fn` are trampolines
+    // dispatching through a shared `LOADED_SWAP[idx]` slot (compile.rs), so loading a second
+    // candidate into the *same* slot would silently repoint `loaded_005`'s own handles at
+    // `004`'s symbols. `compare.rs`/`grid.rs` use `Zero`/`One` for exactly this reason when
+    // two candidates are loaded and live at once.
+    let loaded_004 = compile::build_and_load(&args.candidate_004, Slot::One)?;
     println!(
         "Running {} simulations ({} steps each) on segment `screening` with the ewma_vol \
          floor-sweep probe installed...",

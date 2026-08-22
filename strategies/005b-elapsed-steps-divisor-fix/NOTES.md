@@ -158,7 +158,7 @@ slice: `results/2026-08-22-compare-005b-elapsed-steps-divisor-fix-vs-005-vol-ada
 The CI excludes zero entirely — this is not a noisy, ambiguous result; it is a statistically
 clear loss, confirming (not merely corroborating) the Probe B finding above (which used
 independent screening-segment means from two separate `bench fit` runs on the same seeds and
-landed within 0.00006 of this paired estimate — the two methods agree to six decimal places,
+landed within 0.000001 of this paired estimate — the two methods agree to five decimal places,
 as they should on identical seeds). The regime-slice breakdown shows the loss is not uniform:
 of the 27 bins, 11 have a 95% CI excluding zero, and of those, 9 are losses and only 2 are wins
 (`fee=Low liq=High sigma=Low`: +29.78 `[9.32, 50.23]`; `fee=High liq=High sigma=High`: +43.06
@@ -220,7 +220,9 @@ committed.**
       addendum explaining precisely why the comment is imprecise (`count`, not elapsed steps),
       but that addendum defends why the comment stays as shipped rather than softening it — it
       does not satisfy this criterion's literal text. Recorded here as prior art for a future
-      variant that does commit source based on this estimator.
+      variant that does commit source based on this estimator, and logged as its own
+      `docs/DEFERRED_ISSUES.md` entry (round-3 review, `AGENTS.md`'s own "leave unfixed goes
+      in `docs/DEFERRED_ISSUES.md`" rule).
 - [x] `bench compare 005b vs 005` run for the paired CI — **the primary number**: paired mean
       diff −19.293945, 95% CI `[−26.685351, −11.902540]`, n=200, CI excludes zero
       (`results/2026-08-22-compare-005b-elapsed-steps-divisor-fix-vs-005-vol-adaptive-cpmm-fee.md`,
