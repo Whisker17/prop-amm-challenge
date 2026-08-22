@@ -61,7 +61,7 @@ liquidity sampling, step count, the edge formula — come from the challenge and
   Original designs are v0.2.0 work; this bars our own designs, not ports of another's
   mechanism, which §2.9's fidelity contract governs instead (§6.2's `007` and `008` are
   such ports, each added post-freeze by exception per §2.10 — `008`'s licence and
-  copying-for-internal-analysis-only limits are recorded on its §6.2 entry).
+  copying-for-internal-analysis-only limits are recorded in §6.2).
 
 ### 1.4 Success criteria
 
@@ -412,10 +412,10 @@ freeze generally.
 it attacks an axis M1 has measured as *unattacked* rather than dead (`WHI-1235` finding 6).
 One use is an exception; two is a pattern.
 
-That pattern implies a condition future uses should have to clear, one both prior uses
-happened to satisfy without it being stated as a requirement: as part of the owner's
-decision to grant the exception, an addition needs a **stated reason why the entry is not
-redundant with what is already measured.** Well into M1, with `WHI-1235`'s six recorded
+That pattern implies a condition future uses must clear, one both prior uses happened to
+satisfy without it being stated as a requirement: as part of the owner's decision to grant
+the exception, an addition needs a **stated reason why the entry is not redundant with
+what is already measured.** Well into M1, with `WHI-1235`'s six recorded
 findings, that bar is materially higher than it was at freeze time — a candidate that only
 re-attacks an axis already measured as dead is not worth an exception.
 
