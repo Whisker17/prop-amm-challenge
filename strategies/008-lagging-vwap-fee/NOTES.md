@@ -71,7 +71,9 @@ collapsed, tokenized) between `docs/references/008-lagging-vwap-fee/strategy.rs`
    artifact undecided — this project's registry entry is never presented as the source
    author's own work). `MODEL_USED` ("Opus 4.6") is preserved unchanged, since the
    mechanism itself is unchanged (same pattern `004`'s own NOTES.md documents for its own
-   `MODEL_USED` preservation).
+   `MODEL_USED` preservation). Both drop the source's own `pub` modifier — every other
+   strategy in this registry declares these two consts non-`pub`; behavior-neutral, since
+   neither is referenced from outside this file's own module.
 2. **`#[cfg(not(feature = "no-entrypoint"))]`** added before `entrypoint!` — this
    repository's own build convention (every strategy in `strategies/` carries it; the
    source, targeting a standalone binary, did not need it).
@@ -194,17 +196,28 @@ gain bounds, switcher hysteresis thresholds) is frozen at the source's own value
 **Run, not superseded.** Per the issue's own instruction, via the degenerate-range scratch
 method (`004b`/`005b`/`007`'s own precedent: a throwaway copy, never committed, with every
 `PARAMS` range collapsed to `MIN==MAX` at the target value): `ARB_K_BPS`/`COUNTER_K_BPS`/
-`SIZE_K_BPS` collapsed to `0..=0`, `TARGET_BASE_BPS` to `66..=66`, and — since this
-mechanism carries live non-`PARAMS` terms no `MIN==MAX` collapse can reach — the scratch
-copy additionally zeroed, by hand, every remaining source of fee variation: `P0_VOL_MULT`/
-`P0_TOX_QUAD`/`P0_TOX_CUBE`/`P0_SHOCK_QUAD`/`P0_SHOCK_CUBE` (the `after_swap` ratchet's
-non-base terms), `SIZE_FEE_K` and `PRICE_DEV_K` (the size-fee and cold-start deviation
-terms), every profile's own `*_SHOCK_K` and the `profile_params` `default_fee`/`tox_read_k`
-pair (all three set to `66bps`/`0` so the ensemble switcher's choice of active profile
-cannot matter), and the two literal, non-`PARAMS` discrete bumps in `after_swap`'s
-`make_target` closure (`tox_shock_spike`'s `+15bps`, `sv_bump`'s `+5`/`+10bps`) — none of
-which are searchable but all of which are live at every trade otherwise. Run via
-`bench fit --strategy strategies/008-0line --max-points 1 --no-report`:
+`SIZE_K_BPS` collapsed to `0..=0`, `TARGET_BASE_BPS` to `66..=66`. This zeroes profile 0's
+own arb/counter/size terms (`profile_params`'s `profile == 0` arm reads exactly these four
+`PARAMS`), but the ensemble can still select profile 1 or 2, whose own `P1_ARB_K`/
+`P1_COUNTER_K`/`P1_SIZE_K`/`P2_ARB_K`/`P2_COUNTER_K`/`P2_SIZE_K` are separate, non-`PARAMS`
+constants a `MIN==MAX` collapse cannot reach — so the scratch copy additionally zeroed, by
+hand, every remaining source of fee variation across **all three** profiles, not only
+profile 0: `P0_VOL_MULT`/`P0_TOX_QUAD`/`P0_TOX_CUBE`/`P0_SHOCK_QUAD`/`P0_SHOCK_CUBE` (the
+`after_swap` ratchet's non-base terms — read once, shared by all profiles, per the source's
+own "all three profiles share this one target-fee formula" design), `SIZE_FEE_K` and
+`PRICE_DEV_K` (the size-fee and cold-start deviation terms), `P1_ARB_K`/`P1_COUNTER_K`/
+`P1_SIZE_K`/`P1_SHOCK_K` and `P2_ARB_K`/`P2_COUNTER_K`/`P2_SIZE_K`/`P2_SHOCK_K` (profile
+1's and profile 2's own directional/size/shock-read constants — the same four roles
+`ARB_K_BPS`/`COUNTER_K_BPS`/`SIZE_K_BPS`/`P0_SHOCK_K` play for profile 0, but declared
+separately per profile in the source, so each needed its own edit), `P0_SHOCK_K` (profile
+0's own shock-read constant, not reachable via the `PARAMS` block either), and every
+profile's `profile_params` `default_fee`/`tox_read_k` pair (all three profiles set to
+`66bps`/`0`, so which profile the ensemble switcher actually selects cannot matter — with
+every profile's own arb/counter/size/shock-read terms *also* zeroed above, all three now
+quote identically regardless), plus the two literal, non-`PARAMS` discrete bumps in
+`after_swap`'s `make_target` closure (`tox_shock_spike`'s `+15bps`, `sv_bump`'s
+`+5`/`+10bps`) — none of which are searchable but all of which are live at every trade
+otherwise. Run via `bench fit --strategy strategies/008-0line --max-points 1 --no-report`:
 
 | Segment | n | `008-0line` avg edge | `001-cpmm-fee`'s own committed number | gap |
 | --- | --- | --- | --- | --- |

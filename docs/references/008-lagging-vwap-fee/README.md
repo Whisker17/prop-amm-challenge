@@ -28,7 +28,10 @@ fetch time — commit message "Remove hardcoded user path from coarse_sweep_cnte
 Mechanism code (`strategy.rs`) last changed at `d7bddcf247` ("Fix BPF stack overflow:
 isolate 1024-byte storage alloc into separate frame"); `dfc62a7055` is the source's own
 "Edge 501.62, last known-good BPF build" anchor commit, which their history shows was
-explicitly reverted to at some point in their ~90-commit tuning campaign.
+explicitly reverted to at some point in their ~90-commit tuning campaign. That `501.62` is
+identification metadata (which commit this is), not a comparable number — it was measured
+on the source author's own pre-2026-02-16 harness vintage and may not be cited as evidence
+anywhere in this project (§ Provenance gate above; docs/DESIGN.md §6.2/§8).
 
 | File here | Upstream path (at the pinned commit) | Why |
 | --- | --- | --- |
