@@ -19,9 +19,9 @@ NEITHER KILL CONDITION TRIGGERED — Probe A does not close this lane; proceed t
 
 ## Added scope — 004's ewma_vol vs. floor sweep (WHI-1223)
 
-WHI-1223's own open question, answered per WHI-1225's "Added scope": `004`'s `ewma_vol` fraction of sampled steps at-or-below each `FLOOR_BPS` (the full range the `004b` issue froze, `0..=60`), bucketed by this run's own `true_sigma` tercile, both by step count and by executed Y-volume.
+WHI-1223's own open question, answered per WHI-1225's "Added scope": `004`'s `ewma_vol` fraction of **executed submission trades** at-or-below each `FLOOR_BPS` (the full range the `004b` issue froze, `0..=60`), bucketed by this run's own `true_sigma` tercile, both by trade count and by executed Y-volume. (Text corrected post-commit, 2026-08-22, round-2 review: `004` updates `ewma_vol` on every executed trade with no per-simulation-step dedup, so this was always a fraction of trades, not of simulation steps — the numbers below are unchanged, only this label and the table header were originally mislabeled "steps".)
 
-| sigma tercile | n seeds | floor (bps) | fraction of steps <= floor | fraction of volume <= floor |
+| sigma tercile | n seeds | floor (bps) | fraction of trades <= floor | fraction of volume <= floor |
 | --- | --- | --- | --- | --- |
 | Low | 66 | 0 | 0.0002 | 0.0001 |
 | Low | 66 | 10 | 0.0236 | 0.0050 |

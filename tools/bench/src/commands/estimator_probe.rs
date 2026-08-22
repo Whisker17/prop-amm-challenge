@@ -424,9 +424,10 @@ mod tests {
             sim(5, 0.006, 8_000, 8_100, 50.0, 49.0),
             sim(6, 0.007, 8_500, 8_600, 51.0, 50.0),
         ];
-        let eval = evaluate_kill_conditions(&sims, &test_probe_config());
+        let probe_config = test_probe_config();
+        let eval = evaluate_kill_conditions(&sims, &probe_config);
         assert!(!eval.kill_i_triggered, "did not expect kill (i) to trigger");
-        assert!(eval.median_count_ratio_low < 0.9);
+        assert!(eval.median_count_ratio_low < probe_config.low_sigma_count_ratio_kill_threshold);
     }
 
     #[test]
@@ -461,8 +462,9 @@ mod tests {
             sim(8, 0.0069, 9_850, 9_900, 57.0, 60.0),
             sim(9, 0.007, 9_900, 9_950, 58.0, 61.0),
         ];
-        let eval = evaluate_kill_conditions(&sims, &test_probe_config());
-        assert!(eval.decompression_pct > 15.0);
+        let probe_config = test_probe_config();
+        let eval = evaluate_kill_conditions(&sims, &probe_config);
+        assert!(eval.decompression_pct > probe_config.decompression_kill_threshold_pct);
         assert!(
             !eval.kill_ii_triggered,
             "did not expect kill (ii) to trigger"

@@ -210,13 +210,17 @@ committed.**
 - [x] The `FEE_LO` extension is not included (the issue's own § "The two candidate changes
       are substitutes, not complements" rejects it; not re-litigated here).
 - [x] `FEE_HI` is left frozen (never touched by this issue's own frozen space).
-- [x] The inherited "MLE" comment softening: **not carried out on this issue's own artifact**
-      (no `lib.rs` is committed to hold it), but discharged where the comment actually lives —
-      `strategies/005-vol-adaptive-cpmm-fee/NOTES.md` § Estimator bias now has an addendum
-      pointing at this issue's measurement, explaining precisely why `count` (not elapsed
-      steps) makes the parent's own inherited "MLE of stationary variance" comment inaccurate
-      whenever a sample spans a multi-step gap. Recorded here as prior art for a future variant
-      that does commit source based on this estimator.
+- [ ] The inherited "MLE" comment softening (round-2 review correction: this is honestly
+      **deferred, not discharged** — a round-1 draft of this file overstated it as done).
+      There is no `005b` `lib.rs` to carry the edited comment, and the comment's actual home,
+      `strategies/005-vol-adaptive-cpmm-fee/lib.rs:257`, is a **shipped, ranked strategy's**
+      source — editing it is out of this ablation issue's scope (§2.9's minimum-change
+      discipline governs a faithful port; this issue doesn't get to amend it as a side effect).
+      What *is* done: `strategies/005-vol-adaptive-cpmm-fee/NOTES.md` § Estimator bias has an
+      addendum explaining precisely why the comment is imprecise (`count`, not elapsed steps),
+      but that addendum defends why the comment stays as shipped rather than softening it — it
+      does not satisfy this criterion's literal text. Recorded here as prior art for a future
+      variant that does commit source based on this estimator.
 - [x] `bench compare 005b vs 005` run for the paired CI — **the primary number**: paired mean
       diff −19.293945, 95% CI `[−26.685351, −11.902540]`, n=200, CI excludes zero
       (`results/2026-08-22-compare-005b-elapsed-steps-divisor-fix-vs-005-vol-adaptive-cpmm-fee.md`,
