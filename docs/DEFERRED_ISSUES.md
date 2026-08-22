@@ -206,12 +206,12 @@ soon — anything touching a declared high-risk path defaults to at least High),
   opened or which finalists they cover — each variant issue (WHI-1223 for `004b`, the
   sibling `WHI-1224` for `003b`) is individually traceable via Linear, but there is no
   `docs/DESIGN.md` §6.2 row or other repo-local ledger totting up the three-slot budget the
-  way the 300-point search budget has a declared cap in `config/bench.toml`'s
-  `[search] max_points`. Not fixed here: adding
-  that ledger is a `docs/DESIGN.md` process change spanning all three variant issues, not
-  a `004b`-specific concern this issue's own acceptance criteria asked for. Fix: once all
-  three top-3 variants have opened issues, add a short §2.10 addendum (or a §6.2-adjacent
-  table) listing the three slots and the issue that spent each.
+  way the 300-point search budget has a declared cap in `config/bench.toml`'s `[search]
+  max_points`. Not fixed here: adding that ledger is a `docs/DESIGN.md` process change
+  spanning all three variant issues, not a `004b`-specific concern this issue's own
+  acceptance criteria asked for. Fix: once all three top-3 variants have opened issues, add
+  a short §2.10 addendum (or a §6.2-adjacent table) listing the three slots and the issue
+  that spent each.
 
 ---
 

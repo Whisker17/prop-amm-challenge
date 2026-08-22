@@ -206,23 +206,23 @@ issue's own Prediction section named as a live (~30%) possibility, though the sp
 outcome — a *loss* at both P1 and P2, not a tie — is stronger than the ~30%-probability
 "collapses to `FLOOR~0, NUM~8`" scenario it described.
 
-**Why, mechanically:** P1 pushes `BASE_BPS` to 66 (the 0-line's own value) and relies
+**Plausible mechanism (not independently measured here — the actual evidence is the P0/P1/P2
+numbers above, which do carry provenance; this is offered only as a candidate explanation,
+not a verified one):** P1 pushes `BASE_BPS` to 66 (the 0-line's own value) and relies
 entirely on the residual term to earn back the calm-regime cost via the high-sigma cap.
-But `FLOOR_BPS=30` (0.30% in the storage's 1e9 scale) sits well above where `ewma_vol`
-spends most of its time even at `gbm_sigma=0.0070` — the parent's own fit note observed the
-EWMA only reaches ~3.6% in sustained >=5-sigma states, so a 30bps floor zeroes the residual
-across most of the calm-to-mid-sigma range, leaving the fee pinned near `BASE_BPS=66` there
-— strictly worse than the parent's `34 + small vol_fee` in the calm cells where the parent
-already loses to `001@66` (cells 21/22/24/25 in the parent's own grid), and no better in the
-cells where the parent wins comfortably at a much lower base. P2's milder floor (25bps) and
-lower base (55bps) is a smaller loss but still not a win: the floor still zeroes enough of
-the mid-sigma signal that the steeper slope (`NUM=24`, 3x the parent's) does not earn back
-what the higher base cost across the many low-to-mid-sigma steps every simulation spends far
-more time in than the rare high-sigma tail. In short: **the floor throws away exactly the
-mid-range residual signal the parent's uncapped linear term was already pricing
-correctly**, and the calm-regime base increase this variant needs to compensate (to stay
-safe if the residual is zero) costs more, over 10,000 steps dominated by calm-to-mid states,
-than the steeper high-sigma slope recovers.
+`FLOOR_BPS=30` sits inside the issue's own estimated physical-floor range (12-28bps/trade,
+inflated toward 20-40 by size dispersion — § Frozen parameter space above), i.e.
+deliberately close to where the sigma-independent, retail-driven impact floor is expected to
+sit. If `ewma_vol` spends a meaningful share of steps at or below that floor even outside
+the rare high-sigma tail, the residual is zeroed there and the fee is pinned at
+`BASE_BPS=66` — strictly worse than the parent's `34 + small vol_fee` in the calm cells
+where the parent already loses to `001@66` (cells 21/22/24/25 in the parent's own grid), and
+no better in the cells where the parent wins comfortably at a much lower base. P2's milder
+floor (25bps) and lower base (55bps) is a smaller loss but still not a win, consistent with
+the same mechanism operating less aggressively. Neither this session nor the cited NOTES.md
+files contain a direct measurement of `ewma_vol`'s time-distribution across sigma regimes,
+so this account should be read as a hypothesis consistent with the measured P1/P2 losses,
+not as an independently confirmed causal chain.
 
 **The committed value is the containment point, `(BASE_BPS=34, VOL_MULT_NUM=8,
 FLOOR_BPS=0, MAX_FEE_BPS=391)` — a bit-exact tie with the parent, not an interior optimum.**
