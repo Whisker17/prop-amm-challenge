@@ -1,6 +1,6 @@
 # grid-008-lagging-vwap-fee — 2026-08-22
 
-- Commit: `7e539b6`
+- Commit: `7e539b6+dirty`
 - Segment: `grid (not a config/bench.toml segment)`
 - Simulations: 1080
 - Steps: 10000

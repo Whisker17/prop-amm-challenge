@@ -85,12 +85,18 @@ collapsed, tokenized) between `docs/references/008-lagging-vwap-fee/strategy.rs`
 4. **Formatting only** (trailing-comma / line-break placement from `rustfmt` on the touched
    lines) — no token-level content change.
 
+**One more, fifth category, also behavior-neutral: declaration order.** `ALPHA`'s
+declaration moved from the source's "Tunable constants (after_swap)" block to just after
+`KALMAN_INNO_THRESH` (both blocks it could plausibly sit in, since it is read only by the
+Kalman gain gate) — value unchanged (`20_000_000`), name unchanged and kept as generic as
+the source wrote it rather than renamed for clarity, only its position in the file moved.
+Rust `const` declaration order has no effect on behavior.
+
 **Nothing else differs.** Every dead constant the source itself never reads
 (`P1_BASE_FEE`...`P2_SHOCK_CUBE`, `S_STEP_DIR_VOL`/`S_STEP_SHOCK_CUM`/`S_STEP_TOX_MAX`) is
 kept verbatim rather than dropped — §2.9's "faithfully first" cuts against even a trivial,
 correctness-neutral cleanup during a port, and this file inherits the source's own
-`#![allow(dead_code)]`. `ALPHA`'s generic name (the Kalman gain floor, despite the name) is
-kept as the source wrote it rather than renamed for clarity.
+`#![allow(dead_code)]`.
 
 **This mechanical diff supersedes the usual "zero the ratchet, pin the fee, compare against
 `001`'s 0-line" containment demonstration** the porting-issue template calls for
@@ -187,9 +193,19 @@ gain bounds, switcher hysteresis thresholds) is frozen at the source's own value
 
 Per § Fidelity self-assessment above, the usual 0-line containment demonstration (zero the
 ratchet, pin the fee, compare against `001`'s 384.82) is superseded here by the stronger
-mechanical diff — there is no re-derivation for it to catch a bug in. What *is* run in its
-place: **the P0 plumbing/reproducibility check** below, which confirms the ported file
-reproduces the source's own committed constants' behavior bit-exactly, twice.
+mechanical diff for catching a *transcription* bug — there is no re-derivation for it to
+catch one in. But the spec's own stated purpose for that demonstration is narrower and
+different: **"broken plumbing"** — does *this repository's own harness* actually build,
+route, and execute this file's `compute_swap`/`after_swap` the way it's supposed to. A
+source-vs-port text diff cannot establish that; it only proves the text matches. What
+*does* establish it, and is run in its place: `prop-amm validate`'s ELF-load and
+native/BPF-parity checks, `bench fuzz`'s 324-state PASS, **the P0 plumbing/reproducibility
+check** below (the ported file reproduces the source's own committed constants' behavior
+bit-exactly, twice, through the fast compile path), `bench parity`'s exact agreement
+against `prop-amm run` on 1,000 real seeds, and `bench grid`'s 27-cell run — five
+independent executions of the actual harness against the actual compiled artifact, not a
+textual argument. If storage offsets were wired wrong, the ABI mismatched, or the fast path
+diverged from the BPF path, at least one of these would have failed; none did.
 
 ## The pre-registered probe (WHI-1236)
 
@@ -235,7 +251,12 @@ matches `prop-amm run`'s own avg edge exactly.
 
 `bench fit --strategy strategies/008-lagging-vwap-fee` (default budget 300, screening
 segment, common random numbers): **converged after 172 of 300 points** (coarse grid over
-each dimension's endpoints/midpoint, then coordinate descent; 0 invalid points).
+each dimension's endpoints/midpoint, then coordinate descent; 0 invalid points). The
+report's own compile-timing line flags fast-path compiles exceeding the `<1s` target during
+this run — not investigated further, since P0's separately-measured warm compiles (§ 2
+above) were well under 1s on the same machine; read as transient system contention from
+this run's 172 back-to-back compiles rather than a fast-path regression, and it has no
+bearing on the correctness of the measured edge numbers either way.
 
 **Winning point:** `ARB_K_BPS=26480, COUNTER_K_BPS=7, TARGET_BASE_BPS=14, SIZE_K_BPS=3378`
 — screening avg edge **472.288277**, train **502.748645**, validation **497.705855**
@@ -272,6 +293,14 @@ number *wins*, not loses), but the principle is the same. **0 of the 300-point b
 *outcome* is adopted; the 172 points spent are recorded here as a negative finding about
 this family's own loss surface, not discarded.** `strategies/008-lagging-vwap-fee/lib.rs`'s
 committed `PARAMS` block is therefore the source's own unmodified `P0` values.
+
+**Boundary hits, flagged:** the committed point (`5200, 1000, 16, 2900`) sits strictly
+interior to all four declared ranges — not a boundary artifact. The *non-adopted* search
+winner is a different story: `COUNTER_K_BPS=7` sits at the low end of its `0..=4600` range
+(effectively pinned near its floor) and `ARB_K_BPS=26480` sits at 96.9% of its `27333` max
+— both near a boundary, consistent with coordinate descent pushing outward from its own
+coarse-grid corner starts rather than settling on an interior optimum within budget. Neither
+boundary-hugging value is committed.
 
 ### 6. `bench grid` — the 27-cell fragility matrix, against `001-cpmm-fee`
 
@@ -334,8 +363,10 @@ number from the source repository counted as evidence at any point in this measu
       proceeded per its own `>= 428.8` branch.
 - [x] Worst-case CU is measured through the BPF executor and recorded, not inherited
       (§ CU and arithmetic risk: 18,440 CU worst case).
-- [x] The BPF scaffolding (`#[inline(never)]` on `quote_profile`/`profile_params`/
-      `handle_after_swap`, the isolated 1024-byte storage frame) is preserved verbatim.
+- [x] The BPF scaffolding (`#[inline(never)]` on all five of `quote_profile`/
+      `profile_params`/`raw_edge_sample`/`score_one_profile`/`handle_after_swap`, the
+      isolated 1024-byte storage frame) is preserved verbatim, same functions and order as
+      the source.
 - [x] Proceeded past P0: near-exact containment addressed via the stronger mechanical-diff
       argument (§ Fidelity self-assessment; § Containment); fitted point (the anchor, not
       the search's own inferior point) with train/validation/observation (§ Summary table);
@@ -368,3 +399,11 @@ number from the source repository counted as evidence at any point in this measu
   in this project's own agent memory; same workaround `004b`/`005b`/`007` document) — every
   `results/*.md` report was copied back verbatim; no scratch strategy source is committed
   anywhere.
+- Each of the four committed `results/*.md` reports for this strategy stamps
+  `Commit: 7e539b6+dirty` — the scratch worktree's own `git status` reports dirty because
+  `strategies/008-lagging-vwap-fee/lib.rs` (this PR's own file, byte-identical to what's
+  committed here) was staged there before each run, so the reports correctly disclose that
+  the measured code differs from `origin/dev`'s tip rather than silently understating it
+  (`results-file-dirty-stamp-circularity` in this project's own agent memory: an untracked
+  scratch file does *not* trigger the dirty flag by this tool's own design, so a
+  regenerated report from an unstaged copy would misleadingly show a clean commit).

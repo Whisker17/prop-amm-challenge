@@ -1,6 +1,6 @@
 # parity-008-lagging-vwap-fee — 2026-08-22
 
-- Commit: `7e539b6`
+- Commit: `7e539b6+dirty`
 - Segment: `observation`
 - Simulations: 1000
 - Steps: 10000

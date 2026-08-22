@@ -1,6 +1,6 @@
 # fit-008-lagging-vwap-fee — 2026-08-22
 
-- Commit: `7e539b6`
+- Commit: `7e539b6+dirty`
 - Segment: `screening`
 - Simulations: 200
 - Steps: 10000
@@ -29,7 +29,7 @@ None — every evaluated point produced a valid edge.
 
 ## Fast-path compile timing
 
-- 174 warm compiles: min=0.277s, mean=0.802s, max=1.167s — EXCEEDS the <1s target (max warm sample 1.167s) — see NOTES.md for whether this reflects system contention rather than the fast path itself
+- 174 warm compiles: min=0.314s, mean=0.814s, max=1.747s — EXCEEDS the <1s target (max warm sample 1.747s) — see NOTES.md for whether this reflects system contention rather than the fast path itself
 - (search phase plus the two final train/validation builds) Every sample is a `cargo build` invocation against the single, reused `.build/fast/` directory.
 
 

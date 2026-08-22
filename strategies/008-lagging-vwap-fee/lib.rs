@@ -49,8 +49,9 @@ const MODEL_USED: &str = "Opus 4.6";
 const SCALE: u128 = 1_000_000_000;
 const BPS: u128 = SCALE / 10_000; // 100_000
 
-// Storage layout (1024 bytes total; first 168 bytes live — verbatim from source, see
-// NOTES.md § Storage layout for the byte-for-byte table):
+// Storage layout (1024 bytes total; [0..200) live, ending at `S_FEE_2 + 8`. The source's
+// own header comment claims 232 bytes, which does not match any field boundary in its own
+// layout below — a stale figure in the source itself, not repeated as fact here):
 // [0..8)     stored_fee    (u64, 1e9) : profile-0 fee, also written to FEE_1/FEE_2 below
 // [8..16)    last_step     (u64)
 // [16..24)   sigma_hat     (u64, 1e9)

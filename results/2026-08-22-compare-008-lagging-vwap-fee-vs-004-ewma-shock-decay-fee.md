@@ -1,6 +1,6 @@
 # compare-008-lagging-vwap-fee-vs-004-ewma-shock-decay-fee — 2026-08-22
 
-- Commit: `7e539b6`
+- Commit: `7e539b6+dirty`
 - Segment: `validation`
 - Simulations: 1000
 - Steps: 10000

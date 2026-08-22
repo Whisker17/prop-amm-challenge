@@ -176,7 +176,13 @@ Each strategy therefore delivers:
 
 1. the parameterised `compute_swap` (and `after_swap`, if the mechanism needs state),
 2. a **parameter space declared in `NOTES.md` and frozen before any search runs**,
-3. the fitted point, committed as the strategy's `lib.rs`,
+3. the fitted point, committed as the strategy's `lib.rs` — the best point measured within
+   that frozen space by the family's own declared protocol, which is usually the 300-point
+   search's own convergence result but is not required to be: a pre-registered probe run
+   before the search (§2.5's own carve-out for a quick check, or this issue's own required
+   P0-style step) can measure a point the search's coarse grid never touches and that beats
+   everything the search finds within its budget — §8's "protocol lesson" 7 records the
+   first instance and the reasoning,
 4. its train and validation numbers, and its CLI parity reproduction (§2.6).
 
 Freezing the space *before* searching is what makes the seed segmentation of §2.2 worth
@@ -871,18 +877,15 @@ through `strategies/*/NOTES.md` and closed issues.
    It is nonetheless a recorded failed attempt with a named failure mode, so a v0.2.0
    attempt at this axis does not have to restart from zero.
 
-   **This project's own measurement (WHI-1236, complete) answers the classifier gap this
-   finding names as missing.** `008`'s mechanism — a directional fee classifier built on a
-   deliberately lagging Kalman-filtered VWAP, the only fair-price substitute the interface
-   permits — is exactly finding 6's own "arb-vs-retail classifier fed by the fair price"
-   below, ported and measured under the current (patched) arbitrageur, at the source's own
-   unmodified anchor point (`strategies/008-lagging-vwap-fee/NOTES.md`): validation avg edge
-   **503.907498**, a paired **+57.61** `[53.21, 62.01]` over the current leader `004`
-   (n=1,000, CI excludes zero) and a 26-of-27 win rate on the grid fragility matrix against
-   `001-cpmm-fee`. This is this project's own measurement, under §3.3's protocol, and
-   supersedes the third-party correlation figures above as evidence for this harness — the
-   competitor-blindness axis this finding names is not merely inferable, it is now measured
-   as directly attackable, at the largest margin of any M1 entry.
+   **Not answered by `008`'s own port, despite the shared source.** `008` accumulates a
+   flow-share-shaped signal of its own (`cnt_ema`, an EMA of trades-per-step, storage offset
+   144) but never reads it into any fee or profile decision — the source's own
+   `LEARNINGS.md` records that exploiting it via a fee boost regressed at their optimum
+   (immediately above), and the committed mechanism reflects that: `cnt_ema` is persisted
+   but dead for decision-making. `008`'s own strong measured result (finding 5 below) is
+   real, but it is evidence for a *different* gap — the arb-vs-retail directional classifier
+   finding 5 names as missing, not this finding's flow-share/competitor-inference axis. This
+   finding's own v0.2.0 candidate remains unattacked by any measured M1 entry.
 
 *Resolved negatives*
 
@@ -927,20 +930,23 @@ through `strategies/*/NOTES.md` and closed issues.
    estimate is load-bearing there, not a defect. Two codebases on two different harness
    vintages, two different mechanisms, the same conclusion stated at class level rather than
    at the level of one family: a more accurate volatility or price estimate is not
-   automatically a better strategy for this class of fee — this project's own measurement
-   (above, finding 4's own §2.7-linked measurement) is the one that counts as evidence for
-   *this* harness; the second is corroboration only.
+   automatically a better strategy for this class of fee — this finding's own `005b`
+   measurement (immediately above) is the one that counts as evidence for *this* harness;
+   the second is corroboration only.
 
-   **`008`'s own port and measurement (WHI-1236, complete) is a third, independent
-   confirmation, this time under this project's own protocol.** The lagging VWAP is not
-   incidental to `008`'s mechanism — it is the fair-price substitute the directional
-   classifier is built on, deliberately kept lagging for the same reason the source's own
-   `LEARNINGS.md` gives. Measured here, at the source's own unmodified anchor point
-   (`strategies/008-lagging-vwap-fee/NOTES.md`): validation avg edge **503.907498**, the
-   largest margin over the current leader of any M1 entry (paired **+57.61**
-   `[53.21, 62.01]` over `004`, n=1,000). Unlike the two corroborations above, this number
-   *does* carry full §3.3 own-measurement provenance and counts as this project's own
-   evidence.
+   **`008`'s own port and measurement (WHI-1236, complete) is a strong result for a
+   mechanism *built around* the lagging-estimate premise, though not itself an ablation of
+   it.** The lagging VWAP is not incidental to `008`'s mechanism — the source's own
+   `LEARNINGS.md` states it is deliberately kept lagging for the same reason cited above —
+   but `008`'s own measured edge is for the mechanism as a whole (the lagging VWAP, the
+   directional classifier built on it, the fee ratchet, and the 3-profile ensemble
+   together); no lag-vs-accurate-estimate ablation was run here, so this number is not
+   directional evidence isolating the lag's own contribution the way the two corroborations
+   above are. What it *is* — carrying full §3.3 own-measurement provenance, unlike either
+   corroboration — is measured, first-party evidence that a family holding this premise
+   performs strongly on this harness: validation avg edge **503.907498**, the largest margin
+   over the current leader of any M1 entry (paired **+57.61** `[53.21, 62.01]` over `004`,
+   n=1,000).
 5. **Two axes measured net-harmful, so nobody retries them.** Concentration / virtual-reserve
    amplification (`007`, WHI-1219): net-harmful at every tested point; the family closed at
    its own `k = 1` CPMM boundary (`results/2026-08-21-grid-007-dodo-pmm.md`,
@@ -953,6 +959,21 @@ through `strategies/*/NOTES.md` and closed issues.
    decay makes the surcharge's duration a function of arrival rate. Any repair needs an
    arb-vs-retail classifier, which needs the fair price, which the interface does not
    provide — so a repair would be a new strategy family, not a variant.
+
+   **`008` (WHI-1236, complete) is exactly that new family, and it holds the named
+   classifier.** Its mechanism classifies each quote's direction against a deliberately
+   lagging Kalman-filtered VWAP — the fair-price substitute this finding says the interface
+   otherwise withholds — surcharging the presumptively-informed direction and rebating the
+   presumptively-uninformed one. Ported and measured at the source's own unmodified anchor
+   point (`strategies/008-lagging-vwap-fee/NOTES.md`): validation avg edge **503.907498**, a
+   paired **+57.61** `[53.21, 62.01]` over the current leader `004` (n=1,000, CI excludes
+   zero) and a 26-of-27 win rate on the grid fragility matrix against `001-cpmm-fee` — the
+   largest margin of any M1 entry. This is this project's own measurement under §3.3's
+   protocol. It does not, by itself, isolate how much of that margin comes from the
+   classifier specifically versus the rest of the mechanism (the fee ratchet, the
+   3-profile ensemble) — no ablation separating them was run — but it is direct evidence
+   that a family built around this finding's own named gap performs strongly here, which is
+   more than this finding had before `008`.
 
 *Protocol lesson*
 
