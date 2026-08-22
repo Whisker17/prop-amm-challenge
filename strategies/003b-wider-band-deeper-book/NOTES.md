@@ -281,6 +281,18 @@ probe at this point, the same regime the parent was in. `prop-amm validate`'s ow
 (below) confirms this empirically, not just algebraically: strict monotonicity holds across
 all 10 fixed probe sizes on both sides.
 
+**The small-`DELTA_RESERVE_BPS` regime the issue actually asked about is real, and was
+checked directly, not inferred from the fitted point alone.** At Corner A (`S0=5, W=2500,
+DELTA=50`, the box's own smallest-depth/widest-width corner), the same computation gives
+`p_low=100.05`, `p_high=125.00`, `total_qty=0.5` base tokens, `k=20,040,080`, **`full_cost =
+56.26` quote tokens** — comfortably *inside* the 200-token probe window, unlike the fitted
+point. `prop-amm validate` was run directly against a scratch copy pinned to Corner A and
+**passes cleanly**, including strict buy-side monotonicity/concavity across the full probe
+and native/BPF parity — confirming the new regime is real within the frozen space (the
+concern the issue raised was not a false alarm) but does not compromise correctness, and
+does not affect the committed strategy either way, since the search converged to a point far
+outside that regime.
+
 ## Compute units (docs/DESIGN.md §2.9, cross-cutting finding #9)
 
 Unchanged from the parent's own estimate: ladder construction is 5 divisions; the buy side's

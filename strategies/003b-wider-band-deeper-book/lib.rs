@@ -170,8 +170,8 @@ const RESIDUAL_PRICE_MULT: u128 = 1_000;
 
 // Bisection halvings for the buy-side partial-fill inversion (see module doc comment and
 // the parent's own NOTES.md § Do not invert with sqrt). `total_qty` is
-// `reserve_x * DELTA_RESERVE_BPS/10_000`,
-// and `crates/cli/src/commands/validate.rs`'s own randomized probe draws `reserve_x` up to
+// `reserve_x * DELTA_RESERVE_BPS/10_000`, and
+// `crates/cli/src/commands/validate.rs`'s own randomized probe draws `reserve_x` up to
 // ~2e12 nano, so at `DELTA_RESERVE_BPS`'s own frozen max (1000 bps = 10%) the worst case
 // bisected range is on the order of `2e12 * 1000/10_000 = 2e11` — numerically identical to
 // the parent's own bound, since the frozen max percentage (10%) is unchanged, only its unit
@@ -269,9 +269,8 @@ fn spot_price(rx: u128, ry: u128) -> u128 {
 /// spot*(1+outer), ascending above spot. Book capacity is base-denominated (native X units)
 /// — a deliberate deviation from the source's own quote-denominated `ask_side`/`bid_side`
 /// convention (see the parent's own NOTES.md § Base-denominated book capacity), sized as
-/// `DELTA_RESERVE_BPS`
-/// of the LIVE `reserve_x` so it can never structurally exceed the reserve regardless of how
-/// far reserves have drifted over a 10,000-step simulation.
+/// `DELTA_RESERVE_BPS` of the LIVE `reserve_x` so it can never structurally exceed the
+/// reserve regardless of how far reserves have drifted over a 10,000-step simulation.
 fn build_ask_ladder(rx: u128, ry: u128) -> Option<Ladder> {
     let spot = spot_price(rx, ry);
     let outer_bps = effective_outer_bps();
@@ -323,9 +322,9 @@ fn finish_ladder(rx: u128, p_low: u128, p_high: u128) -> Option<Ladder> {
     // the whole collapsed [p_low, p_high] span rather than once per (identical) segment.
     // At this variant's own worst corner (`DELTA_RESERVE_BPS=50` and `W_BPS=2500`, box
     // Corner A — the smallest-`k` of the four declared corners), `total_qty` is 1/6 of the
-    // parent's own COMMITTED value (50 vs the
-    // parent's fitted 300, i.e. 0.5% vs 3% of `reserve_x`) and `width` can be 2.5x the
-    // parent's own committed `W_BPS` (2500 vs 1000), so `k` there can be ~15x smaller than
+    // parent's own COMMITTED value (50 vs the parent's fitted 300, i.e. 0.5% vs 3% of
+    // `reserve_x`) and `width` can be 2.5x the parent's own committed `W_BPS` (2500 vs
+    // 1000), so `k` there can be ~15x smaller than
     // at the PARENT'S OWN fitted point — a materially different, and more informative,
     // comparison than against the parent's own frozen-range floor (50 vs the parent's own
     // range minimum of 100 bps is only a 2x difference). The `k == 0` guard below is
@@ -385,17 +384,15 @@ fn buy_base_with_quote(input: u128, rx: u128, ry: u128) -> u64 {
         None => return 0,
     };
     // Overflow short-circuit (mandatory — the parent's own NOTES.md § Overflow
-    // short-circuit): compute the
-    // cost of exhausting the WHOLE book first, entirely from bounded reserve-derived values,
-    // before `input` (which can be as large as ~1.8e19 nano from the arbitrageur's bracket
-    // search) is ever compared against a squared term.
+    // short-circuit): compute the cost of exhausting the WHOLE book first, entirely from
+    // bounded reserve-derived values, before `input` (which can be as large as ~1.8e19 nano
+    // from the arbitrageur's bracket search) is ever compared against a squared term.
     let full_cost = cost_of_base(ladder.total_qty, ladder.p_low, ladder.k);
     let base_out = if full_cost == 0 {
         0
     } else if input >= full_cost {
         // Residual tail beyond exhaustion (the parent's own NOTES.md § Residual tail beyond
-        // exhaustion):
-        // extend at a price `RESIDUAL_PRICE_MULT` times WORSE than the ladder's own P6, so
+        // exhaustion): extend at a price `RESIDUAL_PRICE_MULT` times WORSE than the ladder's own P6, so
         // the extra base bought per extra quote spent is small — strictly positive once
         // `extra_quote` clears roughly `residual_price/PRICE_SCALE` nano (integer division
         // floors below that, to 0, which is a tie against the exhaustion point, never a
