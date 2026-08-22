@@ -58,9 +58,10 @@ liquidity sampling, step count, the edge formula — come from the challenge and
 - **No automated CI gate on bench numbers.** `results/` snapshots are produced and reviewed
   by hand; wiring them into CI is not v1.
 - **No new strategy ideas of our own** beyond the one-variant-per-finalist rule (§2.9).
-  Original designs are v0.2.0 work; this bars our own designs, not ports of published,
-  source-available math, which §2.9's fidelity contract governs instead (§6.2's `007`
-  is such a port, added post-freeze by exception per §2.10).
+  Original designs are v0.2.0 work; this bars our own designs, not ports of another's
+  mechanism, which §2.9's fidelity contract governs instead (§6.2's `007` and `008` are
+  such ports, each added post-freeze by exception per §2.10 — `008`'s licence and
+  copying-for-internal-analysis-only limits are recorded on its §6.2 entry).
 
 ### 1.4 Success criteria
 
@@ -406,16 +407,17 @@ definition makes the entry v0.2.0 work (§1.3) rather than a v1 addition — the
 drifting into an unbounded list. This rule governs additions only; it does not reopen the
 freeze generally.
 
-**The clause has been exercised twice**, each use with its own reason recorded on its §6.2
-row: `007` (`WHI-1219`/`WHI-1220`) on provenance grounds — a port of published Apache-2.0
-math is an M1-shaped entry, where the same idea as an original design would be v0.2.0 work
-— and `008` (`WHI-1236`/`WHI-1237`) because it attacks an axis M1 measured as *unattacked*
-rather than dead (§8's finding 6). One use is an exception; two is a pattern, and the
-pattern implies a condition a third use must clear that the first two happened to satisfy
-without it being stated: an addition needs a **stated reason why the entry is not
-redundant with what is already measured.** After M1 that bar is materially higher than it
-was at freeze time — six findings now exist (§8), and a candidate that only re-attacks an
-axis M1 already measured as dead is not worth an exception.
+**The clause has been exercised twice**, each use with its reason recorded in §6.2: `007`
+(`WHI-1219`/`WHI-1220`), on provenance grounds; and `008` (`WHI-1236`/`WHI-1237`), because
+it attacks an axis M1 has measured as *unattacked* rather than dead (`WHI-1235` finding 6).
+One use is an exception; two is a pattern.
+
+That pattern implies a condition future uses should have to clear, one both prior uses
+happened to satisfy without it being stated as a requirement: as part of the owner's
+decision to grant the exception, an addition needs a **stated reason why the entry is not
+redundant with what is already measured.** Well into M1, with `WHI-1235`'s six recorded
+findings, that bar is materially higher than it was at freeze time — a candidate that only
+re-attacks an axis already measured as dead is not worth an exception.
 
 ## 3. Cross-cutting Policies
 
@@ -628,7 +630,7 @@ before search runs.
 | `005` | Vol-Adaptive CPMM Fee | source (Rust, direct submission shape) | `docs/references/005-vol-adaptive-cpmm-fee/` — `dcccrypto/percolator-perp-liquidity`'s `EdgeMax_CumVar.rs`, pinned before its later removal from that repo | `fee_bps = clamp(20 + 0.7·σ̂ + σ̂²/160, 20, 130)`; `COLD_FEE = 55`; `WARMUP_STEPS = 16` |
 | `006` | Hedged PnL | prose (HackMD) | `docs/references/006-hedged-pnl/` — flagged: the doc's own scoring-metric framing does not match this repo's simulator (its volatility range does match); the portable content is its "Linear Price Impact Model" section | none — four cross-impact coefficients (`k++`,`k+-`,`k-+`,`k--`), no numeric anchor given |
 | `007` | DODO PMM (`R = ONE`, arbitrageur-as-oracle) — **added post-freeze by exception (WHI-1219); supersedes `002`'s earmark, see below** | Solidity (to port) | `docs/references/007-dodo-pmm/` (created by WHI-1219, per its own snapshot-at-porting-start) — `DODOEX/contractV2` @ `2f1bcdac7ef1beee7599a756e2eed26732c2536d` (Apache-2.0) | `K_BPS ∈ [25, 10_000]` (curvature, 1e-4 units of `ONE`); `FEE_BPS ∈ [1, 500]` |
-| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236), see below; no number from the source repository may be cited as evidence anywhere in this project (see below)** | source (Rust, direct submission shape) | `docs/references/008-*/` (to be created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` |
+| `008` | Lagging-VWAP Directional Fee + Profile Ensemble — **added post-freeze by exception (WHI-1236); no citation of source numbers, see below** | source (Rust, direct submission shape) | `docs/references/008-lagging-vwap-fee/` (to be created by WHI-1236, per its own snapshot-at-porting-start) — `houseofjiao/prop-amm-challenge`'s own **current, live** competition submission, pinned `152697153d` | `ARB_K_BPS ∈ [0, 27_333]`; `COUNTER_K_BPS ∈ [0, 4_600]`; `TARGET_BASE_BPS ∈ [4, 80]`; `SIZE_K_BPS ∈ [0, 4_350]` |
 
 `000-normalizer` and `001-cpmm-fee` (§2.8) are the M0 baselines already landed
 (`strategies/`) and are not part of this M1 list — they are the 0-line every entry above
@@ -665,27 +667,33 @@ left open as a separate future v0.2.0 issue.
 **provenance** (a port of published Apache-2.0 math is an M1-shaped entry, whereas the
 same idea as our own invention would be v0.2.0 work). `008`'s justification is that it is
 the only candidate this project has evaluated that **attacks an axis M1 measured as
-*unattacked* rather than dead**: it holds the arb-vs-retail classifier §8's finding 6 says
-a repaired shock mechanism requires, built from the only fair-price substitute the
-interface permits — a deliberately lagging, Kalman-filtered trade VWAP.
+*unattacked* rather than dead**: it holds the arb-vs-retail classifier that `WHI-1235`'s
+finding 6 says a repaired shock mechanism requires — event-driven shock surcharges are
+mis-signed in this harness because they re-arm on large *retail* prints, and repairing that
+needs a classifier fed by the fair price the interface does not supply. `008` builds that
+classifier from the only fair-price substitute the interface does permit — a deliberately
+lagging, Kalman-filtered trade VWAP.
 
 **`008`'s provenance and licence differ from every prior entry.** The source is another
 **live** competitor's **current** submission (`houseofjiao/prop-amm-challenge`, pinned
 `152697153d`) — unlike `004` (a competitor's **past** submission) or `007` (a **licensed**
 third-party library). **Neither that repository nor upstream carries a licence**
 (`license: null` on both, verified via the GitHub API) — default all-rights-reserved.
-Copying the material into `docs/references/008-*/` for internal analysis was explicitly
-approved (`WHI-1236` Step 0(a)); **verbatim submission of the artifact to the challenge was
-deliberately left undecided** and returns as its own decision at the release step
-(`WHI-1236` Step 0(b)).
+Copying the material into `docs/references/008-lagging-vwap-fee/` for internal analysis
+was explicitly approved (`WHI-1236` Step 0(a)); **verbatim submission of the artifact to
+the challenge was deliberately left undecided** and returns as its own decision at the
+release step (`WHI-1236` Step 0(b)).
 
 **No number from that repository may be cited as evidence anywhere in this project.** Its
-headline result was measured on a pre-2026-02-16 harness whose arbitrageur was
-subsequently patched — upstream's own fix commit states the old directional signal "can be
-a misleading directional signal for non-CP strategies," and `008` is exactly that class
-(directional fee asymmetry via the arb/counter classifier above), so the patch targets
-precisely this strategy's shape. Only our own re-measurement, starting at `008`'s
-pre-registered probe, counts.
+headline result was measured on their fork's own harness vintage, which predates
+upstream's arb-direction fix: their shared history anchors at upstream's PR #17 merge
+(`afa98be0b1`, 2026-02-12), one day before that fix landed (`97a1c67` et al.,
+2026-02-13). The fix's own source comment says evaluating from the reserve ratio alone
+"can be a misleading directional signal for non-CP strategies"
+(`crates/sim/src/arbitrageur.rs`) — and `008` is exactly that class (directional fee
+asymmetry via the arb/counter classifier above), so the fix targets precisely this
+strategy's shape. Only our own re-measurement, starting at `008`'s pre-registered probe,
+counts.
 
 Two entries carry an explicit provenance caveat, read before porting:
 
@@ -708,7 +716,7 @@ One M1 issue per strategy above is opened per `docs/agents/issue-template.md`, e
 `WHI-1207` (`003`), `WHI-1208` (`004`), `WHI-1209` (`005`), `WHI-1210` (`006`). `007`'s
 issue is `WHI-1219` — opened post-freeze, per the exception recorded above and in
 `WHI-1220`. `008`'s issue is `WHI-1236` — opened post-freeze, per the exception recorded
-above and in this issue (`WHI-1237`).
+above and in `WHI-1237`.
 
 ## 7. Rejected Alternatives
 
