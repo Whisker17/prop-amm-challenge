@@ -38,10 +38,11 @@ const MODEL_USED: &str = "Claude Sonnet 5";
 // `after_swap` — so "prices as of the last after_swap" and "prices derived from the
 // currently-live reserves" are the SAME value at every instant a later `compute_swap` could
 // observe them. Deriving fresh removes the storage plumbing entirely with no behavioral
-// difference. See NOTES.md § Re-anchor policy for the full argument, including why this
-// makes the source's "heal consumed" step dead code (this port's `after_swap` is a no-op)
-// and why `total_quantity` is NOT "left untouched" as the amendment's literal wording
-// suggested (a shape-mandated deviation — see NOTES.md).
+// difference. See the parent's own NOTES.md § Re-anchor policy for the full argument,
+// including why this makes the source's "heal consumed" step dead code (this port's
+// `after_swap` is a no-op) and why `total_quantity` is NOT "left untouched" as the
+// amendment's literal wording suggested (a shape-mandated deviation — see the parent's own
+// NOTES.md).
 //
 // SHAPE SAFETY — the curve depends only on (reserve_x, reserve_y) and compile-time
 // constants, NEVER on `input_amount` or storage, so each side's quote is a pure function of
@@ -108,7 +109,7 @@ const DELTA_RESERVE_BPS: u128 = 763; // range: 50..=1000
 // parent's fit converged to on a still-rising, non-degenerate plateau (`[56,941,3] ->
 // 411.80`, `[56,986,3] -> 412.33`, `[56,1000,3] -> 412.46`) — genuine unresolved headroom,
 // not a search artifact. 2500 is a ridge-collapse bound (this variant's own NOTES.md §
-// Where the width must stop), not a round number: this port's 6 segments collapse
+// Frozen parameter space), not a round number: this port's 6 segments collapse
 // algebraically to one linear-density span, so once `W` exceeds the largest inter-anchor
 // mispricing the simulation can produce, `(W, DELTA_RESERVE_BPS)` enter the economics only
 // through their ratio and further widening is pure reparameterization. 2500 bps covers a
@@ -136,11 +137,14 @@ const MIN_GAP_BPS: u128 = NUM_SEGMENTS;
 // past the flat cap regardless of what the search picks.
 // (The buy side's exhaustion point is in QUOTE units — roughly `total_qty * avg_price` — so
 // whether it falls inside the 200-quote-token probe depends on `S0_BPS`/`W_BPS` too; this
-// variant's own NOTES.md § Shape and CU risk records that at small `DELTA_RESERVE_BPS` the
-// buy side now reaches the residual tail INSIDE the 200-quote-token probe window at states
-// the parent never reached it at, a new regime checked explicitly there. The residual tail
-// below is applied symmetrically to both sides as one uniform mechanism rather than
-// conditionally, since it is cheap and harmless when never reached.)
+// variant's own NOTES.md § `validate`'s buy-side exhaustion-inside-the-probe-window case
+// checks this explicitly, since at small `DELTA_RESERVE_BPS` the buy side's full-book cost
+// CAN fall inside the 200-quote-token probe window at states the parent never reached it at
+// — a new regime, though NOT the one this variant's own fitted point (`DELTA_RESERVE_BPS=
+// 763`, well above that small-delta range) actually lands in; see that section for the
+// worked numbers at the committed point. The residual tail below is applied symmetrically
+// to both sides as one uniform mechanism rather than conditionally, since it is cheap and
+// harmless when never reached.)
 //
 // An earlier version of this port "fixed" this by multiplying the whole book depth by 10x —
 // technically satisfies `validate`, but catastrophic in the real 10,000-step simulation
@@ -160,11 +164,13 @@ const MIN_GAP_BPS: u128 = NUM_SEGMENTS;
 // price only ever moves the "correct" direction, matching the piecewise-linear mechanism's
 // own kink-direction guarantee). 1000x is large enough that the tail's contribution stays
 // small relative to a genuine trade beyond the book while staying easily large enough to
-// clear `validate`'s coarse discrete probe (see NOTES.md for the worked numbers).
+// clear `validate`'s coarse discrete probe (see the parent's own NOTES.md for the worked
+// numbers).
 const RESIDUAL_PRICE_MULT: u128 = 1_000;
 
 // Bisection halvings for the buy-side partial-fill inversion (see module doc comment and
-// NOTES.md § Do not invert with sqrt). `total_qty` is `reserve_x * DELTA_RESERVE_BPS/10_000`,
+// the parent's own NOTES.md § Do not invert with sqrt). `total_qty` is
+// `reserve_x * DELTA_RESERVE_BPS/10_000`,
 // and `crates/cli/src/commands/validate.rs`'s own randomized probe draws `reserve_x` up to
 // ~2e12 nano, so at `DELTA_RESERVE_BPS`'s own frozen max (1000 bps = 10%) the worst case
 // bisected range is on the order of `2e12 * 1000/10_000 = 2e11` — numerically identical to
@@ -262,7 +268,8 @@ fn spot_price(rx: u128, ry: u128) -> u128 {
 /// Ask-side ladder (side=0, buying base X with quote Y): P0 = spot*(1+s0), P6 =
 /// spot*(1+outer), ascending above spot. Book capacity is base-denominated (native X units)
 /// — a deliberate deviation from the source's own quote-denominated `ask_side`/`bid_side`
-/// convention (see NOTES.md § Base-denominated book capacity), sized as `DELTA_RESERVE_BPS`
+/// convention (see the parent's own NOTES.md § Base-denominated book capacity), sized as
+/// `DELTA_RESERVE_BPS`
 /// of the LIVE `reserve_x` so it can never structurally exceed the reserve regardless of how
 /// far reserves have drifted over a 10,000-step simulation.
 fn build_ask_ladder(rx: u128, ry: u128) -> Option<Ladder> {
@@ -377,7 +384,8 @@ fn buy_base_with_quote(input: u128, rx: u128, ry: u128) -> u64 {
         Some(l) => l,
         None => return 0,
     };
-    // Overflow short-circuit (mandatory — NOTES.md § Overflow short-circuit): compute the
+    // Overflow short-circuit (mandatory — the parent's own NOTES.md § Overflow
+    // short-circuit): compute the
     // cost of exhausting the WHOLE book first, entirely from bounded reserve-derived values,
     // before `input` (which can be as large as ~1.8e19 nano from the arbitrageur's bracket
     // search) is ever compared against a squared term.
@@ -385,7 +393,8 @@ fn buy_base_with_quote(input: u128, rx: u128, ry: u128) -> u64 {
     let base_out = if full_cost == 0 {
         0
     } else if input >= full_cost {
-        // Residual tail beyond exhaustion (NOTES.md § Residual tail beyond exhaustion):
+        // Residual tail beyond exhaustion (the parent's own NOTES.md § Residual tail beyond
+        // exhaustion):
         // extend at a price `RESIDUAL_PRICE_MULT` times WORSE than the ladder's own P6, so
         // the extra base bought per extra quote spent is small — strictly positive once
         // `extra_quote` clears roughly `residual_price/PRICE_SCALE` nano (integer division

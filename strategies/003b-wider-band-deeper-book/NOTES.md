@@ -14,9 +14,16 @@ the parent's own ~3.25%-interior peak. Per §2.9 this is a variant, not a new st
 ladder shape, same re-anchor policy, same inversion method — only the width bound and the
 depth parameter's unit/resolution change.
 
+`docs/DESIGN.md` §6.2 separately names the oracle-staleness spread-widening backoff (from
+`003`'s own blog-post source material, not its confirmed on-chain mechanism) as "at most, a
+`003b` variant" — a different candidate thesis than this issue's own parameter-space
+widening. WHI-1224 itself is what scoped this variant to width x depth rather than that
+alternative; §2.10 step 3 grants exactly one variant per top-three strategy, and that slot
+is spent here, not on the staleness-backoff idea.
+
 ## Objective (WHI-1224's own framing)
 
-`003b` is the §2.10 variant of `003-piecewise-linear`, the M1 runner-up (validation 432.45,
+`003b` is a §2.9 variant of `003-piecewise-linear`, opened per §2.10 step 3, the M1 runner-up (validation 432.45,
 against `004-ewma-shock-decay-fee`'s own 446.30). Conditionally open per the issue: run five
 pre-registered probes first, be prepared to close as "003 stands as measured" if the kill
 rule fires. Even a success here was expected to produce a stronger #2, not a new #1 — the
@@ -60,8 +67,8 @@ alone. This is evidence, not merely reasoning: P1/P2 measure the loss directly.
 
 **Only the width x depth interaction thesis pays** (P3, P4): pairing a wider band with
 correspondingly more depth avoids the k-dilution effect above while capturing the wider
-band's own survivability benefit. P3 (`W=1500, delta=500`) is the strongest of the six
-non-plumbing probes at +9.21 screening. The resolution-only thesis (P5, finer
+band's own survivability benefit. P3 (`W=1500, delta=500`) is the strongest of the five
+non-plumbing probes (P1-P5) at +9.21 screening. The resolution-only thesis (P5, finer
 `DELTA_RESERVE_BPS` quantization at the parent's own `W=1000`) is real but small (+1.22),
 consistent with the issue's own predicted "+1.6 screening units" from resolution alone.
 
@@ -388,8 +395,9 @@ more so than before this variant, not less.
   into that scratch build directory (`003-piecewise-linear/NOTES.md`'s own documented
   convention — these tests are not compiled or run by `cargo test --workspace`, nor by
   either compile path, per `strategies/`' exclusion from the workspace). All 10 pass.
-- `bench fuzz`: PASS at the fitted point, the parent-mapped point, and all four declared box
-  corners (six total runs, § Pre-search shape-fuzz gate and this section).
+- `bench fuzz`: PASS at the parent-mapped point and all four declared box corners (five runs,
+  § Pre-search shape-fuzz gate, before the search spent any budget), plus a sixth PASS at the
+  actual fitted point after the search converged (this section).
 - `cargo fmt`/`clippy` on this file only, per `AGENTS.md`'s merge-gate caveat (not the
   inherited upstream failures logged in `docs/DEFERRED_ISSUES.md`).
 
