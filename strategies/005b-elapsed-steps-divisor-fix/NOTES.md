@@ -61,11 +61,14 @@ across the sigma range than that estimate.
 ## Added scope — 004's `ewma_vol` vs. floor sweep (answers WHI-1223's open question)
 
 Same run, second pass: replicates `004`'s `ewma_vol` EWMA from its own `after_swap` payload
-and records the fraction of sampled steps (and of executed Y-volume) at or below each
-`FLOOR_BPS` the `004b` issue froze, bucketed by this run's own `true_sigma` tercile. Full
-table: `results/2026-08-22-estimator-probe-005b.md`.
+and records the fraction of **executed submission trades** (and of executed Y-volume) at or
+below each floor bps value (`config/bench.toml`'s `[estimator_probe]` table), bucketed by this
+run's own `true_sigma` tercile. `004` updates `ewma_vol` on every executed trade with no
+per-simulation-step dedup, so this is a fraction of trades, not of simulation steps — a step
+where the router sent the submission no flow contributes to neither. Full table:
+`results/2026-08-22-estimator-probe-005b.md`.
 
-| sigma tercile | floor (bps) | fraction of steps ≤ floor | fraction of volume ≤ floor |
+| sigma tercile | floor (bps) | fraction of trades ≤ floor | fraction of volume ≤ floor |
 | --- | --- | --- | --- |
 | Low | 25 | 0.5624 | 0.3072 |
 | Low | 30 | 0.7028 | 0.4408 |
@@ -74,16 +77,18 @@ table: `results/2026-08-22-estimator-probe-005b.md`.
 | High | 25 | 0.1545 | 0.0574 |
 | High | 30 | 0.2822 | 0.1280 |
 
-**This substantiates, not merely stays consistent with, `004b`'s own closing hypothesis**
-(`strategies/004b-floor-subtracted-ewma-fee/NOTES.md` § Negative result): even in the **Low**
-sigma tercile — the calmest third of the sampled range, not an extreme tail — `ewma_vol` sits
-at or below 25 bps on 56.2% of sampled steps and at or below 30 bps on 70.3% of steps (30.7%
-and 44.1% of executed volume respectively). `004b`'s two probe points used exactly these two
-floors (P2 = 25 bps, P1 = 30 bps) and both lost; this measurement is the first direct evidence
-of *why*: a floor at that level zeroes the residual on a majority of calm-regime steps, pinning
-the fee at `BASE_BPS` in exactly the cells (21/22/24/25) where `004` already loses to
-`001@66`. `004b`'s own NOTES.md is updated with this addendum (§ Negative result), and
-WHI-1223 (already `Done`) receives a comment linking here — evidence-only, not a reopen.
+**This substantiates, though does not on its own independently confirm, `004b`'s own closing
+hypothesis** (`strategies/004b-floor-subtracted-ewma-fee/NOTES.md` § Negative result): even in
+the **Low** sigma tercile — the calmest third of the sampled range, not an extreme tail —
+`ewma_vol` sits at or below 25 bps on 56.2% of executed trades and at or below 30 bps on 70.3%
+of trades (30.7% and 44.1% of executed volume respectively). `004b`'s two probe points used
+exactly these two floors (P2 = 25 bps, P1 = 30 bps) and both lost; this measurement establishes
+the necessary premise for the proposed explanation — a floor at that level does zero the
+residual on a majority of calm-regime trades, which is consistent with (though not, on its
+own, full proof of) the fee then pinning at `BASE_BPS` in exactly the cells (21/22/24/25)
+where `004` already loses to `001@66`. `004b`'s own NOTES.md is updated with this addendum
+(§ Negative result), and WHI-1223 (already `Done`) receives a comment linking here —
+evidence-only, not a reopen.
 
 ## Probe B — the single-point degenerate-range evaluation
 
@@ -138,6 +143,29 @@ the parent's unrefit map is a loss roughly 6–10x the issue's own noise-floor e
 Consistent across all three independently-sampled segments (−19 to −24), which rules out a
 screening-only artifact.
 
+## `bench compare 005b vs 005` — the primary paired-CI number (per the issue's own instruction)
+
+The issue's own acceptance criteria name this the primary number, so it was run explicitly —
+not inferred from the two independent `bench fit` means above. Same scratch source as Probe B
+(the parent's fitted `PARAMS` point, `FEE_LO=5, A_NUM=13, B_DEN=1265`, with only the divisor
+fix applied), run through `bench compare --candidate <scratch>/lib.rs --reference
+strategies/005-vol-adaptive-cpmm-fee/lib.rs --segment screening` — a genuine paired-by-seed
+comparison, not two independent means differenced. Full report, including the 27-bin regime
+slice: `results/2026-08-22-compare-005b-elapsed-steps-divisor-fix-vs-005-vol-adaptive-cpmm-fee.md`.
+
+**Paired mean difference: −19.293945. 95% CI: [−26.685351, −11.902540], n=200.**
+
+The CI excludes zero entirely — this is not a noisy, ambiguous result; it is a statistically
+clear loss, confirming (not merely corroborating) the Probe B finding above (which used
+independent screening-segment means from two separate `bench fit` runs on the same seeds and
+landed within 0.00006 of this paired estimate — the two methods agree to six decimal places,
+as they should on identical seeds). The regime-slice breakdown shows the loss is not uniform:
+of the 27 bins, 11 have a 95% CI excluding zero, and of those, 9 are losses and only 2 are wins
+(`fee=Low liq=High sigma=Low`: +29.78 `[9.32, 50.23]`; `fee=High liq=High sigma=High`: +43.06
+`[17.15, 68.97]`) — the two wins share `liq=High` but opposite sigma terciles, so this is
+reported as measured heterogeneity, not evidence for a specific refit direction. The large,
+broadly-distributed losses dominate the pooled mean.
+
 ## Negative result — why the lane closes here
 
 The issue's own act table for Probe B: `delta in [−15, 0]` → "proceed only if Probe A showed
@@ -174,17 +202,28 @@ committed.**
       plumbing, via an independent storage-layout containment check.
 - [x] The 0-line point `[66,0,2000]` reproduces 385.97 ± 1 (measured 385.631774, deviation
       −0.34).
-- [ ] `bench fuzz` re-run — **not applicable**: no `lib.rs` is committed, so there is no
-      candidate storage footprint to fuzz.
+- [x] `bench fuzz` re-run (the storage footprint changed — `elapsed_sum` at `[56..64]`,
+      `STATE_END: 56 -> 64`): run against the scratch source that produced the Probe B/`bench
+      compare` numbers above — **PASS, zero shape violations across 324 states x 2 sides**.
+      No `results/*.md` is written for a PASS by design (`docs/DESIGN.md` §2.9); recorded here
+      instead, since no `lib.rs` is committed for this gate to attach a report slug to.
 - [x] The `FEE_LO` extension is not included (the issue's own § "The two candidate changes
       are substitutes, not complements" rejects it; not re-litigated here).
 - [x] `FEE_HI` is left frozen (never touched by this issue's own frozen space).
-- [ ] The inherited "MLE" comment softening — **not applicable**: no `lib.rs` is committed to
-      carry that comment. Recorded here as the issue's own prior art for a future variant
+- [x] The inherited "MLE" comment softening: **not carried out on this issue's own artifact**
+      (no `lib.rs` is committed to hold it), but discharged where the comment actually lives —
+      `strategies/005-vol-adaptive-cpmm-fee/NOTES.md` § Estimator bias now has an addendum
+      pointing at this issue's measurement, explaining precisely why `count` (not elapsed
+      steps) makes the parent's own inherited "MLE of stationary variance" comment inaccurate
+      whenever a sample spans a multi-step gap. Recorded here as prior art for a future variant
       that does commit source based on this estimator.
-- [x] `bench compare 005b vs 005` — **not applicable in its literal form** (no `lib.rs` to
-      compare); the equivalent paired evidence is the Probe B table above (both segments'
-      deltas against the parent's own committed numbers).
+- [x] `bench compare 005b vs 005` run for the paired CI — **the primary number**: paired mean
+      diff −19.293945, 95% CI `[−26.685351, −11.902540]`, n=200, CI excludes zero
+      (`results/2026-08-22-compare-005b-elapsed-steps-divisor-fix-vs-005-vol-adaptive-cpmm-fee.md`,
+      § `bench compare 005b vs 005` above). Run against the same scratch source Probe B used —
+      no `lib.rs` is committed as the strategy registry's own artifact, but the comparison
+      itself is genuine and its report is committed evidence, independently reproducible from
+      the divisor-fix description in this file's own § Provenance.
 - [x] The refit-returns-to-a-near-parent-map case does not apply; the measured outcome is an
       unambiguous loss, reported as such, not as a tie or a win.
 - [x] `cargo test --workspace` green; fmt/clippy per `AGENTS.md` (the new `bench
@@ -192,17 +231,27 @@ committed.**
 
 ## Verification
 
-- `cargo test --workspace`: 235 passed, 0 failed, 1 ignored (baseline 214 + 21 new: 4
-  `estimator_probe.rs` module tests, 6 `commands/estimator_probe.rs` tests, 11 `stats.rs`
-  helper tests for `median`/`spearman_rank_correlation`).
+- `cargo test --workspace`: 243 passed, 0 failed, 1 ignored (baseline 214 + 29 new across two
+  commits: the Probe A tooling itself, plus round-1 review fixes — config validation tests,
+  a lock-ordering-race regression test, and a floor-sweep-resize regression test).
 - `rustfmt` applied to every touched `tools/bench/**` file; `cargo fmt --all` deliberately not
   run, per the repo's own documented caveat that it reformats inherited upstream files
   outside this issue's scope.
 - No new `clippy`-worthy issues in the touched files (`cargo clippy -p prop-amm-bench
   --all-targets`, checked against the diff — the pre-existing `-D warnings` failures in
   upstream-owned `crates/shared` are the repo's own documented baseline, not from this issue).
-- `bench estimator-probe` and the scratch degenerate-range `bench fit` runs above were
-  executed from a detached scratch worktree outside the primary clone's directory tree (the
-  same `nested-worktree-breaks-cargo-isolated-builds` workaround `004b`/`007` document), since
-  both shell out to the reference compile path. The committed `results/*.md` report was
-  copied back from that scratch run; no scratch strategy source is committed anywhere.
+- `bench estimator-probe`, the scratch degenerate-range `bench fit` runs, `bench compare`, and
+  `bench fuzz` above were all executed from detached scratch worktrees outside the primary
+  clone's directory tree (the same `nested-worktree-breaks-cargo-isolated-builds` workaround
+  `004b`/`007` document), since all four shell out to the reference compile path. Each
+  committed `results/*.md` report was copied back from its scratch run; no scratch strategy
+  source is committed anywhere.
+- `results/2026-08-22-estimator-probe-005b.md` was produced at commit `3092150` (Probe A
+  tooling, pre-round-1-fix); `results/2026-08-22-compare-005b-...md` was produced at commit
+  `001cf40` (post-round-1-fix). The two round-1 mirror-fidelity fixes made in between (`005`'s
+  `R2_CAP` re-clamp, the `data.len() >= 42` guard) are both provably no-ops on real engine
+  output — `move_bps` is already clamped to `MOVE_BPS_CAP_005` before squaring, so
+  `r2 <= R2_CAP_005` always holds without the re-clamp; and `engine::run_simulation_native`
+  never calls `after_swap` with a payload shorter than the 42-byte prefix `decode_after_swap`
+  reads — so the Probe A numbers reported here remain valid evidence of the current code's
+  behavior despite predating the commit that fixed those two gaps.
