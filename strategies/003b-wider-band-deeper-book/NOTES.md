@@ -77,7 +77,9 @@ band. **The owner was asked explicitly and approved proceeding** with the full 3
 search, given the parent's own frozen `W_BPS` bound was a genuine, non-degenerate rising
 plateau rather than a converged interior optimum — i.e. the upside case (a materially
 stronger #2, informative for any future v0.2.0 work on this family) was judged worth the
-search cost even though it cannot change the v1 ranking.
+search cost even though it cannot change the v1 ranking. This probe table and decision are
+also recorded as a WHI-1224 issue comment, so the gate is auditable independently of this
+file.
 
 ## Pre-search shape-fuzz gate (docs/DESIGN.md §2.9, cross-cutting finding #8)
 
@@ -144,14 +146,14 @@ every evaluated parameter vector produced a valid edge (no panic), i.e. no point
 `docs/DESIGN.md` §2.9's shape checks or WHI-1213's `Invalid` handling anywhere in the 176
 points visited. **This is a distinct claim from "shape-safe" or "not catastrophic" — the
 evaluated curve does contain a large, expected cliff region** (e.g. `[5,50,525] -> -20043`,
-`[103,50,525] -> -20077`, roughly 28 of the 176 points land in the -19,000 to -20,077 range
+`[103,50,525] -> -20077`, exactly 23 of the 176 points land in the -19,000 to -20,077 range
 — the same thin-book-behind-a-narrow-effective-band failure mode `003`'s own parent
 NOTES.md § DELTA_PCT range correction documents): a *valid* (non-panicking) edge, just an
 economically bad one, exactly as `results/2026-08-22-fit-003b-wider-band-deeper-book.md`'s
 own committed curve shows. The actual shape-safety evidence is the `bench fuzz` PASSes
 above, run specifically at the box's four corners (including the thinnest-`k` corner,
-Corner C) and the fitted point — not this "zero invalid" count, which only rules out
-panics.
+Corner A — see § Shape and CU risk below for the computed comparison) and the fitted
+point — not this "zero invalid" count, which only rules out panics.
 
 **Winning point: `S0_BPS = 57, W_BPS = 2423, DELTA_RESERVE_BPS = 763`.**
 
