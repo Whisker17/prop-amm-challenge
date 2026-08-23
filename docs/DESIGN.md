@@ -676,7 +676,9 @@ primitive. `WHI-1206` carries the full argument, the per-sigma bleed table, and 
 dissent. The surviving idea — virtual-reserve amplification at a real spread, i.e. `001`
 plus a concentration knob — was filed as a **v0.2.0 candidate**; that earmark is now
 **superseded by `007`** (immediately below), which is that same idea ported as an M1 entry
-rather than reopened as v0.2.0 work.
+rather than reopened as v0.2.0 work. `002`'s own mechanism was separately revived, not as a
+submission but as an out-of-competition ceiling measurement (§10, `ceilings/C-orbic-oracle/`,
+WHI-1247/WHI-1248).
 
 **`007` was added post-freeze by exception** (`WHI-1219`, recorded in `WHI-1220`). The
 freeze's purpose was still served at the time: the test segment (§2.2) was unspent, and
@@ -1220,3 +1222,75 @@ figure only; it did not, and must not, influence the winner/runner-up choice abo
   (`S0_BPS=57, W_BPS=2423, DELTA_RESERVE_BPS=763`, none at a range edge); `008` is committed
   at a fixed pre-registered anchor rather than a search result at all, for the reason
   above.
+
+## 10. Out-of-competition ceiling lane
+
+`bench ceiling` (WHI-1247, extended by WHI-1248) grants a candidate curve something no
+submittable strategy can actually have — a price re-anchor the arbitrageur cannot
+front-run, quoting directly off the replayed GBM fair-price path
+(`tools/bench/src/oracle.rs`) — to measure how much edge is reachable by better
+re-anchoring before anyone spends real search budget chasing the same gap with a real,
+front-runnable mechanism. WHI-1247 measured a trade-triggered cursor (re-anchor moves to
+the last *executed* trade's step); WHI-1248 adds a second, exact-step "fingerprint" cursor
+that advances only on a step-for-step match against the arbitrageur's own replayed probe
+sequence, giving a fixed-lag deployment analogue (`L=1`) and a clairvoyant upper diagnostic
+(`L=0`) alongside the first cursor. Full mechanism, adaptations, and measured numbers live
+in `ceilings/<id>-<slug>/NOTES.md`, not here.
+
+**Why this is not a strategy.** Nothing under `ceilings/` compiles to BPF, links
+`crates/submission-sdk`, or has a `lib.rs` at all (`tools/bench/tests/ceiling_guards.rs`
+enforces the no-`lib.rs` invariant mechanically); no ceiling report enters a §6.2 row or a
+`compare.rs`-shaped ranking. It exists only to bound headroom for M1/M2 search decisions,
+never to be submitted.
+
+**Four mechanical guards**, all in `bench ceiling` itself: (a) `ceilings/**` never contains
+a `lib.rs`; (b) every report's own first line is the literal `out_of_competition: true`,
+and its tables are shaped differently from `compare.rs`'s ranked
+`| regime | n | mean diff | 95% CI |` table, so a ceiling report is never mistaken for a
+ranked comparison at a glance; (c) `--reference` is allowlisted to `000-normalizer`
+(`--self-check` only) or `001-cpmm-fee` (the 0-line) — it can never silently compare
+against a stronger, more recent strategy and be read as beating the real 0-line; (d)
+`--segment test` is refused unconditionally, even with
+`--i-am-spending-the-test-segment` — nothing out-of-competition here has a ranking claim
+for that flag to protect.
+
+**Exemptions, and why each cited section cannot apply here instead of the guards above:**
+
+- **§2.6 (compile paths and the parity gate) does not apply, because there is no BPF path
+  to keep in parity.** The lane runs entirely host-side/native (`tools/bench/src/oracle.rs`)
+  and never compiles a candidate to BPF, so §2.6's fast-path/reference-path parity gate has
+  nothing to check here. The lane substitutes its own parity anchor instead
+  (`bench ceiling --self-check`, `tools/bench/src/commands/ceiling.rs::run_self_check`) —
+  not a waiver of §2.6, a different gate for a path §2.6 was never written to cover.
+- **§2.5 (search protocol) is not exempted — it is reused unmodified.** `bench ceiling
+  --fit` shares §2.5's own search machinery (coarse-grid-then-descent, the 300-point cap,
+  common random numbers on `screening`) rather than a lighter-weight substitute. What
+  distinguishes the lane from a §6.2 strategy is not a relaxed search protocol; it is that
+  a ceiling probe's fitted point never enters the ranking §2.5 exists to feed.
+- **§2.10 (convergence / the frozen strategy list) does not apply, because the lane is not
+  an entry on that list and never becomes one.** It is a deliberate, permanent
+  out-of-competition instrument, not an abandoned or forgotten strategy directory — this is
+  the same statement `ceilings/README.md` already makes, and it is why the lane is
+  explicitly not a §2.10 orphan: §2.10 governs additions to and removals from the frozen
+  v1 list, and the lane was never a candidate for that list in the first place.
+
+**Segments the lane may read: `screening`, `train`, `validation` only.** `screening` backs
+the search inner loop (shared with §2.5); `train`/`validation` back a fitted point's final
+re-evaluation and its paired comparison against the 0-line, mirroring §2.5's own "final
+point evaluation" step. `test` is refused unconditionally by guard (d) above, per §2.2's
+single-use rule. (WHI-1247's own committed ceiling number used `observation` instead,
+before this section existed to declare the policy — that already-committed,
+reporting-only measurement is not retroactively invalidated by this list; going forward,
+a headline ceiling number is reported against `screening`/`train`/`validation`.)
+
+**Three honesty constraints bound what any ceiling number means** (WHI-1247 § Context,
+restated in every committed `ceilings/**/NOTES.md` and `results/*.md` report): (1) it is a
+one-sided **lower bound** on what perfect price knowledge is worth, not the maximum of the
+perfect-information class, so it does not bound the remaining headroom above a stronger
+submission from above; (2) most of the number is `retail volume x captured spread x flow
+share(spread)` once the quote stops being front-runnable — the only genuinely non-closed-
+form content is the flow-share-vs-spread curve the router grants against the normalizer's
+own sampled fee/liquidity; (3) that content generalizes to any oracle-centered quoter and
+carries little content specific to the ported curve itself. Every reported ceiling number
+must repeat constraint (1) explicitly — a ceiling read as a two-sided bound would overstate
+how much headroom a real, front-runnable mechanism could actually reach.

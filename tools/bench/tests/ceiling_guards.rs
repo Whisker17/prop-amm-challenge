@@ -164,3 +164,67 @@ fn segment_test_is_refused_even_with_the_spend_flag() {
         "never spends the `test` segment",
     );
 }
+
+/// WHI-1248 `validate_cursor_and_lag`, exercised black-box through the real compiled binary
+/// (not just the in-process unit tests in `ceiling.rs`'s own `#[cfg(test)]` module): `--lag`
+/// alongside `--cursor trade-triggered` (the default) is refused before any compile/simulate
+/// work happens — `validate_cursor_and_lag` is `run()`'s very first line.
+#[test]
+fn cursor_trade_triggered_rejects_a_lag_flag() {
+    expect_refusal(
+        &[
+            "ceiling",
+            "--cursor",
+            "trade-triggered",
+            "--lag",
+            "1",
+            "--concentration",
+            "1.0",
+            "--spread-bps",
+            "10",
+            "--no-report",
+        ],
+        "only meaningful alongside",
+    );
+}
+
+/// WHI-1248: `--cursor fingerprint` with no `--lag` is refused — the fingerprint rung has no
+/// default lag, unlike trade-triggered's implicit lag-0-equivalent.
+#[test]
+fn cursor_fingerprint_requires_a_lag_flag() {
+    expect_refusal(
+        &[
+            "ceiling",
+            "--cursor",
+            "fingerprint",
+            "--concentration",
+            "1.0",
+            "--spread-bps",
+            "10",
+            "--no-report",
+        ],
+        "requires --lag",
+    );
+}
+
+/// WHI-1248: `L in {5, 25}` is explicitly out of scope for this issue (deferred to a
+/// follow-up unless the L=1-vs-trade-triggered gap is surprising) — `--lag 5` must be
+/// refused by name, not silently accepted or misinterpreted as `--lag 1`.
+#[test]
+fn cursor_fingerprint_rejects_an_out_of_scope_lag_value() {
+    expect_refusal(
+        &[
+            "ceiling",
+            "--cursor",
+            "fingerprint",
+            "--lag",
+            "5",
+            "--concentration",
+            "1.0",
+            "--spread-bps",
+            "10",
+            "--no-report",
+        ],
+        "out of scope for WHI-1248",
+    );
+}
