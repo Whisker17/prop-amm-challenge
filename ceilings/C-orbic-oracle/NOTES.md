@@ -201,6 +201,29 @@ sha) — both runs below share:
 - The fit search itself runs on the fixed `screening` segment (200 sims,
   `config/bench.toml`'s `[search] max_points = 300`), per `tools/bench/src/commands/ceiling.rs`'s
   `run_fit`, independent of which segment the final measurement reports against.
+- **Reproducibility caveat: both `--fit` runs below were executed from a detached
+  scratch worktree (`git worktree add --detach /tmp/<name> <sha>`), not from
+  `.claude/worktrees/whi-1247` itself.** `ceiling --fit`'s reference-path compile goes
+  through `tools/bench/src/compile.rs::build_and_load`, which shells out to `cargo run
+  -p prop-amm -- build` — that in turn drives `crates/cli/src/commands/compile.rs`'s
+  `ensure_build_dir` (upstream-owned, out of scope for this issue), which creates an
+  isolated build package with no `[workspace]` table of its own. `tools/bench/src/
+  compile.rs`'s own test doc comment (`starter_over_observation_segment_is_bit_
+  identical_with_and_without_telemetry`, added under WHI-1205) already documents the
+  consequence: when the repo root a test or command runs from is itself nested inside
+  another git worktree of the same repo — exactly `.claude/worktrees/<name>`, this
+  repo's own mandated layout for issue work — cargo's ancestor search resolves the
+  *primary clone's* workspace instead of the isolated package's own manifest, and
+  fails with `current package believes it's in a workspace when it's not`. This is not
+  new to this issue: `tools/bench/src/fast_compile.rs`'s own fast build path hit the
+  identical error (WHI-1205) and was fixed there with an empty `[workspace]` table in
+  its generated `Cargo.toml`; that fix was never extended to the reference path
+  `ensure_build_dir` uses, because that path lives in `crates/cli`, upstream-owned code
+  this repo edits only through an upstream sync (`AGENTS.md`). Anyone re-deriving the
+  numbers below **from inside** `.claude/worktrees/whi-1247` will hit that exact build
+  error on the `--fit` step; re-derive from a detached scratch worktree instead (as
+  done here), or wait for an upstream-sync-lane fix. Tracked as a deferred issue below
+  rather than fixed in this PR, since the fix does not belong to this issue's scope.
 
 ### `anchored` (headline) — joint fit of `(concentration, spread_bps)`
 

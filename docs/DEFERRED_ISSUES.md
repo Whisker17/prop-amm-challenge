@@ -315,6 +315,25 @@ soon — anything touching a declared high-risk path defaults to at least High),
   as diagnostic-only, spending search budget WHI-1247's own step 10 chose not to spend here;
   worth revisiting only if a future issue specifically wants the degenerate-axis claim tested
   rather than just noted as untested.
+- **`ceiling --fit`'s reference-path compile fails when run from inside
+  `.claude/worktrees/<name>`** (Low, WHI-1247). `tools/bench/src/compile.rs::build_and_load`
+  shells out to `cargo run -p prop-amm -- build`, which drives `crates/cli/src/commands/
+  compile.rs`'s `ensure_build_dir` — an isolated build package with no `[workspace]` table
+  of its own. When the working tree it runs from is itself nested inside another git
+  worktree of the same repo (exactly this repo's own mandated `.claude/worktrees/<name>`
+  layout for issue work), cargo's ancestor search resolves the *primary clone's* workspace
+  instead of the isolated package's manifest and hard-errors with `current package believes
+  it's in a workspace when it's not` — documented in `tools/bench/src/compile.rs`'s own test
+  doc comment. `tools/bench/src/fast_compile.rs` hit the identical error for its own fast
+  build path and was fixed under WHI-1205 by giving its generated `Cargo.toml` an empty
+  `[workspace]` table; that fix was never extended to `ensure_build_dir`, because that
+  function lives in `crates/cli`, upstream-owned code this repo edits only through an
+  upstream sync (`AGENTS.md`). Both `ceiling --fit` runs behind this issue's committed
+  numbers were run from a detached scratch worktree instead (`ceilings/C-orbic-oracle/
+  NOTES.md` § Fitted point now records this as a reproducibility caveat). Fix: none planned
+  in this PR — `crates/cli` is out of scope for WHI-1247 and any fix belongs to the upstream
+  sync lane, not a feature issue; would need its own ticket proposing the same empty-
+  `[workspace]`-table fix for the reference compile path.
 
 ---
 
