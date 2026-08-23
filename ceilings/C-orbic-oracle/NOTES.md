@@ -190,11 +190,13 @@ the loop, not the oracle curve, produced any observed edge difference.
 Reproducibility per `docs/DESIGN.md` §3.3 (segment, sim/step counts, execution path, commit
 sha) — both runs below share:
 
-- Commit: `e319f56` (the committed `results/*.md` reports carry this as their own
+- Commit: `831284c` (the committed `results/*.md` reports carry this as their own
   `Commit:` line; the underlying measured numbers are unchanged from the original
-  `49509a3` run — round-1 review only changed report/NOTES.md text, not simulation
-  logic, and both runs were independently re-verified byte-identical on the numeric
-  fields before being recommitted)
+  `49509a3` run and from the `e319f56`-stamped round-1/round-2 regenerations — this
+  final regeneration re-ran both `--fit` invocations in release mode from a detached
+  scratch worktree at `831284c` and reproduced the anchored point's edge/staleness
+  figures byte-identical to the earlier `e319f56` report; only the report/NOTES.md
+  provenance line moved, not the simulation logic or any measured field)
 - Segment: `observation` (1000 sims, 10,000 steps each, reporting-only —
   `docs/DESIGN.md` §2.2 — never a decision input)
 - Execution path: native (host-side, never BPF-compiled — this lane is not submittable)
