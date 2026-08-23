@@ -136,7 +136,11 @@ Rationale:
 Reproducibility per `docs/DESIGN.md` §3.3 (segment, sim/step counts, execution path, commit
 sha) — both runs below share:
 
-- Commit: `49509a3`
+- Commit: `e319f56` (the committed `results/*.md` reports carry this as their own
+  `Commit:` line; the underlying measured numbers are unchanged from the original
+  `49509a3` run — round-1 review only changed report/NOTES.md text, not simulation
+  logic, and both runs were independently re-verified byte-identical on the numeric
+  fields before being recommitted)
 - Segment: `observation` (1000 sims, 10,000 steps each, reporting-only —
   `docs/DESIGN.md` §2.2 — never a decision input)
 - Execution path: native (host-side, never BPF-compiled — this lane is not submittable)
