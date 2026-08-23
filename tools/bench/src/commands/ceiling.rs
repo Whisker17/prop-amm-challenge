@@ -22,10 +22,10 @@ use crate::report::DEFAULT_REPORT_DIR;
 use crate::search::{self, PointOutcome};
 use crate::stats;
 
-/// This issue's only cursor rung (WHI-1247 step 5) — baked into the stage name as a literal
-/// rather than a CLI flag, since there is nothing else to select yet; a future rung (the
-/// exact-step cursor / L=1 fixed lag this issue explicitly Blocks) adds its own value here,
-/// not a retrofit of this one.
+/// This issue's only cursor rung (WHI-1247 step 5), and the only value [`CeilingArgs::cursor`]
+/// accepts today — there is nothing else to select yet; a future rung (the exact-step
+/// cursor / L=1 fixed lag this issue explicitly Blocks) adds its own accepted value, not a
+/// retrofit of this one.
 const CURSOR_MODE: &str = "trade-triggered";
 
 /// The hardcoded reference allowlist (WHI-1247 step 7 guard (a)): the ceiling lane may only
@@ -73,6 +73,15 @@ pub struct CeilingArgs {
     /// Which of WHI-1247 step 3's two `target_x` variants to run.
     #[arg(long, value_enum, default_value = "anchored")]
     pub variant: VariantArg,
+
+    /// Which cursor rung to run. Accepted only as an explicit spelling-match against
+    /// [`CURSOR_MODE`] (`"trade-triggered"`, the only rung this issue delivers) — present so
+    /// the spec's own literal example commands (`ceiling --variant anchored --cursor
+    /// trade-triggered ...`) actually work, without pretending there is a real choice here
+    /// yet. A future rung (the exact-step cursor / L=1 fixed lag this issue explicitly
+    /// Blocks) adds its own accepted value here, not a retrofit of this one.
+    #[arg(long, default_value = CURSOR_MODE)]
+    pub cursor: String,
 
     /// The allowlisted 0-line reference to measure against — a `strategies/<slug>`
     /// directory (WHI-1247 step 7 guard (a); ignored by `--self-check`, which always
@@ -130,14 +139,50 @@ fn validate_max_points_requires_no_report(
 /// WHI-1247 step 7 guard (a): the reference must resolve (via [`resolve_strategy_lib_path`])
 /// to one of [`ALLOWED_REFERENCE_SLUGS`] — anything else is refused before it is ever
 /// compiled.
+///
+/// [`resolve_strategy_lib_path`] derives its `slug` purely from the final path component
+/// (`Path::file_name`), with no check that the path it resolved actually lives under
+/// `strategies/`. Checking only that string would let `--reference
+/// ../anywhere/001-cpmm-fee` (a directory that merely shares a final component with an
+/// allowlisted slug, but whose `lib.rs` is really e.g. `008`'s) pass this guard and produce
+/// a report headed `Reference (0-line): 001-cpmm-fee` while actually measuring against
+/// `008` — exactly the "ceiling vs `008`" report this issue requires to be impossible to
+/// generate. So after the slug check, this also requires the resolved `lib_path` to
+/// canonicalize to the *real* `strategies/<slug>/lib.rs`, not just share its basename.
 fn validate_reference_allowlist(reference: &str) -> anyhow::Result<String> {
-    let (slug, _lib_path) = resolve_strategy_lib_path(reference)?;
+    let (slug, lib_path) = resolve_strategy_lib_path(reference)?;
     if !ALLOWED_REFERENCE_SLUGS.contains(&slug.as_str()) {
         anyhow::bail!(
             "`--reference {reference}` (slug `{slug}`) is not on the ceiling lane's \
              allowlist {ALLOWED_REFERENCE_SLUGS:?} (WHI-1247 step 7 guard (a)) — this lane \
              may only ever be measured against the trusted normalizer or the committed \
              0-line, never a stronger or more recent strategy"
+        );
+    }
+
+    let expected = Path::new("strategies").join(&slug).join("lib.rs");
+    let actual_canon = lib_path.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "failed to resolve `--reference {reference}` ({}): {e}",
+            lib_path.display()
+        )
+    })?;
+    let expected_canon = expected.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "failed to resolve the allowlisted path {} ({e}) — is `strategies/{slug}/lib.rs` \
+             missing?",
+            expected.display()
+        )
+    })?;
+    if actual_canon != expected_canon {
+        anyhow::bail!(
+            "`--reference {reference}` (slug `{slug}`) resolves to `{}`, which is not the \
+             allowlisted `{}` (WHI-1247 step 7 guard (a)) — a directory that merely shares a \
+             final path component with an allowlisted slug is not the same file, and this \
+             lane must never be measured against whatever that other directory actually \
+             holds",
+            actual_canon.display(),
+            expected_canon.display()
         );
     }
     Ok(slug)
@@ -196,24 +241,38 @@ fn spread_bps_spec() -> ParamSpec {
     }
 }
 
-/// Runs `f`, catching a shape-check panic from `crates/sim/src/curve_checks.rs` the same way
-/// `commands/fit.rs::run_batch_catching_panics` does — `curve_checks.rs` treats a native
-/// submission fn identically to a compiled one (it keys only on the AMM's own `"submission"`
-/// name), so a pathological corner of the oracle curve's own search space (e.g. an extreme
-/// `concentration`/`spread_bps` combination) can panic mid-simulation exactly like a
-/// compiled candidate's PARAMS point can.
-fn run_catching_panics(
-    f: impl FnOnce() -> anyhow::Result<BatchResult>,
-) -> anyhow::Result<PointOutcome> {
+/// Runs `f`, catching any panic (e.g. a shape-check panic from `crates/sim/src/curve_checks.rs`
+/// the same way `commands/fit.rs::run_batch_catching_panics` does — `curve_checks.rs` treats a
+/// native submission fn identically to a compiled one, keying only on the AMM's own
+/// `"submission"` name, so a pathological corner of the oracle curve's own search space can
+/// panic mid-simulation exactly like a compiled candidate's PARAMS point can) into
+/// `Ok(Err(panic_message))` rather than propagating it, while suppressing the default panic
+/// hook's stderr print for the duration. Shared by every catch-and-continue call site in this
+/// file — the search loop's own per-point evaluation ([`run_catching_panics`]) and the final
+/// re-evaluation of the fitted point ([`run_final_eval_catching_panics`]) — since both need
+/// the exact same `take_hook`/`set_hook`/`catch_unwind` bracket and differ only in what they
+/// do with a successful `T`.
+fn catch_panicking<T>(
+    f: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<Result<T, String>> {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let result = catch_unwind(AssertUnwindSafe(f));
     std::panic::set_hook(previous_hook);
 
     match result {
-        Ok(Ok(batch)) => Ok(PointOutcome::Valid(batch.avg_edge())),
+        Ok(Ok(value)) => Ok(Ok(value)),
         Ok(Err(e)) => Err(e),
-        Err(payload) => Ok(PointOutcome::Invalid(panic_message(&payload))),
+        Err(payload) => Ok(Err(panic_message(&payload))),
+    }
+}
+
+fn run_catching_panics(
+    f: impl FnOnce() -> anyhow::Result<BatchResult>,
+) -> anyhow::Result<PointOutcome> {
+    match catch_panicking(f)? {
+        Ok(batch) => Ok(PointOutcome::Valid(batch.avg_edge())),
+        Err(msg) => Ok(PointOutcome::Invalid(msg)),
     }
 }
 
@@ -246,27 +305,18 @@ enum OracleBatchOutcome {
     Invalid(String),
 }
 
-/// Runs the real oracle measurement, catching a `curve_checks.rs` shape-check panic exactly
-/// like [`run_catching_panics`] does for the search loop — see [`OracleBatchOutcome`] for why
-/// this call site needs its own guard rather than reusing that one directly (it needs to keep
-/// the staleness summaries on success, which `run_catching_panics`'s `PointOutcome`-shaped
-/// return throws away).
+/// Runs the real oracle measurement, catching a panic via the same [`catch_panicking`] guard
+/// [`run_catching_panics`] uses for the search loop — see [`OracleBatchOutcome`] for why this
+/// call site needs to keep its own wrapper (it preserves the staleness summaries on success,
+/// which `run_catching_panics`'s `PointOutcome`-shaped return throws away).
 fn run_final_eval_catching_panics(
     params: OracleParams,
     configs: &[SimulationConfig],
 ) -> anyhow::Result<OracleBatchOutcome> {
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let owned_configs = configs.to_vec();
-    let result = catch_unwind(AssertUnwindSafe(move || {
-        oracle::run_batch(params, &owned_configs)
-    }));
-    std::panic::set_hook(previous_hook);
-
-    match result {
-        Ok(Ok((batch, staleness))) => Ok(OracleBatchOutcome::Valid { batch, staleness }),
-        Ok(Err(e)) => Err(e),
-        Err(payload) => Ok(OracleBatchOutcome::Invalid(panic_message(&payload))),
+    match catch_panicking(move || oracle::run_batch(params, &owned_configs))? {
+        Ok((batch, staleness)) => Ok(OracleBatchOutcome::Valid { batch, staleness }),
+        Err(msg) => Ok(OracleBatchOutcome::Invalid(msg)),
     }
 }
 
@@ -392,6 +442,23 @@ fn aggregate_staleness(summaries: &[StalenessSummary]) -> StalenessAggregate {
     }
 }
 
+/// The run's own identity — every field [`write_ceiling_report`] needs to describe *what*
+/// was measured, as opposed to [`FittedPoint`]/[`FinalEvalSummary`] which describe the
+/// measurement itself. These six always travel together (one run has exactly one stage, one
+/// segment, one sim/step count, one variant, one reference) — bundled into one struct rather
+/// than six positional parameters so the call site reads as "the run" and not an
+/// order-sensitive tuple, and so `write_ceiling_report` no longer needs
+/// `#[allow(clippy::too_many_arguments)]` to satisfy that lint honestly rather than by
+/// suppression.
+struct CeilingRunMeta<'a> {
+    stage: &'a str,
+    segment_name: &'a str,
+    n_sims: usize,
+    n_steps: u32,
+    variant: VariantArg,
+    reference_slug: &'a str,
+}
+
 /// WHI-1247 step 7 guard (c): the report's own machine-readable marker, as the literal first
 /// line, plus every field a reader needs to know what was measured and how — reusing only
 /// [`crate::report::ensure_report_slot_free`] and [`DEFAULT_REPORT_DIR`] from `report.rs`
@@ -400,17 +467,20 @@ fn aggregate_staleness(summaries: &[StalenessSummary]) -> StalenessAggregate {
 /// differently from `compare.rs`'s own `| regime | n | mean diff | 95% CI |` — this is an
 /// out-of-competition measurement and must never be mistaken for a ranked comparison at a
 /// glance.
-#[allow(clippy::too_many_arguments)]
 fn write_ceiling_report(
-    stage: &str,
-    segment_name: &str,
-    n_sims: usize,
-    n_steps: u32,
-    variant: VariantArg,
-    reference_slug: &str,
+    meta: CeilingRunMeta<'_>,
     fitted: &FittedPoint,
     final_eval: FinalEvalSummary<'_>,
 ) -> anyhow::Result<std::path::PathBuf> {
+    let CeilingRunMeta {
+        stage,
+        segment_name,
+        n_sims,
+        n_steps,
+        variant,
+        reference_slug,
+    } = meta;
+
     let dir = Path::new(DEFAULT_REPORT_DIR);
     std::fs::create_dir_all(dir)
         .map_err(|e| anyhow::anyhow!("failed to create report dir {}: {e}", dir.display()))?;
@@ -426,6 +496,18 @@ fn write_ceiling_report(
         "This is the ceiling lane (WHI-1247, `ceilings/README.md`): an out-of-competition \
          measurement of an oracle re-anchor the arbitrageur cannot front-run. Nothing on this \
          page is submittable or ranked.\n\n",
+    );
+    out.push_str(
+        "**Three honesty constraints bound what this number means** (WHI-1247 § Context): \
+         (1) it is a one-sided **lower bound** on what perfect price knowledge is worth — \
+         Orbic-with-a-spread is one member of the perfect-information class, not its \
+         maximum, so this number does not bound the remaining headroom above a stronger \
+         submission from above; (2) once the quote is accurate and spread, the arbitrageur \
+         mostly stops trading against it, so most of the number is `retail volume x \
+         captured spread x flow share(spread)` — the only genuinely non-closed-form content \
+         is the flow-share-vs-spread curve the router grants against the normalizer's own \
+         sampled fee/liquidity; (3) that content generalizes to *any* oracle-centered \
+         quoter and carries little content specific to the Orbic curve itself.\n\n",
     );
     out.push_str(&format!("- Commit: `{}`\n", commit_sha()));
     out.push_str(&format!("- Segment: `{segment_name}`\n"));
@@ -501,15 +583,18 @@ fn write_ceiling_report(
             out.push_str(&format!(
                 "The fitted point above was chosen from a search on the `screening` segment, \
                  but re-evaluating it on the full `{segment_name}` segment triggered a caught \
-                 panic (a `crates/sim/src/curve_checks.rs` shape-check failure) instead of \
-                 producing a number. This is the documented failure mode in `docs/DESIGN.md` \
-                 §2.4/§2.5 (WHI-1213): a point valid on `screening`'s seeds is not guaranteed \
-                 valid on a different, larger seed set — exactly what made the Orbic family's \
-                 own \"quantization jitter\" (`docs/DESIGN.md` §6.2, strategy `002`, WHI-1206, \
-                 Canceled) probabilistic across seeds, not just across parameter values. No \
-                 edge-vs-0-line or staleness numbers exist for this run; the absence of a \
-                 crash on `screening` is not evidence this variant/point is safe on other \
-                 segments or seeds.\n\n"
+                 panic instead of producing a number. This is the documented failure mode in \
+                 `docs/DESIGN.md` §2.4/§2.5 (WHI-1213): a point valid on `screening`'s seeds \
+                 is not guaranteed valid on a different, larger seed set — exactly what made \
+                 the Orbic family's own \"quantization jitter\" (`docs/DESIGN.md` §6.2, \
+                 strategy `002`, WHI-1206, Canceled) probabilistic across seeds, not just \
+                 across parameter values. The panic message below is the only evidence of \
+                 cause captured; it is not confirmed to be a `crates/sim/src/curve_checks.rs` \
+                 shape-check specifically (a non-string panic payload defeated this lane's own \
+                 `panic_message` downcast, so the cause is not pinned down further than \
+                 \"a panic occurred\"). No edge-vs-0-line or staleness numbers exist for this \
+                 run; the absence of a crash on `screening` is not evidence this variant/point \
+                 is safe on other segments or seeds.\n\n"
             ));
             out.push_str(&format!("Panic message: `{reason}`\n\n"));
         }
@@ -542,9 +627,9 @@ fn commit_sha() -> String {
 }
 
 /// Duplicated from `report.rs::today`/`civil_from_days` (both private there): WHI-1247's
-/// own constraint set forbids extending `report.rs`'s public surface (see AGENTS.md /
-/// the issue body's "what must not change"), so this report writer duplicates the same
-/// days-since-epoch civil-date algorithm rather than editing that module.
+/// own constraint set forbids extending `report.rs`'s public surface (see the issue body's
+/// "what must not change"), so this report writer duplicates the same days-since-epoch
+/// civil-date algorithm rather than editing that module.
 /// https://howardhinnant.github.io/date_algorithms.html#civil_from_days
 fn today() -> String {
     let days = std::time::SystemTime::now()
@@ -621,6 +706,14 @@ fn run_self_check(configs: Vec<SimulationConfig>) -> anyhow::Result<()> {
 }
 
 pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
+    if args.cursor != CURSOR_MODE {
+        anyhow::bail!(
+            "`--cursor {}` is not a recognised cursor rung — only `{CURSOR_MODE}` exists yet \
+             (WHI-1247 step 5); a future issue adds the exact-step / L=1 fixed-lag rung this \
+             one Blocks",
+            args.cursor
+        );
+    }
     validate_max_points_requires_no_report(args.max_points, args.no_report)?;
 
     let bench_config = BenchConfig::load_default()?;
@@ -700,12 +793,14 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
             if !args.no_report {
                 let path = write_ceiling_report(
-                    &stage,
-                    segment_name,
-                    batch.n_sims(),
-                    base_config.n_steps,
-                    args.variant,
-                    &reference_slug,
+                    CeilingRunMeta {
+                        stage: &stage,
+                        segment_name,
+                        n_sims: batch.n_sims(),
+                        n_steps: base_config.n_steps,
+                        variant: args.variant,
+                        reference_slug: &reference_slug,
+                    },
                     &fitted,
                     FinalEvalSummary::Valid {
                         paired: &paired,
@@ -727,12 +822,14 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
             if !args.no_report {
                 let path = write_ceiling_report(
-                    &stage,
-                    segment_name,
-                    configs.len(),
-                    base_config.n_steps,
-                    args.variant,
-                    &reference_slug,
+                    CeilingRunMeta {
+                        stage: &stage,
+                        segment_name,
+                        n_sims: configs.len(),
+                        n_steps: base_config.n_steps,
+                        variant: args.variant,
+                        reference_slug: &reference_slug,
+                    },
                     &fitted,
                     FinalEvalSummary::Invalid(&reason),
                 )?;

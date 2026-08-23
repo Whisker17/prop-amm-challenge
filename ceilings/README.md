@@ -44,19 +44,25 @@ own per-entry contract, minus `lib.rs`).
 # Loop-parity validation gate: proves the lane's own native batch loop (tools/bench/src/oracle.rs)
 # reproduces `strategies/000-normalizer` bit-close through the trusted compile+run path.
 # Writes no report.
-cargo run -p prop-amm-bench -- ceiling --self-check --segment validation
+cargo run -p prop-amm-bench -- ceiling --self-check --segment observation
 
 # The headline measurement: fits (concentration, spread_bps) jointly on `screening`, then
 # measures the anchored variant vs. the 0-line on `segment`.
-cargo run -p prop-amm-bench -- ceiling --variant anchored --fit --segment validation
+cargo run -p prop-amm-bench -- ceiling --variant anchored --cursor trade-triggered --fit --segment observation
 
 # The degenerate/diagnostic contrast: spread_bps re-fit alone, concentration held at the
 # anchored variant's own fitted value.
-cargo run -p prop-amm-bench -- ceiling --variant floating --fit --concentration <value> --segment validation
+cargo run -p prop-amm-bench -- ceiling --variant floating --cursor trade-triggered --fit --concentration <value> --segment observation
 
 # A fixed point, no search, no report (fast iteration):
 cargo run -p prop-amm-bench -- ceiling --variant anchored --concentration 10 --spread-bps 20 --no-report
 ```
+
+`--segment observation` above (not `validation`) is what `C-orbic-oracle`'s committed runs
+actually used — `observation` is reporting-only, never a decision input (docs/DESIGN.md
+§2.2), which fits an out-of-competition ceiling probe; either `--segment` example still
+demonstrates the same command shape and works against any segment the lane's own guards
+allow (WHI-1247 step 7 guard (b) still refuses `test` unconditionally).
 
 See `C-orbic-oracle/NOTES.md` for the frozen parameter ranges, what was and wasn't ported, and
 the committed numbers.

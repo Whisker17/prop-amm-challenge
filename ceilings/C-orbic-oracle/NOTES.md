@@ -7,6 +7,16 @@ price re-anchor the arbitrageur cannot front-run, measured against `001-cpmm-fee
 0-line), before anyone spends real search budget chasing the same gap with a submittable,
 front-runnable mechanism.
 
+**Three honesty constraints bound what the number below means** (WHI-1247 § Context,
+restated in full in the committed `results/*.md` reports): (1) it is a one-sided **lower
+bound** on what perfect price knowledge is worth, not the maximum of the perfect-
+information class, so it does not bound the remaining headroom above a stronger submission
+from above; (2) most of the number is `retail volume x captured spread x flow
+share(spread)` once the quote stops being front-runnable — the only genuinely
+non-closed-form content is the flow-share-vs-spread curve the router grants against the
+normalizer's own sampled fee/liquidity; (3) that content generalizes to any oracle-centered
+quoter and carries little content specific to the Orbic curve itself.
+
 ## Provenance
 
 Source form: **ported (Solidity → Rust), from the same pinned material already on file for
@@ -22,8 +32,11 @@ probabilistic shape-check panics across seeds rather than across parameter value
 (`docs/DESIGN.md` §2.4, the paragraph naming WHI-1206 as the retained example of that
 general phenomenon). This lane revives the mechanism for a different purpose — measuring a
 ceiling, not shipping a submission — and the same jitter shows up here too: the anchored
-fit's own search (below) hit **110 invalid (panicking) points against 184 valid ones** out
-of the 300-point budget. That is treated as expected and load-bearing evidence *for* why
+fit's own search (below) evaluated **184 of its 300-point budget** (`search.rs`'s
+`points_evaluated` counts every point actually compiled and simulated, valid and invalid
+alike, and stops there because `screening`'s own coarse-grid-then-descent search converged
+before spending the rest of the budget) — of those 184, **110 panicked (caught as invalid)
+and 74 were valid**. That is treated as expected and load-bearing evidence *for* why
 `002` was right to cancel as a submission candidate, not as a defect in this lane — every
 invalid point is caught (`std::panic::catch_unwind`, mirroring `crates/sim`'s own
 `curve_checks.rs` shape-check panics per `docs/DESIGN.md` §2.4) and excluded from the peak
@@ -34,9 +47,12 @@ re-evaluation of a fitted point (on `observation`, not `screening`) is a second,
 call into the curve, and `ceiling.rs`'s first implementation did not guard that call the
 way `run_fit`'s search loop already guarded its own evaluations. Running the real
 `--variant floating --fit --concentration 2.33 --segment observation` measurement hit
-exactly that gap — a monotonicity-violation panic during `observation`'s re-evaluation,
-after a clean pass on all of `screening`'s points — and crashed the whole process before a
-report could be written. Commit `49509a3` closes that gap with a second, staleness-
+exactly that gap — a panic during `observation`'s re-evaluation, after a clean pass on all
+of `screening`'s points — and crashed the whole process before a report could be written.
+(The captured panic payload was non-string, which defeats this lane's own
+`panic_message` downcast — see the `floating` section below — so the specific cause is not
+pinned down beyond "a panic occurred"; it is not confirmed to be `curve_checks.rs`'s
+monotonicity check specifically, only that it originates somewhere in the simulated batch.) Commit `49509a3` closes that gap with a second, staleness-
 preserving `catch_unwind` around the final measurement, mirroring `commands/fit.rs`'s own
 established pattern for its analogous train/validation re-evaluation step (docs/DESIGN.md
 §2.4/§2.5, WHI-1213): on a caught panic, the evidence gathered so far is still written —
@@ -77,12 +93,19 @@ curve a second free axis to trade off against `concentration` without inventing 
 
 **Two `target_x` variants** (`tools/bench/src/oracle.rs`'s `OracleVariant`):
 
+Both variants quote off the same `p_oracle` price re-anchor (`tools/bench/src/oracle.rs`) —
+that primitive is never withdrawn from either one. What differs between them is only
+whether the curve's *inventory* target (`target_x`) is itself anchored:
+
 - **`anchored`** (headline): `target_x` is pinned to the pool's own initial `reserve_x`
-  (`ANCHOR_X`, captured once per simulation) — this is the variant that actually uses the
-  oracle re-anchor the arbitrageur cannot front-run.
-- **`floating`** (degenerate diagnostic): `target_x = reserve_x` on every swap, i.e. no
-  re-anchor at all — included to isolate how much of `anchored`'s edge comes from the
-  concentration/spread shape alone versus from the re-anchor itself.
+  (`ANCHOR_X`, captured once per simulation), on top of the shared price re-anchor — this
+  is the variant with pure oracle quoting *and* fixed inventory management.
+- **`floating`** (degenerate diagnostic): `target_x = reserve_x` on every swap — the price
+  re-anchor is still present, but there is no fixed inventory target: `base` collapses to
+  `v0` identically (`tools/bench/src/oracle.rs`'s own doc comment), and the curve's own
+  trading activity feeds back into its shape parameter on every swap. Included to isolate
+  how much of `anchored`'s edge comes from the concentration/spread shape and the price
+  re-anchor alone versus from the *additional* fixed inventory target.
 
 ## Frozen parameter space (declared before any search runs — docs/DESIGN.md §2.4)
 
@@ -104,7 +127,7 @@ Rationale:
   fee (`001-cpmm-fee`'s frozen range tops out at 500bps / 5%, `strategies/001-cpmm-fee/NOTES.md`),
   giving the search headroom to find an interior optimum rather than hit a boundary, while
   still being small enough that the oracle-anchored quote stays economically a "spread," not
-  a arbitrary markup.
+  an arbitrary markup.
 - **spread_bps lower bound 0** — a spread of exactly zero is a legitimate point (pure
   concentration effect, no spread contribution) and must be reachable, not excluded.
 
@@ -127,13 +150,15 @@ Run via `cargo run -p prop-amm-bench -- ceiling --variant anchored --fit --segme
 Committed report: `results/2026-08-23-ceiling-anchored-trade-triggered-observation-orbic-oracle-vs-001-cpmm-fee.md`.
 
 - **concentration = 2.33, spread_bps = 103.0000 (1.03%)**
-- Search budget spent: 184 valid points (of 300; 110 invalid/panicking, as discussed in
-  Provenance above), not exhausted
+- Search budget spent: 184 of 300 evaluated (74 valid, 110 invalid/panicking, as discussed
+  in Provenance above), not exhausted
 - Best avg edge on `screening`: 473.787933
 - **Mean edge diff (oracle − `001-cpmm-fee`) on `observation`: 87.234885**, 95% CI
-  `[81.016163, 93.453606]`, n=1000, std error 3.172875 — this is the ceiling number: the
+  `[81.016163, 93.453606]`, n=1000, std error 3.172875 — this is *a* ceiling number, not
+  *the* ceiling on this mechanism family (see the three honesty constraints above): the
   ceiling lane's oracle-anchored curve beats the 0-line by ~87 edge/sim on average when
-  granted a re-anchor no submittable strategy can actually have.
+  granted a re-anchor no submittable strategy can actually have, and that is a one-sided
+  lower bound on what perfect price knowledge is worth, not its maximum.
 - Trade-triggered cursor staleness (steps since the oracle cursor's last executed trade):
   mean of per-sim means 3.886, median of per-sim means 3.144, max of per-sim p95 109.000, max
   of per-sim max 205.000 — the re-anchor is current almost all the time (single-digit mean
@@ -147,17 +172,21 @@ Committed report: `results/2026-08-23-ceiling-floating-trade-triggered-observati
 
 - **spread_bps = 77.0000 (0.77%)** — the best point the search found on `screening` before
   the point below turned out to be **INVALID**
-- Search budget spent: 165 valid points (of 300; 9 invalid/panicking on `screening`), not
-  exhausted
+- Search budget spent: 165 of 300 evaluated (156 valid, 9 invalid/panicking on
+  `screening`), not exhausted
 - Best avg edge on `screening`: 639.575681
 - **Final re-evaluation on `observation`: INVALID.** Re-running this exact point
   (`concentration = 2.33, spread_bps = 77.0`) against `observation`'s 1000 seeds — a
   different, larger seed set than the 200 `screening` seeds the search used — triggered a
-  `crates/sim/src/curve_checks.rs` monotonicity-violation panic, caught rather than crashed
-  (see Provenance above). No mean edge diff, no CI, and no staleness numbers exist for this
-  point; the search's own clean pass on `screening` was not evidence this point was safe on
-  a different seed set. This is the documented failure mode itself (docs/DESIGN.md
-  §2.4/§2.5/WHI-1213), not a bug in the point chosen.
+  panic, caught rather than crashed (see Provenance above). The captured panic payload was
+  non-string (`panicked with a non-string payload`), which defeats this lane's own
+  `panic_message` downcast (it only recognizes `&str`/`String` payloads) — so the specific
+  cause is not pinned down beyond "a panic occurred somewhere in the simulated batch"; it
+  is not confirmed to be `crates/sim/src/curve_checks.rs`'s monotonicity check specifically.
+  No mean edge diff, no CI, and no staleness numbers exist for this point; the search's own
+  clean pass on `screening` was not evidence this point was safe on a different seed set.
+  This is the documented failure mode itself (docs/DESIGN.md §2.4/§2.5/WHI-1213), not a bug
+  in the point chosen.
 
 ### Anchored vs. floating — what the contrast shows
 
@@ -165,19 +194,21 @@ The two variants land in qualitatively different places, and that gap is itself 
 finding this diagnostic exists to produce (WHI-1247 step 3): `anchored`'s `target_x`,
 pinned once per simulation to the pool's own starting reserves, keeps the curve's shape
 stable enough to search *and* to re-evaluate cleanly on a seed set five times the size of
-the one the search used — 184 of 300 candidate points during the search were invalid, but
-the chosen point held up on `observation`. `floating`'s `target_x = reserve_x` on every
-swap lets the curve's own trading activity feed back into its own shape parameter on every
-single swap, not just at simulation start; that closer-to-the-edge dynamic degenerates
-harder — fewer invalid points appeared during the `screening`-segment search (9 of 300)
-than for `anchored`, yet the one point the search settled on still failed to survive
-re-evaluation on a five-times-larger, different seed set. In other words: `floating` is
-not merely *lower-edge* than `anchored`, as the original "isolate how much of anchored's
-edge is the re-anchor" framing anticipated — it is unable to produce a trustworthy number
-on this segment at all. That is exactly why `floating` was scoped from the start (see
-"Two `target_x` variants" above) as "never a result on its own," and it is exactly the
-Orbic family's own quantization jitter (`docs/DESIGN.md` §6.2, `002`, WHI-1206, Canceled)
-showing up a second time, one level removed from the search itself. The ceiling number this
-lane exists to produce is `anchored`'s 87.234885 edge/sim above; `floating` contributes no
-comparable number, only the confirmation that the re-anchor — not just the concentration/
-spread shape — is load-bearing for even having a well-behaved curve to measure.
+the one the search used — 110 of the 184 candidate points the search actually evaluated
+were invalid, but the chosen point still held up on `observation`. `floating`'s
+`target_x = reserve_x` on every swap lets the curve's own trading activity feed back into
+its own shape parameter on every single swap, not just at simulation start; that
+closer-to-the-edge dynamic degenerates harder — fewer invalid points appeared during the
+`screening`-segment search (9 of 165 evaluated) than for `anchored`, yet the one point the
+search settled on still failed to survive re-evaluation on a five-times-larger, different
+seed set. In other words: `floating` is not merely *lower-edge* than `anchored`, as the
+original "isolate how much of anchored's edge is the fixed inventory target" framing
+anticipated — it is unable to produce a trustworthy number on this segment at all. That is
+exactly why `floating` was scoped from the start (see "Two `target_x` variants" above) as
+"never a result on its own," and it is exactly the Orbic family's own quantization jitter
+(`docs/DESIGN.md` §6.2, `002`, WHI-1206, Canceled) showing up a second time, one level
+removed from the search itself. The ceiling number this lane exists to produce is
+`anchored`'s 87.234885 edge/sim above; `floating` contributes no comparable number, only
+the confirmation that the *fixed inventory target* specifically — not the shared price
+re-anchor both variants have, and not just the concentration/spread shape — is load-bearing
+for even having a well-behaved curve to measure.
