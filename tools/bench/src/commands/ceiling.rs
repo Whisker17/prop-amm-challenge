@@ -454,29 +454,77 @@ fn run_catching_panics(
 /// caller whether the message it got back was actually recovered from the payload or is a
 /// placeholder, but this lane's own `Invalid` report section does.
 ///
-/// WHI-1248 changes the fallback branch's own behavior (the amendment's scope item #4):
-/// the original returned `None` for a non-string payload, which `catch_panicking` turned
-/// into the fixed, uninformative placeholder `"panicked with a non-string payload"`. Since
-/// WHI-1248's whole cursor-verification scheme rests on hardening-check assertions
-/// producing readable failures, and an `assert_eq!`/`assert!` macro's own payload is always
-/// a `String` (so it is unaffected either way), the fix is specifically for the *other*
-/// panics this lane can still catch — e.g. an arithmetic overflow panic, whose payload is
-/// neither `&str` nor `String` — which now get a message synthesized from the payload's own
-/// `Any::type_id()` instead of a fixed placeholder: strictly more informative (it names the
+/// WHI-1248 changes this function twice over (the amendment's scope item #4).
+///
+/// First, and most importantly: the original two-branch version (`&str`, then `String`,
+/// then a fixed placeholder) was verified against synthetic unit-test payloads only, and
+/// turned out to be broken end-to-end against the *real* fingerprint-cursor pipeline — a
+/// live smoke test on `screening` (103/200 seeds tripped by the hardening checks below)
+/// showed every single trip falling to the placeholder branch, even though the underlying
+/// panics are ordinary `assert_eq!` (hardening check (a), `oracle.rs`) and `panic!`
+/// (`curve_checks.rs`'s shape violation) calls whose payloads are, at the origin, plain
+/// `String`. Root cause: `run_batch`/`run_batch_fingerprint_checked` run each seed inside a
+/// `rayon` pool via `.par_iter().map(...).collect()`; whenever the panicking seed actually
+/// executes on a pool *worker* thread rather than the thread that called `.install()` (true
+/// for nearly every seed, since 8 seeds run concurrently), `rayon-core`'s own cross-thread
+/// panic-propagation machinery catches the panic on the worker, stores it, and
+/// `resume_unwind`s it on the joining thread wrapped in *its own* `Box<dyn Any + Send>` —
+/// so the payload `catch_panicking`'s `catch_unwind` hands back here is one layer of
+/// `Box<dyn Any + Send>` deeper than the original panic site, and a flat `&str`/`String`
+/// downcast on it always misses. (Confirmed directly: instrumenting this function inside a
+/// real run showed `Any::type_id()` matching `Box<dyn Any + Send>` at depth 0 and matching
+/// `String` at depth 1, on all 103/103 tripped seeds; three isolated repro programs did
+/// *not* reproduce this, because none of them forced the panicking closure onto a non-
+/// calling worker thread under real contention.) The fix: peel any `Box<dyn Any + Send>`
+/// layers (bounded by `MAX_UNWRAP_DEPTH`, defensively, in case a future rayon version boxes
+/// more than once) before attempting the `&str`/`String` downcasts, rather than assuming a
+/// single flat layer.
+///
+/// Second, the fallback branch's own behavior: the original returned `None` for a
+/// non-string payload, which `catch_panicking` turned into the fixed, uninformative
+/// placeholder `"panicked with a non-string payload"`. For whatever still isn't a
+/// `&str`/`String` after unwrapping — e.g. an arithmetic overflow panic — the fallback now
+/// synthesizes a message from the payload's own `Any::type_id()` and how many box layers
+/// were peeled, instead of a fixed placeholder: strictly more informative (it names the
 /// concrete type a reader can go looking for in the source), never less, and never invents
 /// text that isn't true of the payload.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> (String, bool) {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        return (s.to_string(), true);
-    }
-    if let Some(s) = payload.downcast_ref::<String>() {
-        return (s.clone(), true);
+    // WHI-1248 amendment scope item #4: a real panic caught through `catch_panicking` here
+    // is not always a bare `&str`/`String` payload one level down. Rayon's own cross-thread
+    // panic propagation (`rayon-core`'s job/unwind machinery, exercised whenever the
+    // panicking work actually runs on a pool worker thread rather than the thread that
+    // called `.install()`) re-wraps the original payload in its own `Box<dyn Any + Send>`
+    // before `resume_unwind`-ing it to the joining thread — so the payload this function
+    // receives is one level of `Box<dyn Any + Send>` deeper than the original `panic!`/
+    // `assert_eq!` call site. Peel that (and, defensively, any further nesting) before
+    // attempting the `&str`/`String` downcasts, rather than assuming a single flat layer.
+    const MAX_UNWRAP_DEPTH: u8 = 10;
+    let mut current: &(dyn std::any::Any + Send) = payload;
+    let mut depth = 0u8;
+    loop {
+        if let Some(s) = current.downcast_ref::<&str>() {
+            return (s.to_string(), true);
+        }
+        if let Some(s) = current.downcast_ref::<String>() {
+            return (s.clone(), true);
+        }
+        if depth >= MAX_UNWRAP_DEPTH {
+            break;
+        }
+        match current.downcast_ref::<Box<dyn std::any::Any + Send>>() {
+            Some(inner) => {
+                current = &**inner;
+                depth += 1;
+            }
+            None => break,
+        }
     }
     (
         format!(
-            "non-string panic payload (Any::type_id = {:?}) — recovered no message text, \
-             only that a panic occurred and this payload's concrete type",
-            payload.type_id()
+            "non-string panic payload (Any::type_id = {:?}, peeled {depth} nested box \
+             layer(s)) — recovered no message text, only that a panic occurred and this \
+             payload's concrete type",
+            current.type_id()
         ),
         false,
     )
