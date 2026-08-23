@@ -19,6 +19,17 @@ quoter and carries little content specific to the Orbic curve itself.
 
 ## Provenance
 
+**One edit beyond the issue's own enumerated "only edits to existing files" list, surfaced
+here per that same section's instruction** (round-2 review of this issue): the issue body's
+"What must not change" says the only edits to existing files are the two additive lines in
+`commands/mod.rs` and `cli.rs`, and separately lists a fixed set of files as **zero-edit**.
+`tools/bench/src/main.rs` is on neither list, yet it gained a third line, `mod oracle;` —
+mechanically required, the same pattern every existing `mod <name>;` line in that file
+already follows, so `oracle.rs` (step 1's new price-path/curve module) could link into the
+binary at all. Not a judgement call, not deferred, and not something a fix would remove —
+just not literally on the "only" list, so it is disclosed rather than left for a future
+reader to notice as an unaccounted-for diff.
+
 Source form: **ported (Solidity → Rust), from the same pinned material already on file for
 the canceled `002` porting issue** (`docs/DESIGN.md` §6.2: "`002` | Orbic — **Canceled
 (WHI-1206)**"; `docs/references/002-orbic-flashbots/README.md`) —
@@ -216,3 +227,17 @@ removed from the search itself. The ceiling number this lane exists to produce i
 the confirmation that the *fixed inventory target* specifically — not the shared price
 re-anchor both variants have, and not just the concentration/spread shape — is load-bearing
 for even having a well-behaved curve to measure.
+
+**Considered and rejected: recovering a number for `floating` anyway.** Round-2 review of
+this issue asked why nothing was tried to recover `floating`'s two required numbers — e.g.
+excluding the panicking point from the search's own acceptance and re-fitting, or reporting
+the runner-up point the search passed over. Both were considered and rejected, not
+overlooked: either one would substitute a point the search did **not** actually select for
+the one it did, which manufactures a number for a variant this issue's own step 3 already
+scoped as "never a result on its own" — the empty result *is* the diagnostic. A runner-up
+or a re-fit-around-the-failure could easily land on another point that *also* fails on a
+different, larger seed set (this is exactly the jitter `docs/DESIGN.md` §6.2's `002` entry
+describes as probabilistic across seeds, not deterministic per parameter value), silently
+trading one uncaught failure mode for a laundered one that merely didn't trip on this
+particular re-evaluation. Reporting that as if it were `floating`'s real number would be
+worse than reporting nothing.

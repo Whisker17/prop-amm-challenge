@@ -101,6 +101,53 @@ fn reference_allowlist_rejects_a_non_allowlisted_strategy() {
     );
 }
 
+/// WHI-1247 step 7 guard (a), the canonicalize half specifically (round-1 review of this
+/// issue): a `--reference` whose final path component *matches* an allowlisted slug but
+/// which does not actually resolve to `strategies/<slug>/lib.rs` must still be refused.
+/// `reference_allowlist_rejects_a_non_allowlisted_strategy` above only proves the slug
+/// check (a mismatched final component); this proves the second half — a directory that
+/// shares the string `001-cpmm-fee` but lives somewhere else entirely, with its own,
+/// different `lib.rs` — is still caught, not silently treated as the real 0-line. Round-2
+/// review of this issue flagged that this half of guard (a) had no test at all.
+#[test]
+fn reference_allowlist_rejects_a_same_named_directory_outside_strategies() {
+    let tmp = tempfile::tempdir().expect("failed to create tempdir");
+    let decoy_dir = tmp.path().join("001-cpmm-fee");
+    std::fs::create_dir(&decoy_dir).expect("failed to create decoy dir");
+    std::fs::write(
+        decoy_dir.join("lib.rs"),
+        "// decoy lib.rs — not the real strategies/001-cpmm-fee/lib.rs\n",
+    )
+    .expect("failed to write decoy lib.rs");
+
+    let output = bench_cmd()
+        .args([
+            "ceiling",
+            "--reference",
+            decoy_dir.to_str().expect("tempdir path must be UTF-8"),
+            "--concentration",
+            "1.0",
+            "--spread-bps",
+            "10",
+            "--no-report",
+        ])
+        .output()
+        .expect("failed to run bench ceiling");
+
+    assert!(
+        !output.status.success(),
+        "expected `bench ceiling --reference <decoy>/001-cpmm-fee` to fail, got success. \
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is not the allowlisted"),
+        "expected the canonicalize guard's message in stderr, got:\n{stderr}"
+    );
+}
+
 /// WHI-1247 step 7 guard (b): `--segment test` is refused unconditionally, even alongside
 /// `--i-am-spending-the-test-segment` — the flag that would normally unlock a single-use
 /// segment for every other subcommand. Nothing in this out-of-competition lane has a

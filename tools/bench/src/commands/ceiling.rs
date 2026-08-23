@@ -8,6 +8,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::Mutex;
 
 use clap::{Args, ValueEnum};
 use prop_amm_shared::config::SimulationConfig;
@@ -27,6 +28,18 @@ use crate::stats;
 /// cursor / L=1 fixed lag this issue explicitly Blocks) adds its own accepted value, not a
 /// retrofit of this one.
 const CURSOR_MODE: &str = "trade-triggered";
+
+/// The one guard checked at two sites: [`run`] checks it before dispatching to [`run_fit`]
+/// (so a bad combination fails before the segment/config machinery below it even runs),
+/// and [`run_fit`] checks it again in case a future caller ever reaches it a different way.
+/// Round-2 review of this issue caught that the two checks had drifted to differently
+/// worded messages for the identical condition — a user could only ever see the first one
+/// fire, but the second existed with different wording, ready to surprise the next reader.
+/// One shared string keeps both checks (both still need to run) without collapsing them
+/// into one call site.
+const ANCHORED_FIT_CONCENTRATION_CONFLICT: &str =
+    "--fit --variant anchored searches concentration jointly with spread_bps; \
+     --concentration must not be passed alongside it";
 
 /// The hardcoded reference allowlist (WHI-1247 step 7 guard (a)): the ceiling lane may only
 /// ever be measured against these two strategies — the trusted `000-normalizer` (for
@@ -241,29 +254,63 @@ fn spread_bps_spec() -> ParamSpec {
     }
 }
 
+/// Last `Location` captured by [`catch_panicking`]'s own hook (below) — a caught panic's
+/// payload alone is often uninformative (round-2 review of this issue: a non-string payload
+/// downcasts to nothing better than "panicked with a non-string payload"), but the default
+/// hook's `file:line:column` is always available regardless of payload type, since
+/// `PanicHookInfo::location()` doesn't go through the payload at all. Reset to `None` before
+/// every `catch_unwind` so a stale location from an earlier point can never be attributed to
+/// a later one; read back only inside `catch_panicking`'s own `Err(payload)` arm.
+static LAST_PANIC_LOCATION: Mutex<Option<String>> = Mutex::new(None);
+
 /// Runs `f`, catching any panic (e.g. a shape-check panic from `crates/sim/src/curve_checks.rs`
 /// the same way `commands/fit.rs::run_batch_catching_panics` does — `curve_checks.rs` treats a
 /// native submission fn identically to a compiled one, keying only on the AMM's own
 /// `"submission"` name, so a pathological corner of the oracle curve's own search space can
 /// panic mid-simulation exactly like a compiled candidate's PARAMS point can) into
-/// `Ok(Err(panic_message))` rather than propagating it, while suppressing the default panic
-/// hook's stderr print for the duration. Shared by every catch-and-continue call site in this
-/// file — the search loop's own per-point evaluation ([`run_catching_panics`]) and the final
-/// re-evaluation of the fitted point ([`run_final_eval_catching_panics`]) — since both need
-/// the exact same `take_hook`/`set_hook`/`catch_unwind` bracket and differ only in what they
-/// do with a successful `T`.
-fn catch_panicking<T>(
-    f: impl FnOnce() -> anyhow::Result<T>,
-) -> anyhow::Result<Result<T, String>> {
+/// `Ok(Err(panic_message))` rather than propagating it. The default hook's stderr print is
+/// still suppressed for the duration (this is an expected, load-bearing control-flow path
+/// during a 300-point search, not a real crash — printing one stderr line per invalid point
+/// would swamp the terminal), but unlike a bare no-op hook, the installed hook first records
+/// the panic's source location into [`LAST_PANIC_LOCATION`] before doing nothing else — so a
+/// caught panic with a non-string payload (round-2 review: the `floating` INVALID report
+/// could previously say only "a panic occurred," with the cause "not pinned down") still
+/// carries a real `file:line:column` an investigator can jump to, independent of the
+/// payload's type. Shared by every catch-and-continue call site in this file — the search
+/// loop's own per-point evaluation ([`run_catching_panics`]) and the final re-evaluation of
+/// the fitted point ([`run_final_eval_catching_panics`]) — since both need the exact same
+/// `take_hook`/`set_hook`/`catch_unwind` bracket and differ only in what they do with a
+/// successful `T`. `oracle::run_batch`'s own per-simulation loop is rayon-parallel
+/// (`oracle.rs`'s `native_pool`), so more than one worker thread can panic before the first
+/// unwind reaches this frame; the hook is process-global regardless of which thread panics,
+/// and `LAST_PANIC_LOCATION` intentionally keeps only the most recent write rather than every
+/// one — enough to point at *a* real panic site, not a claim that it is uniquely the one
+/// `catch_unwind` observed unwinding.
+fn catch_panicking<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<Result<T, String>> {
     let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(|info| {
+        if let Ok(mut loc) = LAST_PANIC_LOCATION.lock() {
+            *loc = Some(info.location().map(|l| l.to_string()).unwrap_or_default());
+        }
+    }));
+    if let Ok(mut loc) = LAST_PANIC_LOCATION.lock() {
+        *loc = None;
+    }
     let result = catch_unwind(AssertUnwindSafe(f));
     std::panic::set_hook(previous_hook);
 
     match result {
         Ok(Ok(value)) => Ok(Ok(value)),
         Ok(Err(e)) => Err(e),
-        Err(payload) => Ok(Err(panic_message(&payload))),
+        Err(payload) => {
+            let location = LAST_PANIC_LOCATION.lock().ok().and_then(|mut g| g.take());
+            let message = panic_message(&payload);
+            let with_location = match location {
+                Some(loc) if !loc.is_empty() => format!("{message} (at {loc})"),
+                _ => message,
+            };
+            Ok(Err(with_location))
+        }
     }
 }
 
@@ -276,6 +323,17 @@ fn run_catching_panics(
     }
 }
 
+/// Byte-identical to `commands/fit.rs::panic_message` (which has the same job for
+/// `fit`'s own train/validation re-evaluation) — a deliberate duplicate, not a missed
+/// dedup: WHI-1247's "what must not change" list forbids editing `fit.rs` or exposing its
+/// private helpers, and `panic_message` is private there, so there is no way to share one
+/// definition without violating that constraint. `curve_checks.rs`'s own
+/// `panic!("submission shape violation during {context}: {message}")` is always a `&str` or
+/// `String`, so this recovers it verbatim; anything else — including every panic this
+/// lane's own Orbic curve throws that isn't routed through `curve_checks.rs` — falls back
+/// to a fixed string rather than failing to produce an outcome at all. When that fallback
+/// fires, [`catch_panicking`]'s own `LAST_PANIC_LOCATION` hook is what recovers a real
+/// `file:line:column` instead of leaving the cause entirely unpinned.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         s.to_string()
@@ -349,10 +407,7 @@ fn run_fit(
     match variant {
         VariantArg::Anchored => {
             if fixed_concentration.is_some() {
-                anyhow::bail!(
-                    "--fit --variant anchored searches concentration jointly with \
-                     spread_bps; --concentration must not be passed alongside it"
-                );
+                anyhow::bail!("{ANCHORED_FIT_CONCENTRATION_CONFLICT}");
             }
             let specs = [concentration_spec(), spread_bps_spec()];
             let outcome = search::coarse_grid_then_coordinate_descent(&specs, budget, |values| {
@@ -408,20 +463,32 @@ fn run_fit(
 
 /// The staleness distribution across every simulation in the batch (WHI-1247 step 5),
 /// aggregated from each simulation's own [`StalenessSummary`] into one reportable set of
-/// numbers: the mean and median of each simulation's own mean staleness, the largest p95
-/// seen across simulations, and the largest max seen across simulations. Deliberately
-/// aggregates rather than dumping one row per simulation — 1,000 rows would swamp the
-/// report — while still surfacing the tail (`p95_of_p95`, `max_of_max`) rather than only an
-/// average-of-averages that could hide a badly stale minority of simulations.
+/// numbers rather than dumping one row per simulation (1,000 rows would swamp the report).
+/// Two different things are deliberately both kept, not one substituted for the other:
+///
+/// - `mean_of_means`, `median_of_means`, `p95_of_means` are genuine statistics of the
+///   per-simulation *mean* staleness — the mean, p50, and a real (not maximum-as-a-proxy)
+///   95th percentile of that distribution across simulations. Round-2 review of this issue
+///   correctly flagged that an earlier version of this struct had a field literally named
+///   `p95_of_p95` whose value was actually computed via `f64::max` — i.e. it was the
+///   *maximum* p95 across simulations, not a percentile of the per-sim p95s at all; the
+///   field name overclaimed what the doc comment (accurately) called "the largest p95 seen
+///   across simulations." That field is renamed to `max_of_p95` below to say what it
+///   actually is, and this genuinely percentile `p95_of_means` is added alongside it.
+/// - `max_of_p95` and `max_of_max` are deliberately worst-case (not percentile) figures —
+///   the largest per-sim p95 and the largest per-sim max seen anywhere in the batch — kept
+///   because an average-of-averages alone could hide a badly stale minority of simulations
+///   that a pure percentile-of-means statistic would also under-weight.
 struct StalenessAggregate {
     mean_of_means: f64,
     median_of_means: f64,
-    p95_of_p95: f64,
+    p95_of_means: f64,
+    max_of_p95: f64,
     max_of_max: f64,
 }
 
 fn aggregate_staleness(summaries: &[StalenessSummary]) -> StalenessAggregate {
-    let means: Vec<f64> = summaries.iter().map(|s| s.mean).collect();
+    let mut means: Vec<f64> = summaries.iter().map(|s| s.mean).collect();
     let p95s: Vec<f64> = summaries.iter().map(|s| s.p95).collect();
     let maxes: Vec<f64> = summaries.iter().map(|s| s.max).collect();
 
@@ -431,13 +498,16 @@ fn aggregate_staleness(summaries: &[StalenessSummary]) -> StalenessAggregate {
         means.iter().sum::<f64>() / means.len() as f64
     };
     let median_of_means = stats::median(&means).unwrap_or(0.0);
-    let p95_of_p95 = p95s.iter().cloned().fold(0.0, f64::max);
+    means.sort_by(|a, b| a.partial_cmp(b).expect("staleness means are finite"));
+    let p95_of_means = oracle::nearest_rank(&means, 0.95);
+    let max_of_p95 = p95s.iter().cloned().fold(0.0, f64::max);
     let max_of_max = maxes.iter().cloned().fold(0.0, f64::max);
 
     StalenessAggregate {
         mean_of_means,
         median_of_means,
-        p95_of_p95,
+        p95_of_means,
+        max_of_p95,
         max_of_max,
     }
 }
@@ -569,8 +639,12 @@ fn write_ceiling_report(
                 staleness.median_of_means
             ));
             out.push_str(&format!(
+                "| p95 of per-sim means | {:.3} |\n",
+                staleness.p95_of_means
+            ));
+            out.push_str(&format!(
                 "| max of per-sim p95 | {:.3} |\n",
-                staleness.p95_of_p95
+                staleness.max_of_p95
             ));
             out.push_str(&format!(
                 "| max of per-sim max | {:.3} |\n",
@@ -605,6 +679,15 @@ fn write_ceiling_report(
     Ok(path)
 }
 
+/// Duplicated from `report.rs::commit_sha` (private there, byte-for-byte the same logic,
+/// including the `--untracked-files=no` rationale below): round-2 review of this issue
+/// suggested making the original `pub(crate)` instead, but WHI-1247's own "what must not
+/// change" list is not "don't extend `report.rs`'s public surface" — it is **zero edits**
+/// to `tools/bench/src/report.rs` at all, full stop, alongside a fixed list of other
+/// upstream-adjacent modules. A visibility-only change is still an edit to that file, so
+/// this duplicate (and `today`/`civil_from_days` below, and `panic_message` above, shared
+/// with `fit.rs` under the identical constraint) is the correct call under the spec as
+/// written, not a missed dedup opportunity.
 fn commit_sha() -> String {
     let sha = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -613,6 +696,9 @@ fn commit_sha() -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    // `--untracked-files=no`: an untracked scratch file (a build artifact, a not-yet-added
+    // report) shouldn't mark the *code* dirty — only uncommitted changes to tracked files
+    // should, since that's what actually means "this measurement's code differs from HEAD".
     let dirty = std::process::Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
@@ -627,9 +713,12 @@ fn commit_sha() -> String {
 }
 
 /// Duplicated from `report.rs::today`/`civil_from_days` (both private there): WHI-1247's
-/// own constraint set forbids extending `report.rs`'s public surface (see the issue body's
-/// "what must not change"), so this report writer duplicates the same days-since-epoch
-/// civil-date algorithm rather than editing that module.
+/// own constraint set is **zero edits** to `tools/bench/src/report.rs` (see the issue
+/// body's "what must not change" — not merely "don't extend its public surface"; even a
+/// visibility-only `pub(crate)` change is still an edit to that file), so this report
+/// writer duplicates the same days-since-epoch civil-date algorithm rather than touching
+/// that module. See [`commit_sha`] immediately above for the same reasoning applied to a
+/// second duplicated helper.
 /// https://howardhinnant.github.io/date_algorithms.html#civil_from_days
 fn today() -> String {
     let days = std::time::SystemTime::now()
@@ -729,10 +818,7 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
     if args.fit {
         if matches!(args.variant, VariantArg::Anchored) && args.concentration.is_some() {
-            anyhow::bail!(
-                "--fit --variant anchored searches concentration jointly; do not pass \
-                 --concentration alongside it"
-            );
+            anyhow::bail!("{ANCHORED_FIT_CONCENTRATION_CONFLICT}");
         }
         if args.spread_bps.is_some() {
             anyhow::bail!("--fit always re-fits spread_bps; do not pass --spread-bps alongside it");

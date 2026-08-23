@@ -31,6 +31,47 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
+- **`resolve_ceiling_segment` re-implements part of `SegmentSelector::resolve`'s single-use
+  check, and `VariantArg` carries its `OracleVariant` mapping and its report-slug string as
+  two separate hand-written `match`es** (Low, WHI-1247). Both flagged in round-1 review of
+  this issue and accepted as judgement calls at the time, but never actually logged here per
+  `AGENTS.md`'s own Git-workflow step 3 until round-2 review caught the gap.
+  `tools/bench/src/commands/ceiling.rs::resolve_ceiling_segment`'s own doc comment already
+  explains why it can't just call `SegmentSelector::resolve` unmodified (that method only
+  blocks `single_use` in the *absence* of the spend flag, which would let `--i-am-spending-
+  the-test-segment` defeat this lane's stronger, unconditional `test`-segment refusal) —
+  the duplication is the single-use-check tail after that guard, not the guard itself.
+  `VariantArg`'s `impl From<VariantArg> for OracleVariant` and `impl VariantArg { fn
+  slug() }` are two small, separately-necessary switches over the same two-variant enum
+  (one for the oracle's own type, one for a report filename fragment) rather than one
+  combined mapping, because they serve genuinely different consumers (`oracle.rs` vs. the
+  report writer) and a single fused function would couple the two for no shared benefit.
+  Fix, if ever revisited: none planned unless `SegmentSelector::resolve` itself grows a
+  variant that takes the spend flag into account for *all* single-use segments (which would
+  let `resolve_ceiling_segment` shrink to a thin wrapper), or `VariantArg` grows a third
+  consumer that would make a combined mapping pay for itself.
+- **`run_fit`'s `Anchored`/`Floating` arms share the same shape** (Low, WHI-1247).
+  `tools/bench/src/commands/ceiling.rs::run_fit` — both arms call
+  `search::coarse_grid_then_coordinate_descent` with a closure that runs
+  `run_catching_panics` and maps `values` into an `OracleParams`, differing only in the
+  `specs` array (`[concentration_spec(), spread_bps_spec()]` vs `[spread_bps_spec()]` alone)
+  and how `values` maps to `(concentration, spread_bps)` (both fit jointly vs.
+  `concentration` held at `fixed_concentration.unwrap()`). Flagged in round-2 review of this
+  issue. Deferred rather than fixed in this PR: the two arms differ in exactly the two
+  places you'd need a generic callback for (the spec array's arity and the
+  values-to-params mapping), so collapsing them would trade a readable two-branch match for
+  a closure-of-a-closure that is not obviously clearer — worth a second look once the
+  follow-up issue (the fixed-lag cursor rung) adds a third rung and a third arm, if that
+  third arm turns out to fit the same shape.
+- **`CeilingArgs::cursor` is a hand-validated `String`, not a `ValueEnum`** (Low, WHI-1247).
+  `tools/bench/src/commands/ceiling.rs::CeilingArgs::cursor` is validated by comparing
+  against `CURSOR_MODE` in `run()`, in a file where `variant` is a real `ValueEnum` and
+  gets `--help` enumeration and rejection for free. Flagged in round-2 review of this
+  issue. Its own doc comment already gives the reason: this issue delivers exactly one
+  rung, so a `ValueEnum` today would be a one-variant enum purely for a rung that doesn't
+  exist yet — the follow-up issue this one Blocks adds the second rung, and that is the
+  natural point to convert `cursor` to a real `ValueEnum` with both values, rather than
+  guessing the second variant's name now.
 - **`bench`'s parity checks are bounded to 2-decimal-place agreement with `prop-amm run`, not
   the "1e-9 relative" / "exactly" the WHI-1193 acceptance criteria state** (Low, WHI-1193).
   `crates/cli/src/output.rs:31-32` only ever prints edge at 2dp — there is no higher-precision

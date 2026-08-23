@@ -144,7 +144,13 @@ pub struct StalenessSummary {
     pub max: f64,
 }
 
-fn nearest_rank(sorted: &[f64], fraction: f64) -> f64 {
+/// `pub(crate)` (not just private) so `commands/ceiling.rs`'s own batch-level aggregation
+/// (`aggregate_staleness`) can compute a genuine percentile of the per-simulation summaries
+/// — e.g. the 95th percentile of every simulation's own mean staleness — without a third
+/// copy of this five-line algorithm. `sorted` must already be sorted ascending; unsorted
+/// input silently produces a meaningless answer rather than panicking, exactly like the two
+/// existing call sites in this file already relied on.
+pub(crate) fn nearest_rank(sorted: &[f64], fraction: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }
