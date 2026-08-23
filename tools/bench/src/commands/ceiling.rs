@@ -445,6 +445,32 @@ fn run_catching_panics(
     }
 }
 
+/// WHI-1248: the fingerprint-mode counterpart to [`run_catching_panics`] used by
+/// [`run_fit`]'s search loop once a candidate point's `OracleParams::cursor_mode ==
+/// CursorMode::Fingerprint`. Runs the same per-seed-isolated Phase 1 pipeline
+/// ([`oracle::run_batch_fingerprint_checked`]) the final evaluation uses, but — unlike
+/// [`run_fingerprint_final_eval`] — never serially re-runs a tripped seed to recover its
+/// message: the search loop only ever consumes the returned `f64`, so paying that cost on
+/// every one of up to 300 candidate points would be pure waste. `Invalid` only when not a
+/// single seed survived (nothing to average); otherwise `Valid` over whatever did survive,
+/// exactly mirroring how the final report's own number is computed so a search that
+/// prefers one point over another is optimizing the same quantity that gets reported.
+fn evaluate_fingerprint_point(
+    params: OracleParams,
+    configs: &[SimulationConfig],
+) -> anyhow::Result<PointOutcome> {
+    let (oks, tripped) = oracle::run_batch_fingerprint_checked(params, configs)?;
+    if oks.is_empty() {
+        return Ok(PointOutcome::Invalid(format!(
+            "all {} seed(s) tripped a WHI-1248 fingerprint hardening check on this point              (nothing survived to average)",
+            tripped.len()
+        )));
+    }
+    let results: Vec<_> = oks.into_iter().map(|(result, _staleness)| result).collect();
+    let batch = BatchResult::from_results(results);
+    Ok(PointOutcome::Valid(batch.avg_edge()))
+}
+
 /// Originally byte-identical to `commands/fit.rs::panic_message` (which has the same job
 /// for `fit`'s own train/validation re-evaluation) — a deliberate duplicate, not a missed
 /// dedup: WHI-1247's "what must not change" list forbids editing `fit.rs` or exposing its
@@ -590,12 +616,27 @@ struct FittedPoint {
 
 /// The `screening`-segment fit loop is kept generically usable under either cursor mode
 /// (`cursor_mode`/`fingerprint_lag` are threaded straight into every point's own
-/// [`OracleParams`]) — WHI-1248's "never silently dropped" per-seed architecture applies
-/// only to the *final* evaluation ([`run_fingerprint_final_eval`]), never to this
-/// screening-segment search loop, which keeps using the pre-existing single
-/// batch-level-panic [`run_catching_panics`]/`oracle::run_batch` pattern: a search point
-/// that panics on even one of `screening`'s own seeds is simply `Invalid` for that point,
-/// exactly as WHI-1247 already established.
+/// [`OracleParams`]). For `CursorMode::TradeTriggered` it keeps the pre-existing single
+/// batch-level-panic [`run_catching_panics`]/`oracle::run_batch` pattern unchanged from
+/// WHI-1247: a search point that panics on even one of `screening`'s own seeds is simply
+/// `Invalid` for that point.
+///
+/// For `CursorMode::Fingerprint` that all-or-nothing rule is unusable in practice, not just
+/// theoretically stricter: a live measurement (docs/... `ceilings/C-orbic-oracle/NOTES.md`)
+/// found the per-seed hardening-check trip rate on `screening` running ~50% under the L=1
+/// rung, and 200 IID screening seeds each with *any* positive trip probability are, with
+/// near certainty, never simultaneously panic-free — confirmed directly: before this fix,
+/// `--fit --max-points 30` reported "every evaluated grid point (9) was invalid (a caught
+/// shape-check panic)" and could never produce a fitted point at all. So every candidate
+/// point evaluated under fingerprint mode instead goes through
+/// [`evaluate_fingerprint_point`], which mirrors [`run_fingerprint_final_eval`]'s own
+/// semantics (mean edge over the *surviving* seeds only, `Invalid` only if literally none
+/// survive) rather than this function's own now-inapplicable all-or-nothing rule.
+/// WHI-1248's "never silently dropped" per-seed architecture (full message recovery, not
+/// just a valid/invalid split) still applies only to the *final* evaluation
+/// ([`run_fingerprint_final_eval`]) — this search loop only needs a number per point, so it
+/// skips that function's serial per-tripped-seed re-run to avoid multiplying wall-clock
+/// cost across a budget of up to 300 points for messages nothing here reads.
 fn run_fit(
     variant: VariantArg,
     fixed_concentration: Option<f64>,
@@ -621,9 +662,13 @@ fn run_fit(
                     fingerprint_lag,
                 };
                 let configs = screening_configs.to_vec();
-                run_catching_panics(move || {
-                    oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
-                })
+                if cursor_mode == CursorMode::Fingerprint {
+                    evaluate_fingerprint_point(params, &configs)
+                } else {
+                    run_catching_panics(move || {
+                        oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
+                    })
+                }
             })?;
             let concentration = outcome.best[0] as f64 / 100.0;
             let spread_bps = outcome.best[1] as f64;
@@ -651,9 +696,13 @@ fn run_fit(
                     fingerprint_lag,
                 };
                 let configs = screening_configs.to_vec();
-                run_catching_panics(move || {
-                    oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
-                })
+                if cursor_mode == CursorMode::Fingerprint {
+                    evaluate_fingerprint_point(params, &configs)
+                } else {
+                    run_catching_panics(move || {
+                        oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
+                    })
+                }
             })?;
             let spread_bps = outcome.best[0] as f64;
             Ok(FittedPoint {
