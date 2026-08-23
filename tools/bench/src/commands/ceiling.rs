@@ -227,6 +227,60 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// The raw outcome of the *final* re-evaluation of a fitted point (as opposed to a point
+/// evaluated during the search itself, which goes through [`run_catching_panics`] into a
+/// [`PointOutcome`]) — mirrors `commands/fit.rs`'s own train/validation re-evaluation
+/// pattern (docs/DESIGN.md §2.4/§2.5, WHI-1213): a point valid on `screening`'s 200 seeds is
+/// not guaranteed valid on a different, larger seed set (this is the Orbic family's own
+/// "quantization jitter" — probabilistic across seeds, not just across parameter values,
+/// `docs/DESIGN.md` §6.2's `002` entry). The search's own `catch_unwind` only ever wraps the
+/// screening-segment search loop; without an equivalent guard here, a fitted point that
+/// panics on `--segment observation`/`train`/`validation` would abort the whole process
+/// with an unhandled panic and no report at all, rather than the established "evidence
+/// gathered so far is still written, the point is not entered into a ranking" behavior.
+enum OracleBatchOutcome {
+    Valid {
+        batch: BatchResult,
+        staleness: Vec<StalenessSummary>,
+    },
+    Invalid(String),
+}
+
+/// Runs the real oracle measurement, catching a `curve_checks.rs` shape-check panic exactly
+/// like [`run_catching_panics`] does for the search loop — see [`OracleBatchOutcome`] for why
+/// this call site needs its own guard rather than reusing that one directly (it needs to keep
+/// the staleness summaries on success, which `run_catching_panics`'s `PointOutcome`-shaped
+/// return throws away).
+fn run_final_eval_catching_panics(
+    params: OracleParams,
+    configs: &[SimulationConfig],
+) -> anyhow::Result<OracleBatchOutcome> {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let owned_configs = configs.to_vec();
+    let result = catch_unwind(AssertUnwindSafe(move || {
+        oracle::run_batch(params, &owned_configs)
+    }));
+    std::panic::set_hook(previous_hook);
+
+    match result {
+        Ok(Ok((batch, staleness))) => Ok(OracleBatchOutcome::Valid { batch, staleness }),
+        Ok(Err(e)) => Err(e),
+        Err(payload) => Ok(OracleBatchOutcome::Invalid(panic_message(&payload))),
+    }
+}
+
+/// What [`write_ceiling_report`] renders for the "## Edge vs the 0-line" and "## Trade-
+/// triggered cursor staleness" sections — either the real numbers, or an honest account of
+/// why they don't exist (see [`OracleBatchOutcome`] for the panic-catching this comes from).
+enum FinalEvalSummary<'a> {
+    Valid {
+        paired: &'a stats::PairedStat,
+        staleness: &'a StalenessAggregate,
+    },
+    Invalid(&'a str),
+}
+
 /// The fitted (or explicitly supplied) point this run measures at.
 struct FittedPoint {
     concentration: f64,
@@ -355,8 +409,7 @@ fn write_ceiling_report(
     variant: VariantArg,
     reference_slug: &str,
     fitted: &FittedPoint,
-    paired: &stats::PairedStat,
-    staleness: &StalenessAggregate,
+    final_eval: FinalEvalSummary<'_>,
 ) -> anyhow::Result<std::path::PathBuf> {
     let dir = Path::new(DEFAULT_REPORT_DIR);
     std::fs::create_dir_all(dir)
@@ -405,39 +458,62 @@ fn write_ceiling_report(
     }
     out.push('\n');
 
-    out.push_str("## Edge vs the 0-line\n\n");
-    out.push_str("| field | value |\n|---|---|\n");
-    out.push_str(&format!("| n | {} |\n", paired.n));
-    out.push_str(&format!(
-        "| mean edge diff (oracle - reference) | {:.6} |\n",
-        paired.mean_diff
-    ));
-    out.push_str(&format!("| std error | {:.6} |\n", paired.std_error));
-    out.push_str(&format!(
-        "| 95% interval | [{:.6}, {:.6}] |\n",
-        paired.ci_low, paired.ci_high
-    ));
-    out.push('\n');
+    match final_eval {
+        FinalEvalSummary::Valid { paired, staleness } => {
+            out.push_str("## Edge vs the 0-line\n\n");
+            out.push_str("| field | value |\n|---|---|\n");
+            out.push_str(&format!("| n | {} |\n", paired.n));
+            out.push_str(&format!(
+                "| mean edge diff (oracle - reference) | {:.6} |\n",
+                paired.mean_diff
+            ));
+            out.push_str(&format!("| std error | {:.6} |\n", paired.std_error));
+            out.push_str(&format!(
+                "| 95% interval | [{:.6}, {:.6}] |\n",
+                paired.ci_low, paired.ci_high
+            ));
+            out.push('\n');
 
-    out.push_str("## Trade-triggered cursor staleness (steps since last executed trade)\n\n");
-    out.push_str("| aggregate | value |\n|---|---|\n");
-    out.push_str(&format!(
-        "| mean of per-sim means | {:.3} |\n",
-        staleness.mean_of_means
-    ));
-    out.push_str(&format!(
-        "| median of per-sim means | {:.3} |\n",
-        staleness.median_of_means
-    ));
-    out.push_str(&format!(
-        "| max of per-sim p95 | {:.3} |\n",
-        staleness.p95_of_p95
-    ));
-    out.push_str(&format!(
-        "| max of per-sim max | {:.3} |\n",
-        staleness.max_of_max
-    ));
-    out.push('\n');
+            out.push_str(
+                "## Trade-triggered cursor staleness (steps since last executed trade)\n\n",
+            );
+            out.push_str("| aggregate | value |\n|---|---|\n");
+            out.push_str(&format!(
+                "| mean of per-sim means | {:.3} |\n",
+                staleness.mean_of_means
+            ));
+            out.push_str(&format!(
+                "| median of per-sim means | {:.3} |\n",
+                staleness.median_of_means
+            ));
+            out.push_str(&format!(
+                "| max of per-sim p95 | {:.3} |\n",
+                staleness.p95_of_p95
+            ));
+            out.push_str(&format!(
+                "| max of per-sim max | {:.3} |\n",
+                staleness.max_of_max
+            ));
+            out.push('\n');
+        }
+        FinalEvalSummary::Invalid(reason) => {
+            out.push_str("## Final re-evaluation: INVALID\n\n");
+            out.push_str(&format!(
+                "The fitted point above was chosen from a search on the `screening` segment, \
+                 but re-evaluating it on the full `{segment_name}` segment triggered a caught \
+                 panic (a `crates/sim/src/curve_checks.rs` shape-check failure) instead of \
+                 producing a number. This is the documented failure mode in `docs/DESIGN.md` \
+                 §2.4/§2.5 (WHI-1213): a point valid on `screening`'s seeds is not guaranteed \
+                 valid on a different, larger seed set — exactly what made the Orbic family's \
+                 own \"quantization jitter\" (`docs/DESIGN.md` §6.2, strategy `002`, WHI-1206, \
+                 Canceled) probabilistic across seeds, not just across parameter values. No \
+                 edge-vs-0-line or staleness numbers exist for this run; the absence of a \
+                 crash on `screening` is not evidence this variant/point is safe on other \
+                 segments or seeds.\n\n"
+            ));
+            out.push_str(&format!("Panic message: `{reason}`\n\n"));
+        }
+    }
 
     std::fs::write(&path, out)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
@@ -609,31 +685,68 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         concentration: fitted.concentration,
         spread_bps: fitted.spread_bps,
     };
-    let (oracle_batch, staleness_summaries) = oracle::run_batch(params, &configs)?;
+    let outcome = run_final_eval_catching_panics(params, &configs)?;
 
-    let paired = stats::paired_stat(&oracle_batch.results, &reference_batch.results)?;
-    let staleness = aggregate_staleness(&staleness_summaries);
+    match outcome {
+        OracleBatchOutcome::Valid { batch, staleness } => {
+            let paired = stats::paired_stat(&batch.results, &reference_batch.results)?;
+            let staleness = aggregate_staleness(&staleness);
 
-    println!(
-        "ceiling `{stage}`: mean edge diff (oracle - {reference_slug}) = {:.6} \
-         (95% CI [{:.6}, {:.6}], n={})",
-        paired.mean_diff, paired.ci_low, paired.ci_high, paired.n
-    );
+            println!(
+                "ceiling `{stage}`: mean edge diff (oracle - {reference_slug}) = {:.6} \
+                 (95% CI [{:.6}, {:.6}], n={})",
+                paired.mean_diff, paired.ci_low, paired.ci_high, paired.n
+            );
 
-    if !args.no_report {
-        let path = write_ceiling_report(
-            &stage,
-            segment_name,
-            oracle_batch.n_sims(),
-            base_config.n_steps,
-            args.variant,
-            &reference_slug,
-            &fitted,
-            &paired,
-            &staleness,
-        )?;
-        println!("wrote {}", path.display());
+            if !args.no_report {
+                let path = write_ceiling_report(
+                    &stage,
+                    segment_name,
+                    batch.n_sims(),
+                    base_config.n_steps,
+                    args.variant,
+                    &reference_slug,
+                    &fitted,
+                    FinalEvalSummary::Valid {
+                        paired: &paired,
+                        staleness: &staleness,
+                    },
+                )?;
+                println!("wrote {}", path.display());
+            }
+
+            Ok(())
+        }
+        OracleBatchOutcome::Invalid(reason) => {
+            eprintln!(
+                "ceiling `{stage}`: the fitted point (concentration={:.4}, spread_bps={:.4}) \
+                 panicked during final re-evaluation on `{segment_name}` — caught, not \
+                 crashed: {reason}",
+                fitted.concentration, fitted.spread_bps
+            );
+
+            if !args.no_report {
+                let path = write_ceiling_report(
+                    &stage,
+                    segment_name,
+                    configs.len(),
+                    base_config.n_steps,
+                    args.variant,
+                    &reference_slug,
+                    &fitted,
+                    FinalEvalSummary::Invalid(&reason),
+                )?;
+                println!("wrote {} (marked INVALID — see the report)", path.display());
+            }
+
+            anyhow::bail!(
+                "the fitted point {:?} panicked during final re-evaluation on `{segment_name}` \
+                 — valid on `screening`'s seeds does not guarantee valid on a different, \
+                 larger seed set (docs/DESIGN.md §2.4/§2.5/WHI-1213; the Orbic family's own \
+                 quantization jitter, WHI-1206, is exactly this). Do not trust this point \
+                 without investigating why: {reason}",
+                (fitted.concentration, fitted.spread_bps),
+            );
+        }
     }
-
-    Ok(())
 }
