@@ -279,6 +279,33 @@ Committed report: `results/2026-08-23-ceiling-floating-trade-triggered-observati
   was safe on a different seed set. This is the documented failure mode itself
   (docs/DESIGN.md §2.4/§2.5/WHI-1213) landing on the documented panic site, not a bug in
   the point chosen or in this lane's own harness.
+- **A separately captured run names the specific violation, with an explicit provenance
+  caveat.** An earlier run of this exact command (`ceiling --variant floating --fit
+  --concentration 2.33 --segment observation`, release profile) at commit `1992c09`
+  (this lane's first commit, before round-1/2/3 review added `ceiling.rs`'s own
+  catch-and-report path in `49509a3`) hit the same panic site with no catching harness in
+  front of it, so Rust's default panic hook printed the payload verbatim instead of this
+  lane's `panic_message` downcast swallowing it:
+
+  ```
+  thread '<unnamed>' panicked at crates/sim/src/curve_checks.rs:23:9:
+  submission shape violation during arbitrage sell search: monotonicity violated:
+  input 0.686681 -> output 51.183366, input 0.740636 -> output 0.000000
+  ```
+
+  This is cited here **as evidence from a different, earlier commit, not as this run's
+  own re-verification** — the fitted point recorded above (`831284c`) never itself printed
+  this string; its own downcast failed and produced the non-string placeholder instead.
+  `git diff 1992c09 831284c -- crates/sim/src/curve_checks.rs` is empty, and
+  `tools/bench/src/oracle.rs`'s `oracle_swap` diff between the two commits (round-3
+  review, standards finding #4) only reorders the `side`-match arms to drop an
+  unreachable second match — same `price`/`k`/`out` formulas, not a behavior change per
+  its own commit message — so this violation is good-faith evidence of the same
+  mechanism (a larger input returning `0` because the quote exceeded the reserve,
+  breaking monotonicity — exactly what the `floating` variant's `base == v0` degeneracy
+  predicts), not proof that it is the bit-identical violation the `831284c` run's search
+  or final re-evaluation actually hit. No re-run was performed to close that gap; it is
+  tracked in `docs/DEFERRED_ISSUES.md` instead.
 
 **Step 3(b)'s prediction was never tested, and that tension is worth stating
 explicitly.** WHI-1247 step 3(b) predicted "expect `concentration` to run to its upper

@@ -334,6 +334,30 @@ soon — anything touching a declared high-risk path defaults to at least High),
   in this PR — `crates/cli` is out of scope for WHI-1247 and any fix belongs to the upstream
   sync lane, not a feature issue; would need its own ticket proposing the same empty-
   `[workspace]`-table fix for the reference compile path.
+- **The `floating` panic's committed evidence is a placeholder; the string-payload version
+  of the same site is only attested at an earlier, different commit** (Low, WHI-1247).
+  `831284c`'s committed floating report and `ceilings/C-orbic-oracle/NOTES.md` § `floating`
+  record `panicked with a non-string payload (at crates/sim/src/curve_checks.rs:23:9)` for
+  the fitted point's final-re-evaluation panic — this lane's own `panic_message` downcast
+  (`tools/bench/src/commands/ceiling.rs`) only recognizes `&str`/`String` payloads and
+  failed on whatever this one actually is. A separate, uncommitted run of the identical
+  command at this branch's first commit (`1992c09`, before `49509a3` added the
+  catch-and-report path) hit the same panic site with no catching harness in front of it,
+  so Rust's default panic hook printed the real message verbatim: `submission shape
+  violation during arbitrage sell search: monotonicity violated: input 0.686681 -> output
+  51.183366, input 0.740636 -> output 0.000000`. `crates/sim/src/curve_checks.rs` is
+  byte-identical between `1992c09` and `831284c`, and `tools/bench/src/oracle.rs`'s
+  `oracle_swap` diff between them (round-3 review, standards finding #4) only reorders the
+  `side`-match arms without changing the `price`/`k`/`out` formulas, so this string is
+  good-faith evidence of the same mechanism, cited in `NOTES.md` with that caveat — but it
+  was never re-derived at `831284c` itself, and no run at `831284c` has confirmed this is
+  the bit-identical violation rather than a different invalid point from the same search
+  space. Fix: none planned in this PR — the panic-catching harness's non-string-payload
+  case would need to actually be identified (why is this payload not a plain `&str`/
+  `String`?) and either widened or bypassed to recover the real message at the current
+  commit, which is a harness change orthogonal to the ceiling lane's own scope; would need
+  its own ticket if a future issue wants the exact current-commit message rather than the
+  attributed-earlier-commit citation this PR settles for.
 
 ---
 
