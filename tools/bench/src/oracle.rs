@@ -249,24 +249,23 @@ pub fn oracle_swap(data: &[u8]) -> u64 {
         return 0;
     }
 
-    let price = match side {
-        0 => p_oracle * (1.0 + spread),
-        1 => p_oracle * (1.0 - spread),
-        _ => return 0,
-    };
-    if !(price.is_finite() && price > 0.0) {
-        return 0;
-    }
-
-    let k = v0 * v0 * price;
-    if !(k.is_finite() && k > 0.0) {
-        return 0;
-    }
-
     let input = nano_to_f64(input_amount);
+    // Round-3 review, standards finding #4: `side` used to be matched twice — once for
+    // `price`, once for `out` — leaving the second match's `_ => return 0` unreachable,
+    // since the first match already returned on anything outside `{0, 1}`. One match, each
+    // arm computing its own `price`/`k`/`out` in order, drops the dead arm without changing
+    // behavior.
     let out = match side {
         // Buy X from the pool: `dy` (Y) in, `dx` (X) out.
         0 => {
+            let price = p_oracle * (1.0 + spread);
+            if !(price.is_finite() && price > 0.0) {
+                return 0;
+            }
+            let k = v0 * v0 * price;
+            if !(k.is_finite() && k > 0.0) {
+                return 0;
+            }
             let denom = k / base + input;
             if !(denom.is_finite() && denom > 0.0) {
                 return 0;
@@ -275,6 +274,14 @@ pub fn oracle_swap(data: &[u8]) -> u64 {
         }
         // Sell X to the pool: `dx` (X) in, `dy` (Y) out.
         1 => {
+            let price = p_oracle * (1.0 - spread);
+            if !(price.is_finite() && price > 0.0) {
+                return 0;
+            }
+            let k = v0 * v0 * price;
+            if !(k.is_finite() && k > 0.0) {
+                return 0;
+            }
             let denom = base + input;
             if !(denom.is_finite() && denom > 0.0) {
                 return 0;

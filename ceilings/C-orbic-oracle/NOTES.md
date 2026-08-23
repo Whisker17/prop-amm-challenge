@@ -61,9 +61,13 @@ way `run_fit`'s search loop already guarded its own evaluations. Running the rea
 exactly that gap — a panic during `observation`'s re-evaluation, after a clean pass on all
 of `screening`'s points — and crashed the whole process before a report could be written.
 (The captured panic payload was non-string, which defeats this lane's own
-`panic_message` downcast — see the `floating` section below — so the specific cause is not
-pinned down beyond "a panic occurred"; it is not confirmed to be `curve_checks.rs`'s
-monotonicity check specifically, only that it originates somewhere in the simulated batch.) Commit `49509a3` closes that gap with a second, staleness-
+`panic_message` downcast — see the `floating` section below — so at the time this gap was
+found, the specific cause was not pinned down beyond "a panic occurred," only that it
+originated somewhere in the simulated batch. Round-2 review's location-capturing panic
+hook (`ceiling.rs::catch_panicking`, below) has since confirmed it: the re-measured
+`floating` run's panic message now cites `crates/sim/src/curve_checks.rs:23:9` — the exact
+monotonicity/concavity check `docs/DESIGN.md` §2.9 names as this simulator's shape-check
+panic site.) Commit `49509a3` closes that gap with a second, staleness-
 preserving `catch_unwind` around the final measurement, mirroring `commands/fit.rs`'s own
 established pattern for its analogous train/validation re-evaluation step (docs/DESIGN.md
 §2.4/§2.5, WHI-1213): on a caught panic, the evidence gathered so far is still written —
@@ -134,6 +138,21 @@ Rationale:
   search (`tools/bench/src/search.rs`, same mechanism `001`/`003`/etc. use) needs the
   interior of *this* range to be worth searching, and 100x concentration is already an
   extremely tight virtual-reserves band relative to `target_x`.
+- **A declared fidelity adaptation: 2 implied decimal places, not the source's plain
+  integer.** `docs/references/002-orbic-flashbots/README.md` § Known parameters records
+  the source contract's own constraint as `concentration` **integer**,
+  `1 <= concentration < 2000` — its `InvalidConcentration` check runs as on-chain integer
+  arithmetic, because the source is a BPF program. This lane's `concentration` is not: it
+  runs entirely host-side over `f64` (`tools/bench/src/oracle.rs`, "Execution path: native
+  (host-side, never BPF-compiled)" in every committed report below), so the on-chain
+  integer constraint has no BPF-arithmetic reason to bind it here. The search grid is
+  therefore encoded as `concentration_x100` — an integer grid over `[100, 10_000]`,
+  divided by 100 (`tools/bench/src/commands/ceiling.rs::concentration_spec`) — giving the
+  fit 2 decimal places of resolution (the fitted point below, `2.33`, is not a whole
+  number) instead of only the ~1999 whole-number rungs the source contract would accept.
+  Declaring this explicitly, the same way step 2 requires `SPREAD_BPS` to be declared: this
+  is an intentional adaptation to a host-side diagnostic that never compiles to BPF and is
+  never submittable, not an unnoticed fidelity slip.
 - **spread_bps upper bound 1_000 (10%)** — an order of magnitude above the reference's own
   fee (`001-cpmm-fee`'s frozen range tops out at 500bps / 5%, `strategies/001-cpmm-fee/NOTES.md`),
   giving the search headroom to find an interior optimum rather than hit a boundary, while
@@ -141,6 +160,30 @@ Rationale:
   an arbitrary markup.
 - **spread_bps lower bound 0** — a spread of exactly zero is a legitimate point (pure
   concentration effect, no spread contribution) and must be reachable, not excluded.
+
+## Parity anchor (`bench ceiling --self-check`)
+
+Round-2 review of this issue caught that this mode existed and was correct in shape
+(`tools/bench/src/commands/ceiling.rs::run_self_check`) but had no recorded result — the
+lane's own substitute for docs/DESIGN.md §2.6's `prop-amm validate`/`run` parity gate (step
+6 above) had never actually been run and written down, so it was documentation of a design,
+not evidence.
+
+Run (any segment; `observation` used here to match the measurements below):
+
+```
+cargo run -p prop-amm-bench -- ceiling --self-check --segment observation
+```
+
+Result: `self-check PASSED: 1000 seeds agree within 0.000001 between the trusted
+compile+run path and this lane's own native batch loop` — `strategies/000-normalizer`
+compiled and run through `compile::build_and_load` (the trusted path every other bench
+subcommand uses) agrees with the same normalizer run through this lane's own
+`oracle::run_batch_native_loop` on all 1000 `observation` seeds, within the `1e-6`
+tolerance `run_self_check` enforces. This confirms the custom per-seed loop this lane had
+to write (§ What must not change forbids reusing `runner::run_batch_native`'s own loop
+plumbing for a host-side fn) does not itself move the number — a mismatch here would mean
+the loop, not the oracle curve, produced any observed edge difference.
 
 ## Fitted point
 
@@ -175,10 +218,14 @@ Committed report: `results/2026-08-23-ceiling-anchored-trade-triggered-observati
   granted a re-anchor no submittable strategy can actually have, and that is a one-sided
   lower bound on what perfect price knowledge is worth, not its maximum.
 - Trade-triggered cursor staleness (steps since the oracle cursor's last executed trade):
-  mean of per-sim means 3.886, median of per-sim means 3.144, max of per-sim p95 109.000, max
-  of per-sim max 205.000 — the re-anchor is current almost all the time (single-digit mean
-  staleness) but has a long tail of quiet stretches up to ~200 steps in the worst simulated
-  path.
+  mean of per-sim means 3.886, median of per-sim means 3.144, **p95 of per-sim means
+  8.437** (round-2 review's fix for a genuine naming bug — the pre-existing "p95 of p95"
+  figure was actually computed via `f64::max`, not a percentile; renamed to `max of
+  per-sim p95` below and a real `p95_of_means` percentile added alongside it,
+  `tools/bench/src/commands/ceiling.rs::aggregate_staleness`), max of per-sim p95 109.000,
+  max of per-sim max 205.000 — the re-anchor is current almost all the time (single-digit
+  mean staleness, and even the 95th percentile of per-sim means is under 9 steps) but has
+  a long tail of quiet stretches up to ~200 steps in the worst simulated path.
 
 ### `floating` (degenerate diagnostic) — spread-only re-fit, concentration held at 2.33
 
@@ -193,15 +240,29 @@ Committed report: `results/2026-08-23-ceiling-floating-trade-triggered-observati
 - **Final re-evaluation on `observation`: INVALID.** Re-running this exact point
   (`concentration = 2.33, spread_bps = 77.0`) against `observation`'s 1000 seeds — a
   different, larger seed set than the 200 `screening` seeds the search used — triggered a
-  panic, caught rather than crashed (see Provenance above). The captured panic payload was
-  non-string (`panicked with a non-string payload`), which defeats this lane's own
-  `panic_message` downcast (it only recognizes `&str`/`String` payloads) — so the specific
-  cause is not pinned down beyond "a panic occurred somewhere in the simulated batch"; it
-  is not confirmed to be `crates/sim/src/curve_checks.rs`'s monotonicity check specifically.
-  No mean edge diff, no CI, and no staleness numbers exist for this point; the search's own
-  clean pass on `screening` was not evidence this point was safe on a different seed set.
-  This is the documented failure mode itself (docs/DESIGN.md §2.4/§2.5/WHI-1213), not a bug
-  in the point chosen.
+  panic, caught rather than crashed (see Provenance above). The captured panic payload
+  itself is still non-string (`panicked with a non-string payload`), which defeats this
+  lane's own `panic_message` downcast (it only recognizes `&str`/`String` payloads) — but
+  round-2 review's fix to `catch_panicking` (`ceiling.rs`, below) now also captures the
+  panic's source location, and this re-measurement's captured message is
+  `panicked with a non-string payload (at crates/sim/src/curve_checks.rs:23:9)`. **That
+  confirms the cause**: `crates/sim/src/curve_checks.rs:23` is exactly the
+  monotonicity/concavity panic `docs/DESIGN.md` §2.9 documents as this simulator's own
+  shape-check site — the same site every M1 strategy's `bench fuzz` gate exists to probe
+  for before a search is trusted. No mean edge diff, no CI, and no staleness numbers exist
+  for this point; the search's own clean pass on `screening` was not evidence this point
+  was safe on a different seed set. This is the documented failure mode itself
+  (docs/DESIGN.md §2.4/§2.5/WHI-1213) landing on the documented panic site, not a bug in
+  the point chosen or in this lane's own harness.
+
+**Step 3(b)'s prediction was never tested, and that tension is worth stating
+explicitly.** WHI-1247 step 3(b) predicted "expect `concentration` to run to its upper
+bound and the axis to be degenerate" for this variant. Step 10 instead freezes
+`concentration` at `anchored`'s fitted 2.33 and re-fits `spread_bps` only ("re-fit
+**spread only**"), so `concentration` is never varied under this budget and step
+3(b)'s prediction about that axis is untestable here, not confirmed or refuted. This
+tension was not previously noted in this document or in the committed reports; see
+`docs/DEFERRED_ISSUES.md` for the tracked entry.
 
 ### Anchored vs. floating — what the contrast shows
 
@@ -216,10 +277,18 @@ its own shape parameter on every single swap, not just at simulation start; that
 closer-to-the-edge dynamic degenerates harder — fewer invalid points appeared during the
 `screening`-segment search (9 of 165 evaluated) than for `anchored`, yet the one point the
 search settled on still failed to survive re-evaluation on a five-times-larger, different
-seed set. In other words: `floating` is not merely *lower-edge* than `anchored`, as the
-original "isolate how much of anchored's edge is the fixed inventory target" framing
-anticipated — it is unable to produce a trustworthy number on this segment at all. That is
-exactly why `floating` was scoped from the start (see "Two `target_x` variants" above) as
+seed set. **The comparison is not about which variant scores higher** — the only figures
+the two variants share a unit with are the `screening`-segment best-avg-edge numbers
+(`floating` 639.575681 vs. `anchored` 473.787933, so if anything `floating` screened
+*higher*, not lower), and that is not the same quantity as `anchored`'s headline
+paired-vs-0-line figure (87.234885 edge/sim on `observation`) — the two are not
+comparable side by side. What the contrast actually shows is a *robustness* gap, not an
+edge-magnitude one: `anchored` produced a number that survived re-evaluation on a
+seed set five times larger than the one the search used, and `floating` did not,
+despite screening cleaner (fewer invalid points during search) and scoring higher on
+that same screening segment. A screening-segment score is not evidence of that kind of
+robustness either way. That is exactly why `floating` was scoped from the start (see
+"Two `target_x` variants" above) as
 "never a result on its own," and it is exactly the Orbic family's own quantization jitter
 (`docs/DESIGN.md` §6.2, `002`, WHI-1206, Canceled) showing up a second time, one level
 removed from the search itself. The ceiling number this lane exists to produce is

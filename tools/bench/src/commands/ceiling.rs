@@ -7,7 +7,7 @@
 //! two are never mistaken for each other at a glance.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use clap::{Args, ValueEnum};
@@ -162,7 +162,7 @@ fn validate_max_points_requires_no_report(
 /// `008` — exactly the "ceiling vs `008`" report this issue requires to be impossible to
 /// generate. So after the slug check, this also requires the resolved `lib_path` to
 /// canonicalize to the *real* `strategies/<slug>/lib.rs`, not just share its basename.
-fn validate_reference_allowlist(reference: &str) -> anyhow::Result<String> {
+fn validate_reference_allowlist(reference: &str) -> anyhow::Result<(String, PathBuf)> {
     let (slug, lib_path) = resolve_strategy_lib_path(reference)?;
     if !ALLOWED_REFERENCE_SLUGS.contains(&slug.as_str()) {
         anyhow::bail!(
@@ -198,7 +198,12 @@ fn validate_reference_allowlist(reference: &str) -> anyhow::Result<String> {
             expected_canon.display()
         );
     }
-    Ok(slug)
+    // Return the already-resolved, already-canonicalized lib_path (not just the slug) so
+    // `run` never has to call `resolve_strategy_lib_path` a second time for the same
+    // reference — round-3 review caught that the second call was not just redundant I/O,
+    // it reopened the exact window (a second, independent filesystem resolve) that could
+    // in principle disagree with the one this guard just validated.
+    Ok((slug, lib_path))
 }
 
 /// WHI-1247 step 7 guard (b): the `test` segment is refused unconditionally — even with
@@ -286,7 +291,21 @@ static LAST_PANIC_LOCATION: Mutex<Option<String>> = Mutex::new(None);
 /// and `LAST_PANIC_LOCATION` intentionally keeps only the most recent write rather than every
 /// one — enough to point at *a* real panic site, not a claim that it is uniquely the one
 /// `catch_unwind` observed unwinding.
-fn catch_panicking<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<Result<T, String>> {
+/// A caught panic's recovered evidence — [`catch_panicking`]'s `Err` payload. `message` is
+/// display-ready (any [`LAST_PANIC_LOCATION`] hit is already appended); `recovered` says
+/// whether that text actually came from the panic's own `&str`/`String` payload (`true`, the
+/// `curve_checks.rs` shape-check case) or is a fixed placeholder because the payload
+/// downcast to neither (`false`). [`write_ceiling_report`]'s `Invalid` arm reads `recovered`
+/// so it never asserts the placeholder's own wording on a run where the message is real —
+/// round-3 review's standards finding #2.
+struct PanicOutcome {
+    message: String,
+    recovered: bool,
+}
+
+fn catch_panicking<T>(
+    f: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<Result<T, PanicOutcome>> {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|info| {
         if let Ok(mut loc) = LAST_PANIC_LOCATION.lock() {
@@ -304,12 +323,18 @@ fn catch_panicking<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<R
         Ok(Err(e)) => Err(e),
         Err(payload) => {
             let location = LAST_PANIC_LOCATION.lock().ok().and_then(|mut g| g.take());
-            let message = panic_message(&payload);
+            let (message, recovered) = match panic_message(&payload) {
+                Some(m) => (m, true),
+                None => ("panicked with a non-string payload".to_string(), false),
+            };
             let with_location = match location {
                 Some(loc) if !loc.is_empty() => format!("{message} (at {loc})"),
                 _ => message,
             };
-            Ok(Err(with_location))
+            Ok(Err(PanicOutcome {
+                message: with_location,
+                recovered,
+            }))
         }
     }
 }
@@ -319,29 +344,32 @@ fn run_catching_panics(
 ) -> anyhow::Result<PointOutcome> {
     match catch_panicking(f)? {
         Ok(batch) => Ok(PointOutcome::Valid(batch.avg_edge())),
-        Err(msg) => Ok(PointOutcome::Invalid(msg)),
+        Err(outcome) => Ok(PointOutcome::Invalid(outcome.message)),
     }
 }
 
-/// Byte-identical to `commands/fit.rs::panic_message` (which has the same job for
-/// `fit`'s own train/validation re-evaluation) — a deliberate duplicate, not a missed
+/// Originally byte-identical to `commands/fit.rs::panic_message` (which has the same job
+/// for `fit`'s own train/validation re-evaluation) — a deliberate duplicate, not a missed
 /// dedup: WHI-1247's "what must not change" list forbids editing `fit.rs` or exposing its
 /// private helpers, and `panic_message` is private there, so there is no way to share one
-/// definition without violating that constraint. `curve_checks.rs`'s own
+/// definition without violating that constraint. Diverges from that copy only in its return
+/// type (round-3 review, standards finding #2): `fit.rs` never needs to tell a caller
+/// whether the message it got back was actually recovered from the payload or is a
+/// placeholder, but this lane's own `Invalid` report section does — printing "a non-string
+/// panic payload defeated this lane's own downcast" on a run where the payload downcast
+/// cleanly would be self-contradicting generated evidence. `curve_checks.rs`'s own
 /// `panic!("submission shape violation during {context}: {message}")` is always a `&str` or
-/// `String`, so this recovers it verbatim; anything else — including every panic this
-/// lane's own Orbic curve throws that isn't routed through `curve_checks.rs` — falls back
-/// to a fixed string rather than failing to produce an outcome at all. When that fallback
-/// fires, [`catch_panicking`]'s own `LAST_PANIC_LOCATION` hook is what recovers a real
-/// `file:line:column` instead of leaving the cause entirely unpinned.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "panicked with a non-string payload".to_string()
-    }
+/// `String`, so `Some(_)` here means that exact text; `None` means the payload was neither
+/// (including every panic this lane's own Orbic curve throws that isn't routed through
+/// `curve_checks.rs`), in which case the caller supplies its own placeholder text rather
+/// than failing to produce an outcome at all. Either way, [`catch_panicking`]'s own
+/// `LAST_PANIC_LOCATION` hook still recovers a real `file:line:column` independent of which
+/// branch fires.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> Option<String> {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
 }
 
 /// The raw outcome of the *final* re-evaluation of a fitted point (as opposed to a point
@@ -360,7 +388,7 @@ enum OracleBatchOutcome {
         batch: BatchResult,
         staleness: Vec<StalenessSummary>,
     },
-    Invalid(String),
+    Invalid(PanicOutcome),
 }
 
 /// Runs the real oracle measurement, catching a panic via the same [`catch_panicking`] guard
@@ -374,7 +402,7 @@ fn run_final_eval_catching_panics(
     let owned_configs = configs.to_vec();
     match catch_panicking(move || oracle::run_batch(params, &owned_configs))? {
         Ok((batch, staleness)) => Ok(OracleBatchOutcome::Valid { batch, staleness }),
-        Err(msg) => Ok(OracleBatchOutcome::Invalid(msg)),
+        Err(outcome) => Ok(OracleBatchOutcome::Invalid(outcome)),
     }
 }
 
@@ -386,7 +414,7 @@ enum FinalEvalSummary<'a> {
         paired: &'a stats::PairedStat,
         staleness: &'a StalenessAggregate,
     },
-    Invalid(&'a str),
+    Invalid(&'a PanicOutcome),
 }
 
 /// The fitted (or explicitly supplied) point this run measures at.
@@ -567,18 +595,32 @@ fn write_ceiling_report(
          measurement of an oracle re-anchor the arbitrageur cannot front-run. Nothing on this \
          page is submittable or ranked.\n\n",
     );
-    out.push_str(
-        "**Three honesty constraints bound what this number means** (WHI-1247 § Context): \
-         (1) it is a one-sided **lower bound** on what perfect price knowledge is worth — \
-         Orbic-with-a-spread is one member of the perfect-information class, not its \
-         maximum, so this number does not bound the remaining headroom above a stronger \
-         submission from above; (2) once the quote is accurate and spread, the arbitrageur \
-         mostly stops trading against it, so most of the number is `retail volume x \
-         captured spread x flow share(spread)` — the only genuinely non-closed-form content \
-         is the flow-share-vs-spread curve the router grants against the normalizer's own \
-         sampled fee/liquidity; (3) that content generalizes to *any* oracle-centered \
-         quoter and carries little content specific to the Orbic curve itself.\n\n",
-    );
+    // Round-3 review, spec finding #4: this paragraph used to run unconditionally and say
+    // "bound what this number means" even for an `Invalid` run that produced no number at
+    // all. Which of the two prints depends on `final_eval`, which is available here as a
+    // borrow (the owning `match` further down still takes it by value).
+    match &final_eval {
+        FinalEvalSummary::Valid { .. } => out.push_str(
+            "**Three honesty constraints bound what this number means** (WHI-1247 § Context): \
+             (1) it is a one-sided **lower bound** on what perfect price knowledge is worth — \
+             Orbic-with-a-spread is one member of the perfect-information class, not its \
+             maximum, so this number does not bound the remaining headroom above a stronger \
+             submission from above; (2) once the quote is accurate and spread, the arbitrageur \
+             mostly stops trading against it, so most of the number is `retail volume x \
+             captured spread x flow share(spread)` — the only genuinely non-closed-form content \
+             is the flow-share-vs-spread curve the router grants against the normalizer's own \
+             sampled fee/liquidity; (3) that content generalizes to *any* oracle-centered \
+             quoter and carries little content specific to the Orbic curve itself.\n\n",
+        ),
+        FinalEvalSummary::Invalid(_) => out.push_str(
+            "**This run produced no number.** The same three honesty constraints (WHI-1247 \
+             § Context) — one-sided lower bound, mostly `retail volume x captured spread x \
+             flow share(spread)`, generalizing beyond the Orbic curve specifically — would \
+             bound what an edge figure means here, but they bind nothing until a valid \
+             re-evaluation exists. See \"## Final re-evaluation: INVALID\" below for why this \
+             run has none.\n\n",
+        ),
+    }
     out.push_str(&format!("- Commit: `{}`\n", commit_sha()));
     out.push_str(&format!("- Segment: `{segment_name}`\n"));
     out.push_str(&format!("- Simulations: {n_sims}\n"));
@@ -612,6 +654,23 @@ fn write_ceiling_report(
 
     match final_eval {
         FinalEvalSummary::Valid { paired, staleness } => {
+            // Round-3 review, spec finding #4: step 3's own scoping of `floating` as
+            // "never a result on its own" (`ceilings/C-orbic-oracle/NOTES.md` § Anchored vs.
+            // floating) applies just as much to a `floating` run that happens to come back
+            // `Valid` as to the INVALID one this lane actually measured — nothing about a
+            // future clean re-evaluation would change what the variant means. Only the
+            // INVALID outcome made this report variant-blind so far, since no `Valid`
+            // `floating` run has happened yet; mark it here so one never prints as if it
+            // were a second headline number.
+            if variant == VariantArg::Floating {
+                out.push_str(
+                    "**Diagnostic caveat (variant: floating):** WHI-1247 step 3 scopes this \
+                     variant as \"never a result on its own\" — a contrast against `anchored`, \
+                     not a second headline figure. The numbers below are real, but do not read \
+                     them as this lane's finding; see `ceilings/C-orbic-oracle/NOTES.md` § \
+                     \"Anchored vs. floating\" for why.\n\n",
+                );
+            }
             out.push_str("## Edge vs the 0-line\n\n");
             out.push_str("| field | value |\n|---|---|\n");
             out.push_str(&format!("| n | {} |\n", paired.n));
@@ -652,8 +711,26 @@ fn write_ceiling_report(
             ));
             out.push('\n');
         }
-        FinalEvalSummary::Invalid(reason) => {
+        FinalEvalSummary::Invalid(panic) => {
             out.push_str("## Final re-evaluation: INVALID\n\n");
+            // Round-3 review, standards finding #2 (hard): this used to always assert "a
+            // non-string panic payload defeated this lane's own panic_message downcast," even
+            // on the common path where `curve_checks.rs` panicked with a real `String` this
+            // lane's own downcast recovered verbatim — self-contradicting generated evidence,
+            // in a lane whose whole justification is honest reporting. `panic.recovered` (set
+            // by `catch_panicking`/`panic_message`) is what makes this conditional instead of
+            // asserted.
+            let cause_sentence = if panic.recovered {
+                "The panic message below was recovered verbatim from the panic's own payload \
+                 — a `curve_checks.rs`-style `panic!(\"submission shape violation ...\")` \
+                 always downcasts cleanly to a `String` — so it is the actual cause, not a \
+                 placeholder."
+            } else {
+                "The panic message below is a fixed placeholder: a non-string panic payload \
+                 defeated this lane's own `panic_message` downcast, so the cause is not pinned \
+                 down further than \"a panic occurred\" plus whatever source location the \
+                 installed panic hook captured independently of the payload."
+            };
             out.push_str(&format!(
                 "The fitted point above was chosen from a search on the `screening` segment, \
                  but re-evaluating it on the full `{segment_name}` segment triggered a caught \
@@ -662,15 +739,11 @@ fn write_ceiling_report(
                  is not guaranteed valid on a different, larger seed set — exactly what made \
                  the Orbic family's own \"quantization jitter\" (`docs/DESIGN.md` §6.2, \
                  strategy `002`, WHI-1206, Canceled) probabilistic across seeds, not just \
-                 across parameter values. The panic message below is the only evidence of \
-                 cause captured; it is not confirmed to be a `crates/sim/src/curve_checks.rs` \
-                 shape-check specifically (a non-string panic payload defeated this lane's own \
-                 `panic_message` downcast, so the cause is not pinned down further than \
-                 \"a panic occurred\"). No edge-vs-0-line or staleness numbers exist for this \
-                 run; the absence of a crash on `screening` is not evidence this variant/point \
-                 is safe on other segments or seeds.\n\n"
+                 across parameter values. {cause_sentence} No edge-vs-0-line or staleness \
+                 numbers exist for this run; the absence of a crash on `screening` is not \
+                 evidence this variant/point is safe on other segments or seeds.\n\n"
             ));
-            out.push_str(&format!("Panic message: `{reason}`\n\n"));
+            out.push_str(&format!("Panic message: `{}`\n\n", panic.message));
         }
     }
 
@@ -827,7 +900,7 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         anyhow::bail!("either --fit or both --concentration and --spread-bps must be given");
     }
 
-    let reference_slug = validate_reference_allowlist(&args.reference)?;
+    let (reference_slug, reference_lib_path) = validate_reference_allowlist(&args.reference)?;
     let variant_slug = args.variant.slug();
     let stage = format!(
         "ceiling-{variant_slug}-{CURSOR_MODE}-{segment_name}-orbic-oracle-vs-{reference_slug}"
@@ -837,7 +910,6 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         crate::report::ensure_report_slot_free(Path::new(DEFAULT_REPORT_DIR), &stage)?;
     }
 
-    let (_ref_slug, reference_lib_path) = resolve_strategy_lib_path(&args.reference)?;
     let reference_lib_path_str = reference_lib_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("non-UTF8 path {}", reference_lib_path.display()))?;
@@ -866,6 +938,21 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
     };
     let outcome = run_final_eval_catching_panics(params, &configs)?;
 
+    // Round-3 review, standards finding #6: the `Valid`/`Invalid` arms below used to build
+    // near-identical `CeilingRunMeta` literals, differing only in `n_sims` (`batch.n_sims()`
+    // vs `configs.len()`) — but `run_batch`'s own rayon loop (`oracle.rs`) is
+    // `configs.par_iter().map(..).collect()`, one result per config with no filtering, so
+    // `batch.n_sims() == configs.len()` on every `Valid` outcome. One `run_meta`, built once,
+    // is exactly as correct and reads as "the run" rather than two copies that could drift.
+    let run_meta = CeilingRunMeta {
+        stage: &stage,
+        segment_name,
+        n_sims: configs.len(),
+        n_steps: base_config.n_steps,
+        variant: args.variant,
+        reference_slug: &reference_slug,
+    };
+
     match outcome {
         OracleBatchOutcome::Valid { batch, staleness } => {
             let paired = stats::paired_stat(&batch.results, &reference_batch.results)?;
@@ -879,14 +966,7 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
             if !args.no_report {
                 let path = write_ceiling_report(
-                    CeilingRunMeta {
-                        stage: &stage,
-                        segment_name,
-                        n_sims: batch.n_sims(),
-                        n_steps: base_config.n_steps,
-                        variant: args.variant,
-                        reference_slug: &reference_slug,
-                    },
+                    run_meta,
                     &fitted,
                     FinalEvalSummary::Valid {
                         paired: &paired,
@@ -898,27 +978,17 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
             Ok(())
         }
-        OracleBatchOutcome::Invalid(reason) => {
+        OracleBatchOutcome::Invalid(panic) => {
             eprintln!(
                 "ceiling `{stage}`: the fitted point (concentration={:.4}, spread_bps={:.4}) \
                  panicked during final re-evaluation on `{segment_name}` — caught, not \
-                 crashed: {reason}",
-                fitted.concentration, fitted.spread_bps
+                 crashed: {}",
+                fitted.concentration, fitted.spread_bps, panic.message
             );
 
             if !args.no_report {
-                let path = write_ceiling_report(
-                    CeilingRunMeta {
-                        stage: &stage,
-                        segment_name,
-                        n_sims: configs.len(),
-                        n_steps: base_config.n_steps,
-                        variant: args.variant,
-                        reference_slug: &reference_slug,
-                    },
-                    &fitted,
-                    FinalEvalSummary::Invalid(&reason),
-                )?;
+                let path =
+                    write_ceiling_report(run_meta, &fitted, FinalEvalSummary::Invalid(&panic))?;
                 println!("wrote {} (marked INVALID — see the report)", path.display());
             }
 
@@ -927,8 +997,9 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                  — valid on `screening`'s seeds does not guarantee valid on a different, \
                  larger seed set (docs/DESIGN.md §2.4/§2.5/WHI-1213; the Orbic family's own \
                  quantization jitter, WHI-1206, is exactly this). Do not trust this point \
-                 without investigating why: {reason}",
+                 without investigating why: {}",
                 (fitted.concentration, fitted.spread_bps),
+                panic.message,
             );
         }
     }

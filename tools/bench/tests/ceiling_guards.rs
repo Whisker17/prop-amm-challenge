@@ -25,6 +25,32 @@ fn bench_cmd() -> Command {
     cmd
 }
 
+/// Runs `bench` with `args`, asserts it refused (non-zero exit), and asserts `needle`
+/// appears in stderr — the build-args/`.output()`/assert-refusal/assert-stderr shape every
+/// guard test below needs. Round-3 review, standards finding #5: three tests used to repeat
+/// this block verbatim; collapsing it here means a future guard test is one call, not
+/// another ~20-line copy.
+fn expect_refusal(args: &[&str], needle: &str) {
+    let output = bench_cmd()
+        .args(args)
+        .output()
+        .expect("failed to run bench ceiling");
+
+    assert!(
+        !output.status.success(),
+        "expected `bench {}` to fail, got success. stdout:\n{}\nstderr:\n{}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(needle),
+        "expected `{needle}` in stderr for `bench {}`, got:\n{stderr}",
+        args.join(" ")
+    );
+}
+
 /// WHI-1247 step 9: `ceilings/` holds provenance docs (`README.md`,
 /// `C-orbic-oracle/NOTES.md`) but never a `lib.rs` — nothing under it is a submission, and a
 /// stray `lib.rs` would invite exactly that confusion. Checked as a repo invariant, not just
@@ -73,8 +99,8 @@ fn reference_allowlist_rejects_a_non_allowlisted_strategy() {
         non_allowlisted.display()
     );
 
-    let output = bench_cmd()
-        .args([
+    expect_refusal(
+        &[
             "ceiling",
             "--reference",
             "strategies/003-piecewise-linear",
@@ -83,21 +109,8 @@ fn reference_allowlist_rejects_a_non_allowlisted_strategy() {
             "--spread-bps",
             "10",
             "--no-report",
-        ])
-        .output()
-        .expect("failed to run bench ceiling");
-
-    assert!(
-        !output.status.success(),
-        "expected `bench ceiling --reference strategies/003-piecewise-linear` to fail, got \
-         success. stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("allowlist"),
-        "expected the allowlist guard's message in stderr, got:\n{stderr}"
+        ],
+        "allowlist",
     );
 }
 
@@ -120,8 +133,8 @@ fn reference_allowlist_rejects_a_same_named_directory_outside_strategies() {
     )
     .expect("failed to write decoy lib.rs");
 
-    let output = bench_cmd()
-        .args([
+    expect_refusal(
+        &[
             "ceiling",
             "--reference",
             decoy_dir.to_str().expect("tempdir path must be UTF-8"),
@@ -130,21 +143,8 @@ fn reference_allowlist_rejects_a_same_named_directory_outside_strategies() {
             "--spread-bps",
             "10",
             "--no-report",
-        ])
-        .output()
-        .expect("failed to run bench ceiling");
-
-    assert!(
-        !output.status.success(),
-        "expected `bench ceiling --reference <decoy>/001-cpmm-fee` to fail, got success. \
-         stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("is not the allowlisted"),
-        "expected the canonicalize guard's message in stderr, got:\n{stderr}"
+        ],
+        "is not the allowlisted",
     );
 }
 
@@ -154,26 +154,13 @@ fn reference_allowlist_rejects_a_same_named_directory_outside_strategies() {
 /// ranking claim for that flag to protect.
 #[test]
 fn segment_test_is_refused_even_with_the_spend_flag() {
-    let output = bench_cmd()
-        .args([
+    expect_refusal(
+        &[
             "ceiling",
             "--segment",
             "test",
             "--i-am-spending-the-test-segment",
-        ])
-        .output()
-        .expect("failed to run bench ceiling");
-
-    assert!(
-        !output.status.success(),
-        "expected `bench ceiling --segment test --i-am-spending-the-test-segment` to fail, \
-         got success. stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("never spends the `test` segment"),
-        "expected the test-segment guard's message in stderr, got:\n{stderr}"
+        ],
+        "never spends the `test` segment",
     );
 }

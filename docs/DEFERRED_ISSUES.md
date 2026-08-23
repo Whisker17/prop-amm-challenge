@@ -286,6 +286,35 @@ soon — anything touching a declared high-risk path defaults to at least High),
   acceptance criteria asked for. Fix: once all three top-3 variants have opened issues, add
   a short §2.10 addendum (or a §6.2-adjacent table) listing the three slots and the issue
   that spent each.
+- **`floating`'s two required ACs — a paired-by-seed comparison against the 0-line, and a
+  staleness distribution — are unmet, with no manufactured substitute** (Low, WHI-1247).
+  WHI-1247's acceptance criteria ask for both numbers "for both `target_x` variants," but
+  `floating`'s fitted point panics on final re-evaluation (`ceilings/C-orbic-oracle/NOTES.md`
+  § `floating`, `results/2026-08-23-ceiling-floating-...md`), so no paired comparison or
+  staleness distribution exists for this variant. Flagged in round-3 spec review of this
+  issue. Deferred rather than fixed: `NOTES.md`'s own "Considered and rejected: recovering a
+  number for `floating` anyway" section already explains why manufacturing one (e.g.
+  reporting a runner-up point's number as if it were `floating`'s) would misrepresent a
+  variant WHI-1247 step 3 itself scopes as "never a result on its own" — the empty result
+  *is* the diagnostic, not a gap to fill. Logged here so the unmet AC has a tracked home
+  rather than only living in report/NOTES.md prose. Fix: none planned for this variant under
+  its current frozen parameter space; would only become moot if a future issue changes
+  `floating`'s own scope (e.g. bounding the oracle's quote by the reserve, which WHI-1247's
+  orchestrator direction — see the panic characterization in `NOTES.md` § `floating` — treats
+  as a structural finding to report, not a defect to patch around).
+- **Step 3(b)'s "expect `concentration` to run to its upper bound and the axis to be
+  degenerate" prediction was never tested** (Low, WHI-1247). WHI-1247 step 10 freezes
+  `concentration` for variant (b) ("re-fit spread only"), so `floating`'s search never
+  varies `concentration` at all — it stays pinned at `anchored`'s own fitted 2.33 throughout
+  variant (b)'s run, and the prediction about where an unconstrained `concentration` axis
+  would land is untestable under that budget. Flagged in round-3 spec review of this issue;
+  neither `NOTES.md` nor the committed reports previously noted this tension between step
+  3(b)'s prediction and step 10's freeze. `ceilings/C-orbic-oracle/NOTES.md` § `floating` now
+  states this explicitly. Fix: none planned — re-opening `concentration` as a free variable
+  for variant (b) would mean re-fitting *two* parameters jointly for a variant already scoped
+  as diagnostic-only, spending search budget WHI-1247's own step 10 chose not to spend here;
+  worth revisiting only if a future issue specifically wants the degenerate-axis claim tested
+  rather than just noted as untested.
 
 ---
 
