@@ -1,4 +1,5 @@
 pub mod anchor;
+pub mod ceiling;
 pub mod compare;
 pub mod estimator_probe;
 pub mod fit;

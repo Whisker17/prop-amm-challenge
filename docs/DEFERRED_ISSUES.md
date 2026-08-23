@@ -31,6 +31,47 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
+- **`resolve_ceiling_segment` re-implements part of `SegmentSelector::resolve`'s single-use
+  check, and `VariantArg` carries its `OracleVariant` mapping and its report-slug string as
+  two separate hand-written `match`es** (Low, WHI-1247). Both flagged in round-1 review of
+  this issue and accepted as judgement calls at the time, but never actually logged here per
+  `AGENTS.md`'s own Git-workflow step 3 until round-2 review caught the gap.
+  `tools/bench/src/commands/ceiling.rs::resolve_ceiling_segment`'s own doc comment already
+  explains why it can't just call `SegmentSelector::resolve` unmodified (that method only
+  blocks `single_use` in the *absence* of the spend flag, which would let `--i-am-spending-
+  the-test-segment` defeat this lane's stronger, unconditional `test`-segment refusal) —
+  the duplication is the single-use-check tail after that guard, not the guard itself.
+  `VariantArg`'s `impl From<VariantArg> for OracleVariant` and `impl VariantArg { fn
+  slug() }` are two small, separately-necessary switches over the same two-variant enum
+  (one for the oracle's own type, one for a report filename fragment) rather than one
+  combined mapping, because they serve genuinely different consumers (`oracle.rs` vs. the
+  report writer) and a single fused function would couple the two for no shared benefit.
+  Fix, if ever revisited: none planned unless `SegmentSelector::resolve` itself grows a
+  variant that takes the spend flag into account for *all* single-use segments (which would
+  let `resolve_ceiling_segment` shrink to a thin wrapper), or `VariantArg` grows a third
+  consumer that would make a combined mapping pay for itself.
+- **`run_fit`'s `Anchored`/`Floating` arms share the same shape** (Low, WHI-1247).
+  `tools/bench/src/commands/ceiling.rs::run_fit` — both arms call
+  `search::coarse_grid_then_coordinate_descent` with a closure that runs
+  `run_catching_panics` and maps `values` into an `OracleParams`, differing only in the
+  `specs` array (`[concentration_spec(), spread_bps_spec()]` vs `[spread_bps_spec()]` alone)
+  and how `values` maps to `(concentration, spread_bps)` (both fit jointly vs.
+  `concentration` held at `fixed_concentration.unwrap()`). Flagged in round-2 review of this
+  issue. Deferred rather than fixed in this PR: the two arms differ in exactly the two
+  places you'd need a generic callback for (the spec array's arity and the
+  values-to-params mapping), so collapsing them would trade a readable two-branch match for
+  a closure-of-a-closure that is not obviously clearer — worth a second look once the
+  follow-up issue (the fixed-lag cursor rung) adds a third rung and a third arm, if that
+  third arm turns out to fit the same shape.
+- **`CeilingArgs::cursor` is a hand-validated `String`, not a `ValueEnum`** (Low, WHI-1247).
+  `tools/bench/src/commands/ceiling.rs::CeilingArgs::cursor` is validated by comparing
+  against `CURSOR_MODE` in `run()`, in a file where `variant` is a real `ValueEnum` and
+  gets `--help` enumeration and rejection for free. Flagged in round-2 review of this
+  issue. Its own doc comment already gives the reason: this issue delivers exactly one
+  rung, so a `ValueEnum` today would be a one-variant enum purely for a rung that doesn't
+  exist yet — the follow-up issue this one Blocks adds the second rung, and that is the
+  natural point to convert `cursor` to a real `ValueEnum` with both values, rather than
+  guessing the second variant's name now.
 - **`bench`'s parity checks are bounded to 2-decimal-place agreement with `prop-amm run`, not
   the "1e-9 relative" / "exactly" the WHI-1193 acceptance criteria state** (Low, WHI-1193).
   `crates/cli/src/output.rs:31-32` only ever prints edge at 2dp — there is no higher-precision
@@ -245,6 +286,78 @@ soon — anything touching a declared high-risk path defaults to at least High),
   acceptance criteria asked for. Fix: once all three top-3 variants have opened issues, add
   a short §2.10 addendum (or a §6.2-adjacent table) listing the three slots and the issue
   that spent each.
+- **`floating`'s two required ACs — a paired-by-seed comparison against the 0-line, and a
+  staleness distribution — are unmet, with no manufactured substitute** (Low, WHI-1247).
+  WHI-1247's acceptance criteria ask for both numbers "for both `target_x` variants," but
+  `floating`'s fitted point panics on final re-evaluation (`ceilings/C-orbic-oracle/NOTES.md`
+  § `floating`, `results/2026-08-23-ceiling-floating-...md`), so no paired comparison or
+  staleness distribution exists for this variant. Flagged in round-3 spec review of this
+  issue. Deferred rather than fixed: `NOTES.md`'s own "Considered and rejected: recovering a
+  number for `floating` anyway" section already explains why manufacturing one (e.g.
+  reporting a runner-up point's number as if it were `floating`'s) would misrepresent a
+  variant WHI-1247 step 3 itself scopes as "never a result on its own" — the empty result
+  *is* the diagnostic, not a gap to fill. Logged here so the unmet AC has a tracked home
+  rather than only living in report/NOTES.md prose. Fix: none planned for this variant under
+  its current frozen parameter space; would only become moot if a future issue changes
+  `floating`'s own scope (e.g. bounding the oracle's quote by the reserve, which WHI-1247's
+  orchestrator direction — see the panic characterization in `NOTES.md` § `floating` — treats
+  as a structural finding to report, not a defect to patch around).
+- **Step 3(b)'s "expect `concentration` to run to its upper bound and the axis to be
+  degenerate" prediction was never tested** (Low, WHI-1247). WHI-1247 step 10 freezes
+  `concentration` for variant (b) ("re-fit spread only"), so `floating`'s search never
+  varies `concentration` at all — it stays pinned at `anchored`'s own fitted 2.33 throughout
+  variant (b)'s run, and the prediction about where an unconstrained `concentration` axis
+  would land is untestable under that budget. Flagged in round-3 spec review of this issue;
+  neither `NOTES.md` nor the committed reports previously noted this tension between step
+  3(b)'s prediction and step 10's freeze. `ceilings/C-orbic-oracle/NOTES.md` § `floating` now
+  states this explicitly. Fix: none planned — re-opening `concentration` as a free variable
+  for variant (b) would mean re-fitting *two* parameters jointly for a variant already scoped
+  as diagnostic-only, spending search budget WHI-1247's own step 10 chose not to spend here;
+  worth revisiting only if a future issue specifically wants the degenerate-axis claim tested
+  rather than just noted as untested.
+- **`ceiling --fit`'s reference-path compile fails when run from inside
+  `.claude/worktrees/<name>`** (Low, WHI-1247). `tools/bench/src/compile.rs::build_and_load`
+  shells out to `cargo run -p prop-amm -- build`, which drives `crates/cli/src/commands/
+  compile.rs`'s `ensure_build_dir` — an isolated build package with no `[workspace]` table
+  of its own. When the working tree it runs from is itself nested inside another git
+  worktree of the same repo (exactly this repo's own mandated `.claude/worktrees/<name>`
+  layout for issue work), cargo's ancestor search resolves the *primary clone's* workspace
+  instead of the isolated package's manifest and hard-errors with `current package believes
+  it's in a workspace when it's not` — documented in `tools/bench/src/compile.rs`'s own test
+  doc comment. `tools/bench/src/fast_compile.rs` hit the identical error for its own fast
+  build path and was fixed under WHI-1205 by giving its generated `Cargo.toml` an empty
+  `[workspace]` table; that fix was never extended to `ensure_build_dir`, because that
+  function lives in `crates/cli`, upstream-owned code this repo edits only through an
+  upstream sync (`AGENTS.md`). Both `ceiling --fit` runs behind this issue's committed
+  numbers were run from a detached scratch worktree instead (`ceilings/C-orbic-oracle/
+  NOTES.md` § Fitted point now records this as a reproducibility caveat). Fix: none planned
+  in this PR — `crates/cli` is out of scope for WHI-1247 and any fix belongs to the upstream
+  sync lane, not a feature issue; would need its own ticket proposing the same empty-
+  `[workspace]`-table fix for the reference compile path.
+- **The `floating` panic's committed evidence is a placeholder; the string-payload version
+  of the same site is only attested at an earlier, different commit** (Low, WHI-1247).
+  `831284c`'s committed floating report and `ceilings/C-orbic-oracle/NOTES.md` § `floating`
+  record `panicked with a non-string payload (at crates/sim/src/curve_checks.rs:23:9)` for
+  the fitted point's final-re-evaluation panic — this lane's own `panic_message` downcast
+  (`tools/bench/src/commands/ceiling.rs`) only recognizes `&str`/`String` payloads and
+  failed on whatever this one actually is. A separate, uncommitted run of the identical
+  command at this branch's first commit (`1992c09`, before `49509a3` added the
+  catch-and-report path) hit the same panic site with no catching harness in front of it,
+  so Rust's default panic hook printed the real message verbatim: `submission shape
+  violation during arbitrage sell search: monotonicity violated: input 0.686681 -> output
+  51.183366, input 0.740636 -> output 0.000000`. `crates/sim/src/curve_checks.rs` is
+  byte-identical between `1992c09` and `831284c`, and `tools/bench/src/oracle.rs`'s
+  `oracle_swap` diff between them (round-3 review, standards finding #4) only reorders the
+  `side`-match arms without changing the `price`/`k`/`out` formulas, so this string is
+  good-faith evidence of the same mechanism, cited in `NOTES.md` with that caveat — but it
+  was never re-derived at `831284c` itself, and no run at `831284c` has confirmed this is
+  the bit-identical violation rather than a different invalid point from the same search
+  space. Fix: none planned in this PR — the panic-catching harness's non-string-payload
+  case would need to actually be identified (why is this payload not a plain `&str`/
+  `String`?) and either widened or bypassed to recover the real message at the current
+  commit, which is a harness change orthogonal to the ceiling lane's own scope; would need
+  its own ticket if a future issue wants the exact current-commit message rather than the
+  attributed-earlier-commit citation this PR settles for.
 
 ---
 
