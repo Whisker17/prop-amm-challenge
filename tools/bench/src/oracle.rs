@@ -249,6 +249,52 @@ thread_local! {
 ///    step. This is a genuine, if narrow, gap in the "monotone match-next-probe" design; the
 ///    per-trade and terminal hardening checks below exist in part to surface exactly this
 ///    kind of stall rather than let it pass silently.
+/// 3. **Measured, traced, and load-bearing for this issue's own conclusion (not narrow):**
+///    floor-clamping makes the "match against `FP_TARGETS[next]`" design non-injective, and
+///    the real arbitrageur's own search *routinely* re-probes the floor value it clamps to
+///    regardless of which step is actually in progress — so a step whose own fingerprint
+///    target happens to floor-clamp becomes a near-guaranteed false-match trap for every
+///    other nearby step's own routine floor probe, not a rare coincidence. Traced end to end
+///    on seed `2_000_011` (`validation` segment, `concentration=94.33, spread_bps=102.0`,
+///    variant (a), `n_steps=10_000`): step 3201's own sell-side search issued a probe of
+///    exactly `f64_to_nano(0.001) = 1_000_000` (`FP_MIN_INPUT`) at
+///    `oracle.rs`-call-index 121973, 26 calls after step 3201's own genuine buy-side match —
+///    this is `arbitrageur.rs::golden_section_max`'s own first internal evaluation,
+///    `objective(left)` where `left == lo`, and `lo` is very often handed back unchanged
+///    from `bracket_maximum`'s early-return paths (`if mid_value <= 0.0 { return (lo, mid);
+///    }`, `if hi_value <= mid_value || hi >= max_input { return (lo, hi); }` — both return
+///    before the `for` loop's own first `lo = mid;` reassignment), so `lo == min_input`, the
+///    fixed floor constant (`min_sell_input_x(fair_price) == FP_MIN_INPUT == 0.001` whenever
+///    `fair_price > MIN_ARB_NOTIONAL_Y / MIN_INPUT == 10`, true for essentially this whole
+///    run — `fair_price[3202] == 116.58`). That probe happened to equal step 3202's *own*
+///    fingerprint `sell_target`, which had independently floor-clamped to the same constant
+///    (its own `start_y ~= 0.1118` implies `start_x = start_y/fair_price ~= 0.00096 <
+///    FP_MIN_INPUT`) — two of the 10,000 steps in this one simulation floor-clamped their
+///    sell target to this exact value, confirmed by a direct count over `FP_TARGETS`. The
+///    cursor advanced from 3201 to 3202 one call early, and the per-trade hardening check
+///    correctly caught the resulting mismatch (`3202` vs. the executed trade's own `3201`)
+///    at the very next `after_swap`. [`SEEN_SIDE1_SINCE_ADVANCE`]'s own doc comment already
+///    named this exact residual case ("within a step's own sell-side search evaluating a
+///    value that happens to equal the next step's own sell probe") as unprotected — measurement
+///    shows it is the *dominant* failure mode, not a residual one: a ~50%+ per-seed
+///    hardening-check trip rate was measured on `validation`, roughly nine orders of
+///    magnitude above this design's own derived expectation (~1e-10 per comparison from
+///    treating a match as a random continuous-value collision). The buy side has the exact
+///    same structural exposure (`min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y == 0.01`,
+///    unconditionally, at every step, for the identical reason). Because a floor-degenerate
+///    probe is deterministic given the RNG stream (not a flaky, re-runnable artifact), and
+///    because which seeds trip is correlated with the RNG's own low-draw episodes rather
+///    than independent of the outcome being measured, averaging any paired statistic over
+///    only the seeds that happened not to trip is a selection-biased estimate, not a smaller-
+///    n version of the same estimate — this repo's decision (`ceilings/C-orbic-oracle/NOTES.md`
+///    § WHI-1248) is therefore to close the `L=1`/`L=0` fingerprint rungs as a documented
+///    negative/method-level result rather than report such a number. The mechanism this
+///    replay reconstructs is bit-exact and independently verified against
+///    `arbitrageur.rs:53-58`'s clamps; what is unsound is the *matching design itself*
+///    ("a probe hitting `FP_TARGETS[next]` uniquely identifies arrival at step `next`") once
+///    floor-clamping is in play, because the search algorithm's own routine boundary
+///    evaluation and a step's own genuine draw are, at the interface this replay observes,
+///    indistinguishable events carrying the identical value.
 fn build_fingerprint_targets(cfg: &SimulationConfig, path: &[f64]) -> Vec<(u64, u64)> {
     let sigma = cfg.retail_size_sigma.max(0.01);
     let mu_ln = cfg.retail_mean_size.max(0.01).ln() - 0.5 * sigma * sigma;

@@ -455,6 +455,19 @@ fn run_catching_panics(
 /// single seed survived (nothing to average); otherwise `Valid` over whatever did survive,
 /// exactly mirroring how the final report's own number is computed so a search that
 /// prefers one point over another is optimizing the same quantity that gets reported.
+///
+/// **Post-measurement caveat (WHI-1248, see `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248
+/// for the full write-up):** the mean this function computes over "whatever survived" is a
+/// selection-biased estimate, not merely a smaller-`n` one — `tools/bench/src/oracle.rs`'s
+/// `build_fingerprint_targets` doc comment (limitation 3) traces the mechanism: a tripped
+/// seed is a deterministic function of that seed's own RNG stream (not a flaky artifact),
+/// and which seeds trip is correlated with the RNG's own floor-clamp-prone draws, not
+/// independent of anything this function measures. This function still exists — `--fit`
+/// needs *some* scalar per candidate point to do coordinate descent at all, and the
+/// alternative (treating every point as `Invalid`) makes the search a no-op — but no number
+/// this function (or its caller) produces is committed as a headline `L=1`/`L=0` result;
+/// this repo's decision is to close both fingerprint rungs as a documented negative/
+/// method-level result instead (`ceilings/C-orbic-oracle/NOTES.md` § WHI-1248).
 fn evaluate_fingerprint_point(
     params: OracleParams,
     configs: &[SimulationConfig],
@@ -1158,6 +1171,22 @@ fn classify_fingerprint_panic(outcome: &PanicOutcome) -> &'static str {
 /// surviving set the caller pairs against the reference batch — either way, every tripped
 /// seed's own fate is named in the returned `Vec<TrippedSeedOutcome>`, never silently
 /// absorbed into a smaller `n` with no trace.
+///
+/// **Post-measurement caveat (WHI-1248) — read before reporting any number this produces:**
+/// this function's own "never silently dropped" per-seed accounting is correct and
+/// verified (every tripped seed is individually named, classified, and either recovered or
+/// reported with its own message) — that part of the design works exactly as intended and
+/// is real, valuable infrastructure. What it does **not** fix is the deeper problem: the
+/// surviving-seed set this function hands back to its caller for pairing is not a random
+/// subsample. `tools/bench/src/oracle.rs::build_fingerprint_targets`'s doc comment
+/// (limitation 3) traces why — floor-clamping makes a tripped seed a deterministic,
+/// RNG-stream-correlated event, not an independent one, so any paired mean/CI computed over
+/// only the surviving seeds is selection-biased, regardless of how carefully the pairing
+/// itself is index-aligned (`reorder_oks_to_configs_order`/`filter_batch_to_seeds` below do
+/// that part correctly). See `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248 for the measured
+/// trip rate, the traced example, and this repo's resulting decision to close the
+/// fingerprint-mode `L=1`/`L=0` rungs as a documented negative result rather than report a
+/// number computed this way.
 fn run_fingerprint_final_eval(
     params: OracleParams,
     configs: &[SimulationConfig],

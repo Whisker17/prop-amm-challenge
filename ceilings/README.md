@@ -36,7 +36,7 @@ own per-entry contract, minus `lib.rs`).
 
 | Id | Name | What it measures |
 | --- | --- | --- |
-| C-orbic-oracle | Orbic Oracle Re-anchor | A concentrated, spread-bearing Orbic-family curve quoting off a trade-triggered replay of the GBM fair-price path, vs. `001-cpmm-fee` (the 0-line) — `C-orbic-oracle/NOTES.md` |
+| C-orbic-oracle | Orbic Oracle Re-anchor | A concentrated, spread-bearing Orbic-family curve quoting off a trade-triggered replay of the GBM fair-price path, vs. `001-cpmm-fee` (the 0-line) — `C-orbic-oracle/NOTES.md`. WHI-1248 added a second, exact-step "fingerprint" cursor mode alongside the trade-triggered one, but that mode's own hardening checks caught a structural flaw in the reconstruction (floor-clamping in the arbitrageur's search makes step-matching non-injective) — its `L=1`/`L=0` rungs are closed as a documented negative result, not reported as numbers; see `NOTES.md` § WHI-1248. |
 
 ## Running
 
