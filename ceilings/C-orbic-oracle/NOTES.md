@@ -695,13 +695,22 @@ WHI-1249 entry). Below the kill-rule threshold this fix still averages over surv
 silently dropping tripped seeds (e.g. penalize instead of exclude, or score over the full
 seed set with a fixed penalty for tripped ones)"; nothing here does that. What this fix
 does do is cap *how large* that drop is allowed to be before the point is thrown out
-outright (`Invalid`, no mean reported), and disclose every drop that does happen — no
-longer silent, but still an exclusion, not a penalty-scored full-sample score. The fix
-factors this bounded-exclusion-plus-invalidate decision into a new pure function,
-`score_fingerprint_survivors(oks, tripped_count, total_seeds)`, applied identically by
-`evaluate_fingerprint_point` (the `screening`-segment search loop) and by `run`'s
-`CursorMode::Fingerprint` branch (the real final-evaluation headline decision) — see the
-kill rule below for what it does. `commands/ceiling.rs`'s new unit tests exercise both
+outright (`Invalid`, no mean reported). Disclosure is asymmetric between the two callers
+of this shared decision, and that asymmetry is deliberate, not a gap this fix missed:
+`run`'s `CursorMode::Fingerprint` branch (the real final-evaluation headline decision) does
+serially re-run every tripped seed to recover a named, classified message — that is where
+"no longer silent" actually holds, and it is what makes the per-seed tables below possible.
+`evaluate_fingerprint_point` (the `screening`-segment search loop, up to 300 candidate
+points per fit) does not: its own doc comment states it "never serially re-runs a tripped
+seed to recover its message" — paying that cost on every candidate point would be pure
+waste for numbers that are never reported — so a below-threshold candidate point's dropped
+seeds are still silent during the search itself, known only as a bare count, exactly the
+mechanism `docs/DEFERRED_ISSUES.md`'s WHI-1249 entry describes. The fix factors the shared
+bounded-exclusion-plus-invalidate decision into one pure function,
+`score_fingerprint_survivors(oks, tripped_count, total_seeds)`, applied identically by both
+callers — see the kill rule below for what it does — but "applied identically" is about the
+kill-rule threshold and the `Invalid` cutoff, not about how much identifying detail either
+caller has available to disclose. `commands/ceiling.rs`'s new unit tests exercise both
 `Invalid` branches directly against synthetic survivor/trip counts (not a real
 simulation's own trip rate, which this fix is specifically trying to lower) —
 `score_fingerprint_survivors_is_invalid_when_trip_rate_exceeds_the_kill_threshold_even_
@@ -803,20 +812,28 @@ exactly zero. (A distinct, much rarer buy-side residual — the class the buy-pr
 cannot remove by construction, since it only ever targets sell-side false-matches — shows up
 instead in the `L=0` and `observation` rows below; see the notes there.)
 
-**All 9 excluded seeds sit in the `High` sigma tier** (verified directly via
-`regime::classify_seed(&SimulationConfig::default(), seed).sigma` against `SimulationConfig
-::default()`, the same base the per-sigma-tier slices below use — not merely inferred from
-comparing tier counts across rungs). This is visible structurally without that check too:
-`L=1`'s own tier slices below are 339/349/**303** (n=991) against `L=0`'s 339/349/**311**
-(n=999, 1 tripped) — Low and Mid are identical between the two runs, so all of the
-structural difference concentrates in High. Practically, this means the exclusion is not
-scattered evenly across the sample: it draws entirely from the tier with the highest
-positive mean (see the per-sigma table below, High ≈291 vs. Low ≈67), which — if the
-excluded seeds are drawn from roughly that tier's own distribution rather than the
-implausible −6,490 figure below — would, if anything, pull the true full-sample mean
-*above* the 161.4688 survivors-only figure, not below it. This does not license reporting
-a higher number; it is disclosed here as part of what the exclusion structure actually
-looks like, not folded silently into the bias-bound paragraph that follows.
+**All 9 excluded seeds sit in the `High` sigma tier** (verified directly, seed by seed,
+via `regime::classify_seed(&SimulationConfig::default(), seed).sigma` in a throwaway
+scratch test against the same `SimulationConfig::default()` base the per-sigma-tier slices
+below use — a precise per-seed result, not an inference). The tier-count tables below are
+consistent with this but do not, on their own, prove exactly 9: `L=1`'s own tier slices are
+339/349/**303** (n=991) against `L=0`'s 339/349/**311** (n=999, 1 tripped) — Low and Mid are
+identical between the two runs, so the count delta alone bounds the structural difference to
+"8 or 9 of the 9 excluded seeds are in High" (it pins down 8 unconditionally; the 9th depends
+on which tier `L=0`'s own single excluded seed, `2000504`, itself falls in). The direct
+`classify_seed` check above resolves that remaining ambiguity to exactly 9; it is the primary
+evidence, and the tier-count delta is corroborating, not the reverse. Practically, this means
+the exclusion is not scattered evenly across the sample: it draws entirely from the tier with
+the highest positive mean (see the per-sigma table below, High ≈291 vs. Low ≈67). If — and
+only if — the 9 excluded seeds' own (unmeasured, and unmeasurable in principle, since
+exclusion is precisely why they have no reported mean) true values are drawn from
+something like that tier's own distribution rather than the implausible −6,490 figure
+below, this would, if anything, pull the true full-sample mean *above* the 161.4688
+survivors-only figure, not below it — but this is a conditional illustration, not a claim
+that the excluded seeds' true values are known or knowable from this data. This does not
+license reporting a higher number; it is disclosed here as part of what the exclusion
+structure actually looks like, not folded silently into the bias-bound paragraph that
+follows.
 
 **Bias bound on the 9 excluded seeds.** For the full-1000-seed mean to fall all the way to
 `008`'s own `observation`-segment headline of +101.60, the 9 excluded seeds would have to
@@ -946,8 +963,13 @@ Full messages (input/output pairs) are in the committed report,
 7 of the 8 are the dominant sell-side floor false-match class; seed `125` is, per its own
 report message, the same rarer buy-side residual class as `L=0`'s `2000504` above, not
 the sell-side class — the buy-probe-only fix does not and cannot remove this residual by
-construction. All 8 excluded seeds sit in the `High` sigma tier (verified via
-`regime::classify_seed`), the same concentration pattern as the `L=1`/`validation` rung.
+construction. All 8 excluded seeds sit in the `High` sigma tier — verified directly via
+the same `regime::classify_seed` scratch check as the `L=1`/`validation` rung above, the
+same concentration pattern found there. Unlike that rung, this claim has no independent
+structural cross-check available (there is no sibling `observation`-segment run at a
+different fit point to compare tier-count deltas against, the way `L=1` and `L=0` on
+`validation` cross-check each other above); it rests on the direct per-seed verification
+alone.
 
 Per-sigma slices: Low n=350 mean=71.111180 CI[51.874998, 90.347361]; Mid n=327
 mean=118.839503 CI[101.542684, 136.136321]; High n=315 mean=294.590140
@@ -975,17 +997,29 @@ consistent with "an every-block re-anchor beats a trade-triggered one, but by le
 idealized, never-front-run `L=0` case." As **context only**, `008`'s own
 `observation`-segment headline is +101.60 — the measured `L=1`/`validation` figure of
 +161.4688 is larger, but this is never reported as a computed pair: the two numbers sit on
-different segments (`validation` vs. `observation`), so this particular placement is
-qualitative, not a claim that this fix "beats `008` by 59.87." The `observation` context
-row measured above (+157.807787, §2.2 non-decision-input) is a narrower case: it is on the
-*same* segment as `008`'s own headline, so that specific pair (+157.807787 vs. +101.60) is
-a genuine same-segment comparison and, unlike the validation-based headline, would support
-a literal "beats `008` by 56.21" reading if one were wanted — it is still not computed or
-reported as a decided pair here, because `observation` is non-decision-input per §2.2 and
-because this issue's substantive question is scoped to `validation`, not because the two
-numbers aren't comparable. Whether an every-block oracle re-anchor beats what `008`
-achieves with no oracle at all — the question this issue exists to close — is answered
-**yes, on the evidence available here** (both the cross-segment `validation` reading and
-the same-segment `observation` reading agree in direction), with the caveats above
-attached to that answer, not hidden behind it. The reference allowlist for this comparison
-remains unchanged: `000-normalizer`, `001-cpmm-fee`.
+different segments (`validation` vs. `observation`), so this placement is qualitative, not
+a claim that this fix "beats `008` by 59.87."
+
+The `observation` context row measured above (+157.807787) is a narrower case in one
+respect and a weaker one in another. Narrower: it is on the *same* segment as `008`'s own
+headline, so — unlike the validation-based headline above — the two numbers are at least
+measuring the same thing. Weaker: +157.807787 is itself a survivors-only mean over n=992,
+with all 8 exclusions concentrated in the highest-mean `High` sigma tier (disclosed above),
+while `008`'s own +101.60 is that report's full-sample headline; a subtraction across those
+two would not be an apples-to-apples "beats `008` by N" figure without first restating one
+side or the other on a matching basis, which this document does not do. For that reason no
+such subtraction is computed or reported here, on top of the independent §2.2 reason that
+`observation` is non-decision-input for this issue. Both reasons hold at once; neither is
+being used to paper over the other.
+
+Whether an every-block oracle re-anchor beats what `008` achieves with no oracle at all —
+the question this issue exists to close — is answered **yes, on the evidence available
+here**, resting on the `validation`-segment reading alone (+161.468800, survivors-only,
+n=991/1000, cross-segment against `008`'s `observation` headline, kill rule did not fire).
+The `observation` context row is reported for continuity per §2.2 and happens to point the
+same direction, but it is **not** cited as a second, corroborating basis for the "yes"
+answer — doing so would use a declared non-decision-input row to help decide the very
+question §2.2 excludes it from deciding. The caveats above (survivors-only, cross-segment,
+one-sided lower bound, retail-flow-only envelope) attach to that "yes," not hidden behind
+it. The reference allowlist for this comparison remains unchanged: `000-normalizer`,
+`001-cpmm-fee`.
