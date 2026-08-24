@@ -392,16 +392,15 @@ soon — anything touching a declared high-risk path defaults to at least High),
   loop itself, still drops tripped seeds as a bare count with no per-seed identity, by
   design (re-running every candidate point's tripped seeds would be wasted cost on numbers
   that are never reported) — the mechanism this entry describes is still silent there. This
-  is **not** the fix this entry asked for: below the 1% threshold, `evaluate_fingerprint_
-  point` still scores candidate points by averaging over survivors only, exactly the
-  mechanism described above, just with a smaller (capped-at-1%) blast radius, disclosed
-  only for whichever point the search eventually settles on and gets finally evaluated
-  — not for every candidate point the search rejects along the way. "Penalize instead of
-  exclude, or score over the full
-  seed set with a fixed penalty for tripped ones" remains undone; this line item stays open
-  for that reason, tracked at the ceiling-lane level in `ceilings/C-orbic-oracle/NOTES.md`'s
-  WHI-1250 section rather than reopened as a new ticket, since no further work on it is
-  currently planned.
+  is **not** the fix this entry asked for: below the 1% threshold, `evaluate_fingerprint_point`
+  still scores candidate points by averaging over survivors only, exactly the mechanism
+  described above, just with a smaller (capped-at-1%) blast radius, disclosed only for
+  whichever point the search eventually settles on and gets finally evaluated — not for
+  every candidate point the search rejects along the way. "Penalize instead of exclude, or
+  score over the full seed set with a fixed penalty for tripped ones" remains undone; this
+  line item stays open for that reason, tracked at the ceiling-lane level in
+  `ceilings/C-orbic-oracle/NOTES.md`'s WHI-1250 section rather than reopened as a new
+  ticket, since no further work on it is currently planned.
 
 ---
 
