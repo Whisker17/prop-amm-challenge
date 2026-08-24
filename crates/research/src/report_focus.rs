@@ -20,7 +20,10 @@ use crate::json::{escape, num};
 use crate::metrics::StrategySummary;
 use crate::paired::{Attribution, PairedDelta, Univ3SanityGate};
 use crate::probe::QuoteRow;
-use crate::report::{RunMeta, CURVE_REVERTS_NOTE_ZH, PAIRING_CAVEAT_ZH, SCOPE_NOTE_ZH};
+use crate::report::{
+    provenance_json_fields, provenance_line_zh, RunMeta, CURVE_REVERTS_NOTE_ZH, PAIRING_CAVEAT_ZH,
+    SCOPE_NOTE_ZH,
+};
 
 fn fixed(value: f64) -> String {
     if value.is_finite() {
@@ -92,16 +95,7 @@ pub fn dodo_vs_flashbots(
         meta.seed_start, meta.seed_stride, meta.simulations
     );
     out.push_str("| 公式 | 两侧均为锁定 Solidity 的逐行移植，整数运算顺序 / floor / ceil / revert 分支 / 状态转换均未改动 |\n\n");
-    let _ = writeln!(
-        out,
-        "生成结果的 benchmark commit：`{}`{}\n",
-        meta.benchmark_commit(),
-        if !meta.provenance_match() {
-            "（运行时工作区有未提交改动）"
-        } else {
-            ""
-        }
-    );
+    let _ = writeln!(out, "{}\n", provenance_line_zh(meta));
 
     out.push_str("## 配对差（Flashbots − DODO）\n\n");
     out.push_str(
@@ -289,13 +283,16 @@ std_error,ci95_low,ci95_high,t_stat,paired_win_rate,significant_95\n",
 }
 
 /// `dodo-vs-flashbots.json`
-pub fn dodo_vs_flashbots_json(meta: &RunMeta, flashbots_minus_dodo: &[PairedDelta]) -> String {
+pub fn dodo_vs_flashbots_json(
+    meta: &RunMeta,
+    summaries: &[StrategySummary],
+    flashbots_minus_dodo: &[PairedDelta],
+) -> String {
     let mut out = String::new();
     let _ = write!(
         out,
-        "{{\n  \"benchmarkCommit\": \"{}\",\n  \"workingTreeDirty\": {},\n  \"simulations\": {},\n  \"steps\": {},\n  \"competitor\": \"{}\",\n",
-        escape(meta.benchmark_commit()),
-        !meta.provenance_match(),
+        "{{\n  {},\n  \"simulations\": {},\n  \"steps\": {},\n  \"competitor\": \"{}\",\n",
+        provenance_json_fields(meta, summaries),
         meta.simulations,
         meta.steps,
         meta.competitor.as_str()
@@ -359,13 +356,8 @@ pub fn vs_baselines(
 
     let _ = writeln!(
         out,
-        "生成结果的 benchmark commit：`{}`{}，模拟 {} 次 × {} 步。\n",
-        meta.benchmark_commit(),
-        if !meta.provenance_match() {
-            "（工作区不干净）"
-        } else {
-            ""
-        },
+        "{}\n\n模拟 {} 次 × {} 步。\n",
+        provenance_line_zh(meta),
         meta.simulations,
         meta.steps
     );
@@ -585,15 +577,15 @@ ci95_low,ci95_high,t_stat,paired_win_rate,significant_95\n",
 /// `versus-baselines.json`
 pub fn vs_baselines_json(
     meta: &RunMeta,
+    summaries: &[StrategySummary],
     deltas: &[PairedDelta],
     attributions: &[Attribution],
 ) -> String {
     let mut out = String::new();
     let _ = write!(
         out,
-        "{{\n  \"benchmarkCommit\": \"{}\",\n  \"workingTreeDirty\": {},\n  \"simulations\": {},\n  \"steps\": {},\n",
-        escape(meta.benchmark_commit()),
-        !meta.provenance_match(),
+        "{{\n  {},\n  \"simulations\": {},\n  \"steps\": {},\n",
+        provenance_json_fields(meta, summaries),
         meta.simulations,
         meta.steps
     );
@@ -797,9 +789,9 @@ mod tests {
         let deltas = vec![delta("netEdge", 0.5, true), delta("retailEdge", 2.0, true)];
         assert_eq!(dodo_vs_flashbots_csv(&deltas).lines().count(), 3);
         assert_eq!(vs_baselines_csv(&deltas).lines().count(), 3);
-        let json = Json::parse(&dodo_vs_flashbots_json(&meta(), &deltas)).expect("valid JSON");
+        let json = Json::parse(&dodo_vs_flashbots_json(&meta(), &[], &deltas)).expect("valid JSON");
         assert_eq!(json.get("deltas").unwrap().as_array().unwrap().len(), 2);
-        let json = Json::parse(&vs_baselines_json(&meta(), &deltas, &[])).expect("valid JSON");
+        let json = Json::parse(&vs_baselines_json(&meta(), &[], &deltas, &[])).expect("valid JSON");
         assert!(json
             .get("oracleNote")
             .unwrap()

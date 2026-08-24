@@ -260,3 +260,170 @@ fn the_manifest_order_is_stable_regardless_of_creation_order() {
         "the manifest depends on creation order"
     );
 }
+
+/// **A commit mismatch is not a dirty tree.**
+///
+/// The binary was built at A, the run happened at B, and every working tree was
+/// clean. An earlier version rendered `!provenanceMatch` as "运行时工作区有未提交
+/// 改动" / "工作区不干净", which is simply false here and sends a reader looking
+/// for uncommitted edits that do not exist. It also emitted a single
+/// `workingTreeDirty` JSON field carrying that same conflation.
+#[test]
+fn a_commit_mismatch_is_never_reported_as_a_dirty_tree() {
+    use prop_amm_research::experiment::{BatchConfig, Competitor};
+    use prop_amm_research::json::Json;
+    use prop_amm_research::metrics::StrategySummary;
+    use prop_amm_research::report::{self, RunMeta};
+    use prop_amm_research::report_focus;
+    use prop_amm_research::strategies::StrategySet;
+
+    let binary = "a".repeat(40);
+    let ran_at = "b".repeat(40);
+    let provenance = Provenance {
+        binary_commit: binary.clone(),
+        binary_dirty: false,
+        run_start: GitState {
+            commit: ran_at.clone(),
+            dirty: false,
+        },
+        run_end: GitState {
+            commit: ran_at.clone(),
+            dirty: false,
+        },
+    };
+
+    assert!(
+        !provenance.matches(),
+        "a binary older than HEAD must not be treated as a match"
+    );
+    let reasons = provenance.mismatch_reasons();
+    let joined = reasons.join("; ");
+    assert!(
+        joined.contains("the running code is not the code at HEAD"),
+        "the reason must name the commit mismatch: {joined}"
+    );
+    assert!(
+        !joined.to_lowercase().contains("dirty"),
+        "no reason may mention dirtiness when every tree was clean: {joined}"
+    );
+
+    let batch = BatchConfig {
+        simulations: 1,
+        steps: 10,
+        seed_start: 0,
+        seed_stride: 1,
+        competitor: Competitor::Normalizer,
+        workers: 1,
+    };
+    let meta =
+        RunMeta::from_batch_with_provenance(&batch, 1.0, StrategySet::Legacy, provenance.clone());
+    let summaries: Vec<StrategySummary> = Vec::new();
+
+    // ---- Markdown must not invent a dirty working tree ----
+    let line = report::provenance_line_zh(&meta);
+    for forbidden in ["运行时工作区有未提交改动", "工作区不干净", "工作区有未提交"]
+    {
+        assert!(
+            !line.contains(forbidden),
+            "the provenance line still claims a dirty tree: {forbidden}"
+        );
+    }
+    assert!(
+        line.contains("provenance 不一致"),
+        "the line must say provenance disagrees: {line}"
+    );
+    assert!(
+        line.contains("不可发布"),
+        "the line must say the result is not publishable: {line}"
+    );
+    // And it must name the binary's commit, not HEAD.
+    assert!(line.contains(&binary), "the binary commit must be shown");
+
+    // ---- every document that carries provenance ----
+    let documents = [
+        (
+            "REPORT-dodo-vs-flashbots",
+            report_focus::dodo_vs_flashbots(&meta, &summaries, &[], &[]),
+        ),
+        (
+            "REPORT-vs-baselines",
+            report_focus::vs_baselines(&meta, &summaries, &[], &[], &[], None, &[]),
+        ),
+    ];
+    for (name, markdown) in documents {
+        for forbidden in ["运行时工作区有未提交改动", "工作区不干净"] {
+            assert!(
+                !markdown.contains(forbidden),
+                "{name} still claims a dirty tree: {forbidden}"
+            );
+        }
+        assert!(
+            markdown.contains("provenance 不一致"),
+            "{name} does not report the provenance failure"
+        );
+    }
+
+    // ---- JSON must carry the six fields, and no ambiguous one ----
+    for (name, body) in [
+        (
+            "dodo-vs-flashbots.json",
+            report_focus::dodo_vs_flashbots_json(&meta, &summaries, &[]),
+        ),
+        (
+            "versus-baselines.json",
+            report_focus::vs_baselines_json(&meta, &summaries, &[], &[]),
+        ),
+    ] {
+        let json = Json::parse(&body).unwrap_or_else(|_| panic!("{name} is not valid JSON"));
+        assert!(
+            json.get("workingTreeDirty").is_none(),
+            "{name} still emits the ambiguous workingTreeDirty field"
+        );
+        for field in [
+            "binaryCommit",
+            "binaryWorkingTreeDirty",
+            "runStartCommit",
+            "runStartWorkingTreeDirty",
+            "runEndCommit",
+            "runEndWorkingTreeDirty",
+            "provenanceMatch",
+            "provenanceMismatchReasons",
+            "publishable",
+            "gates",
+        ] {
+            assert!(json.get(field).is_some(), "{name} is missing {field}");
+        }
+        assert_eq!(
+            json.get("binaryCommit").unwrap().as_str(),
+            Some(binary.as_str()),
+            "{name}: benchmark provenance must name the binary's commit"
+        );
+        assert_eq!(
+            json.get("runStartCommit").unwrap().as_str(),
+            Some(ran_at.as_str()),
+            "{name}"
+        );
+        assert_eq!(
+            json.get("provenanceMatch").unwrap().as_bool(),
+            Some(false),
+            "{name}"
+        );
+        assert_eq!(
+            json.get("publishable").unwrap().as_bool(),
+            Some(false),
+            "{name}: a provenance mismatch cannot be publishable"
+        );
+        // All three dirty flags are false, and are reported as such.
+        for field in [
+            "binaryWorkingTreeDirty",
+            "runStartWorkingTreeDirty",
+            "runEndWorkingTreeDirty",
+        ] {
+            assert_eq!(
+                json.get(field).unwrap().as_bool(),
+                Some(false),
+                "{name}: {field} must be false, the trees were clean"
+            );
+        }
+    }
+}

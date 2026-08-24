@@ -143,27 +143,6 @@ pub const UNIV3_ORDER_CAPACITY_NOTE_ZH: &str = "这些是**订单级**指标：�
 
 pub const UNIV3_RANGE_NOTE_ZH: &str = "`fairPriceOutOfRangeRate` 按**发布的公允价**逐步采样，衡量池能否在市场价上报价；`activeLiquidityRate` 按池自身 tick 采样，在 fill-or-kill 下几乎恒为 100%，信息量很低（越过边界需要恰好吃掉区间内最后一份流动性的那一单，而那一单正是会被整单拒绝的）。两者是不同的问题，不可互相替代。V3 仓位一次性铸造后**从不再平衡**。";
 
-/// `(commit, dirty)` of the benchmark repository, so a result set can be traced
-/// to the code that produced it. Falls back to `"unknown"` outside a checkout.
-pub fn git_metadata() -> (String, bool) {
-    let commit = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|commit| !commit.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    let dirty = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
-        .unwrap_or(false);
-    (commit, dirty)
-}
-
 fn distribution_json(name: &str, d: &Distribution) -> String {
     format!(
         "\"{name}\": {{\"mean\": {}, \"p5\": {}, \"p50\": {}, \"p95\": {}, \"min\": {}, \"max\": {}}}",
@@ -428,12 +407,17 @@ pub fn full_range_capacity_limited(summaries: &[StrategySummary]) -> u64 {
         .sum()
 }
 
-pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> String {
+/// The provenance fields, as JSON object members without the enclosing braces.
+///
+/// Shared by every document that carries provenance so the wording cannot drift
+/// between them. Deliberately has **no** single `workingTreeDirty` field: a
+/// commit mismatch and a dirty tree are different failures, and collapsing them
+/// into one boolean is what let a mis-stamped result set look merely untidy.
+pub fn provenance_json_fields(meta: &RunMeta, summaries: &[StrategySummary]) -> String {
     let mut out = String::new();
-    out.push_str("{\n");
     let _ = write!(
         out,
-        "  \"provenance\": {{\n    \"benchmarkCommit\": \"{}\",\n    \"benchmarkCommitIs\": \"the commit the BINARY was built from, not the repository HEAD when the report was written\",\n    \"binaryCommit\": \"{}\",\n    \"binaryWorkingTreeDirty\": {},\n    \"runStartCommit\": \"{}\",\n    \"runStartWorkingTreeDirty\": {},\n    \"runEndCommit\": \"{}\",\n    \"runEndWorkingTreeDirty\": {},\n    \"provenanceMatch\": {},\n    \"provenanceMismatchReasons\": [{}],\n    \"dodoUpstream\": {{\"repository\": \"https://github.com/DODOEX/contractV2\", \"commit\": \"{DODO_COMMIT}\"}},\n    \"flashbotsUpstream\": {{\"repository\": \"https://github.com/flashbots/priority-update-registry\", \"commit\": \"{FLASHBOTS_COMMIT}\"}},\n    \"univ2\": \"UniswapV2Library.getAmountOut with the fee numerator set to 1000/1000 (zero fee)\",\n    \"mantleReference\": {{\"repository\": \"mantle-propamm-contracts\", \"branch\": \"{MANTLE_BRANCH}\", \"commit\": \"{MANTLE_COMMIT}\", \"readOnly\": true, \"poolSha256\": \"{MANTLE_POOL_SHA256}\", \"typesSha256\": \"{MANTLE_TYPES_SHA256}\", \"designDoc\": \"{}\", \"designDocSha256\": \"{MANTLE_DESIGN_DOC_SHA256}\", \"designDocSha256ObservedLater\": \"{MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER}\", \"designDocNote\": \"the design document has changed in the read-only reference repository since it was read; every code file this port depends on still matches its pinned hash\", \"vendorDecimalMathSha256\": \"{MANTLE_VENDOR_DECIMAL_MATH_SHA256}\", \"vendorDodoMathSha256\": \"{MANTLE_VENDOR_DODO_MATH_SHA256}\", \"vendorPmmPricingSha256\": \"{MANTLE_VENDOR_PMM_PRICING_SHA256}\"}},\n    \"pairingCaveat\": \"{}\",\n    \"scopeNote\": \"{}\",\n    \"curveRevertsNote\": \"{}\"\n  }},\n",
+        "\"benchmarkCommit\": \"{}\", \"benchmarkCommitIs\": \"the commit the BINARY was built from, not the repository HEAD when the report was written\", \"binaryCommit\": \"{}\", \"binaryWorkingTreeDirty\": {}, \"runStartCommit\": \"{}\", \"runStartWorkingTreeDirty\": {}, \"runEndCommit\": \"{}\", \"runEndWorkingTreeDirty\": {}, \"provenanceMatch\": {}, \"provenanceMismatchReasons\": [{}], \"publishable\": {}, \"gates\": {{\"curveReverts\": {}, \"univ3CapacityProbeReverts\": {}, \"univ3FullRangeCapacityLimitedOrders\": {}}}",
         escape(meta.benchmark_commit()),
         escape(&meta.provenance.binary_commit),
         meta.provenance.binary_dirty,
@@ -448,6 +432,44 @@ pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> S
             .map(|reason| format!("\"{}\"", escape(reason)))
             .collect::<Vec<_>>()
             .join(", "),
+        publishable(meta, summaries),
+        total_curve_reverts(summaries),
+        total_capacity_probe_reverts(summaries),
+        full_range_capacity_limited(summaries)
+    );
+    out
+}
+
+/// The provenance line for a Markdown report.
+///
+/// States what actually failed. It must never describe a commit mismatch as an
+/// unclean working tree — with three clean trees and a binary older than HEAD,
+/// "工作区不干净" is simply false, and it points a reader at the wrong thing.
+pub fn provenance_line_zh(meta: &RunMeta) -> String {
+    let mut line = format!(
+        "生成结果的 benchmark commit（**二进制的** commit，不是写报告时的 HEAD）：`{}`",
+        meta.benchmark_commit()
+    );
+    let reasons = meta.provenance.mismatch_reasons();
+    if reasons.is_empty() {
+        line.push_str("，provenance 一致。");
+        return line;
+    }
+    line.push_str("\n\n> **provenance 不一致，本结果不可发布。** 具体原因：\n");
+    for reason in &reasons {
+        let _ = writeln!(line, "> - {reason}");
+    }
+    line.push_str("> \n> 完整字段见同目录 `summary.json` 的 `provenance` 与 `publishable`。\n");
+    line
+}
+
+pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> String {
+    let mut out = String::new();
+    out.push_str("{\n");
+    let _ = write!(
+        out,
+        "  \"provenance\": {{\n    {},\n    \"dodoUpstream\": {{\"repository\": \"https://github.com/DODOEX/contractV2\", \"commit\": \"{DODO_COMMIT}\"}},\n    \"flashbotsUpstream\": {{\"repository\": \"https://github.com/flashbots/priority-update-registry\", \"commit\": \"{FLASHBOTS_COMMIT}\"}},\n    \"univ2\": \"UniswapV2Library.getAmountOut with the fee numerator set to 1000/1000 (zero fee)\",\n    \"mantleReference\": {{\"repository\": \"mantle-propamm-contracts\", \"branch\": \"{MANTLE_BRANCH}\", \"commit\": \"{MANTLE_COMMIT}\", \"readOnly\": true, \"poolSha256\": \"{MANTLE_POOL_SHA256}\", \"typesSha256\": \"{MANTLE_TYPES_SHA256}\", \"designDoc\": \"{}\", \"designDocSha256\": \"{MANTLE_DESIGN_DOC_SHA256}\", \"designDocSha256ObservedLater\": \"{MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER}\", \"designDocNote\": \"the design document has changed in the read-only reference repository since it was read; every code file this port depends on still matches its pinned hash\", \"vendorDecimalMathSha256\": \"{MANTLE_VENDOR_DECIMAL_MATH_SHA256}\", \"vendorDodoMathSha256\": \"{MANTLE_VENDOR_DODO_MATH_SHA256}\", \"vendorPmmPricingSha256\": \"{MANTLE_VENDOR_PMM_PRICING_SHA256}\"}},\n    \"pairingCaveat\": \"{}\",\n    \"scopeNote\": \"{}\",\n    \"curveRevertsNote\": \"{}\"\n  }},\n",
+        provenance_json_fields(meta, summaries),
         escape(MANTLE_DESIGN_DOC),
         escape(PAIRING_CAVEAT_ZH),
         escape(SCOPE_NOTE_ZH),
@@ -965,16 +987,7 @@ pub fn markdown_zh(
     out.push_str("- Oracle：每步 `fair_price = price.step()` 后量化一次为 WAD，同一个 `priceWad` 发布给 DODO（`i`）与 Flashbots（`multX`，`multY = 1e18`）\n");
     let _ = writeln!(out, "- 并行 worker：{}", meta.workers);
     let _ = writeln!(out, "- 耗时：{:.1} 秒", meta.elapsed_seconds);
-    let _ = writeln!(
-        out,
-        "- 生成结果的 benchmark commit：`{}`{}\n",
-        meta.benchmark_commit(),
-        if !meta.provenance_match() {
-            "（运行时工作区有未提交改动）"
-        } else {
-            ""
-        }
-    );
+    let _ = writeln!(out, "- {}\n", provenance_line_zh(meta));
 
     out.push_str("## 算法来源（锁定 commit）\n\n");
     let _ = writeln!(
@@ -1327,7 +1340,7 @@ pub fn write_all(
         ),
         (
             "dodo-vs-flashbots.json",
-            report_focus::dodo_vs_flashbots_json(meta, flashbots_minus_dodo),
+            report_focus::dodo_vs_flashbots_json(meta, summaries, flashbots_minus_dodo),
         ),
         (
             "REPORT-vs-baselines.zh-CN.md",
@@ -1347,7 +1360,7 @@ pub fn write_all(
         ),
         (
             "versus-baselines.json",
-            report_focus::vs_baselines_json(meta, &baseline_deltas, attributions),
+            report_focus::vs_baselines_json(meta, summaries, &baseline_deltas, attributions),
         ),
         (
             "REPORT.zh-CN.md",
