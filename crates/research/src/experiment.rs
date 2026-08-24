@@ -27,6 +27,7 @@
 //! regardless of family. So all strategies see identical quotes, identical
 //! orders and identical capital.
 
+use prop_amm_executor::SwapFn;
 use prop_amm_shared::config::{HyperparameterVariance, SimulationConfig};
 use prop_amm_shared::normalizer::compute_swap as normalizer_swap;
 use prop_amm_sim::amm::BpfAmm;
@@ -115,9 +116,13 @@ pub fn seed_configs(batch: &BatchConfig) -> Vec<SimulationConfig> {
         .collect()
 }
 
-fn build_strategy_amm(strategy: &Strategy, config: &SimulationConfig) -> BpfAmm {
+fn build_strategy_amm(
+    strategy: &Strategy,
+    config: &SimulationConfig,
+    swap_fn_override: Option<SwapFn>,
+) -> BpfAmm {
     let mut amm = BpfAmm::new_native(
-        strategy.swap_fn(),
+        swap_fn_override.unwrap_or_else(|| strategy.swap_fn()),
         strategy.after_swap_fn(),
         config.initial_x,
         config.initial_y,
@@ -163,13 +168,39 @@ pub fn run_single(
     run_single_traced(strategy, competitor, config, None)
 }
 
+/// Run one strategy with its `compute_swap` replaced.
+///
+/// Exists for **mutation testing**: the residual diagnostic in [`crate::paired`]
+/// is a heuristic, so its usefulness rests on showing that a deliberately
+/// mispriced curve separates from the real one. Nothing in the normal path calls
+/// this, and no ported formula is touched — the substitute wraps the real
+/// function from outside.
+pub fn run_single_with_swap_fn(
+    strategy: &Strategy,
+    competitor: Competitor,
+    config: &SimulationConfig,
+    swap_fn: SwapFn,
+) -> RunMetrics {
+    run_single_inner(strategy, competitor, config, None, Some(swap_fn))
+}
+
 /// Run one strategy under one seed, optionally recording the published oracle
 /// prices (used by tests that assert every curve sees the same quantised price).
 pub fn run_single_traced(
     strategy: &Strategy,
     competitor: Competitor,
     config: &SimulationConfig,
+    oracle_trace: Option<&mut Vec<U256>>,
+) -> RunMetrics {
+    run_single_inner(strategy, competitor, config, oracle_trace, None)
+}
+
+fn run_single_inner(
+    strategy: &Strategy,
+    competitor: Competitor,
+    config: &SimulationConfig,
     mut oracle_trace: Option<&mut Vec<U256>>,
+    swap_fn_override: Option<SwapFn>,
 ) -> RunMetrics {
     curves::reset_revert_count();
     // The V3 adapter accumulates capacity rejections in thread-local state, the
@@ -179,7 +210,7 @@ pub fn run_single_traced(
     univ3_curve::clear_last_rejection();
     univ3_curve::set_caller(univ3_curve::Caller::Other);
 
-    let mut amm_strategy = build_strategy_amm(strategy, config);
+    let mut amm_strategy = build_strategy_amm(strategy, config, swap_fn_override);
     let mut amm_competitor = build_competitor_amm(competitor, config);
     let track_univ3 = strategy.family.is_univ3();
     let mut univ3_metrics = Univ3RunMetrics::default();
@@ -286,7 +317,14 @@ pub fn run_single_traced(
                     univ3_metrics.retail_orders_probed += 1;
                     let probe =
                         univ3_curve::probe_capacity(amm_strategy.storage(), side, input_nano);
-                    if !probe.filled {
+                    // Three outcomes, three counters. A revert is NOT a capacity
+                    // result: the pool did not decline for want of room, the
+                    // pricing maths refused to answer. Folding it into the
+                    // capacity count would invent a shortfall that was never
+                    // measured, so it is recorded on its own and gated on zero.
+                    if probe.reverted {
+                        univ3_metrics.retail_capacity_probe_revert_count += 1;
+                    } else if !probe.filled {
                         univ3_metrics.retail_full_order_capacity_limited_count += 1;
                         // Marked to Y at THIS step's fair price, while it is the
                         // live price. Nothing is re-marked at the end of the run.

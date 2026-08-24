@@ -401,44 +401,63 @@ pub fn vs_baselines(
     }
 
     if let Some(gate) = sanity {
-        out.push_str("## Sanity gate：full-range V3 − UniV2\n\n");
+        out.push_str("## Sanity check：full-range V3 vs UniV2\n\n");
         out.push_str(
             "两者都是被动、零手续费、同等期初资本，因此逐 seed 的 netEdge 差**应当很小**——\
 但**不是 0，本节也不断言它是 0**。已实测的两项真实残差：同一状态下单笔报价最大差 **1693 wei**；\
-允许各自独立演化后，400 笔内状态漂移最大 **484 wei**（见 `univ3_vs_univ2_continuous`）。\
-两者都远小于 adapter 自身的 nano 量化。\n\n",
+允许各自独立演化后，400 笔内状态漂移最大 **484 wei**（见 `univ3_vs_univ2_continuous`）。\n\n",
         );
+
+        out.push_str("### 硬性 gate（判定只由这三项决定）\n\n");
         out.push_str(
-            "**tolerance 的推导（三项相加，无任何拟合常数）**：\n\n\
-1. **量化项**：每次报价都要经 `wad_to_nano` 向下取整离开整数域，单笔成交最多相差 1 nano（`1e-9`）\
-的收到代币；edge 按公允价计价，故每笔上界 `1e-9 × max(1, price)`，共 \
-`retail_trade_count + arb_count` 笔。\n\
-2. **套利搜索项**：模拟器的 arbitrageur 只把成交量收敛到 `GOLDEN_INPUT_REL_TOL = 1e-2`（相对）。\
-一 wei 的报价差就足以让 golden-section 停在自己容差窗口内的另一点。搜索的是光滑目标，\
-最优点处梯度为零，故偏移 δ 造成 `O(δ²)` 的目标损失，量级为该笔流量的名义额：\
-`arb_notional × (1e-2)²`。\n\
-3. **路由拆分搜索项**：同理，router 的拆分比例只收敛到 `GOLDEN_ALPHA_TOL = 1e-3`，\
-故 `retail_notional × (1e-3)²`。\n\n\
-**注意第 2、3 项与曲线本身无关**——它们是模拟器搜索精度的性质。实测中量化项比残差小 2–3 个数量级，\
-套利搜索项比残差大 1–2 个数量级，因此这个上界保守约 30–130 倍。保留它是因为它是**推导**出来的、\
-且随运行规模自动伸缩；任何真正的公式回归都远大于它。\n\n",
+            "只有可以从构造本身证明的性质才进入判定：\n\n\
+* full-range 仓位覆盖整个 tick 域，**不可能**因区间容量不足而拒单；\n\
+* canonical capacity probe **不得**走到 revert 分支，否则该订单的容量根本没被测到；\n\
+* 移植的报价函数**不得**走到 revert 分支。\n\n",
+        );
+        let _ = writeln!(
+            out,
+            "| gate | 值 | 要求 |\n| --- | --- | --- |\n\
+| 判定 | **{}** | — |\n\
+| full-range 容量不足订单数 | {} | = 0 |\n\
+| capacity probe revert 数 | {} | = 0 |\n\
+| curve revert 数 | {} | = 0 |\n",
+            if gate.passed() { "PASS" } else { "FAIL" },
+            gate.full_range_capacity_limited_orders,
+            gate.capacity_probe_reverts,
+            gate.curve_reverts
+        );
+
+        out.push_str("\n### 残差诊断（**不是上界，不进入判定**）\n\n");
+        out.push_str(
+            "> **下面的 reference scale 是启发式量纲参考，不是数学上界。**\
+残差低于它**本身不证明任何东西**。三处构造假设未经证明，其中至少两处在一般情况下不成立：\n\n\
+1. `δ²` 形式假设两个搜索都停在光滑目标的**内部驻点**。实际目标既不光滑也非无约束——\
+它按 nano 向下取整，是阶梯函数；最优点还经常落在边界上（`α = 0` 或 `1`，\
+或套利量被 `MIN_INPUT` 夹住）。边界最优处一阶项不消失，误差是 `O(δ)` 而非 `O(δ²)`。\n\
+2. `arb_notional × δ²` 的系数是**断言的，不是推导的**；没有任何论证说明套利目标的曲率\
+被自身名义额界住。\n\
+3. 量化项用的是 `final_fair_price`（收盘价），**不是**交易实际发生价格的上界；\
+一条收在低位的路径会低估它。\n\n\
+此外它完全忽略误差传播：两个池一旦分岔就各自独立演化，\
+逐笔上界求和不构成对复利轨迹的上界。\n\n\
+列出它只是为了让读者不必心算运行规模，就能看出残差是 1e-2 还是 1e2。\
+诊断的**判别力**由 `tests/report_artefacts.rs` 里的 mutation 测试给出：\
+把报价刻意压低 1 bp，残差会比真实曲线高出若干数量级。\n\n",
         );
         let _ = writeln!(
             out,
             "| 项 | 值 |\n| --- | --- |\n\
-| 判定 | **{}** |\n\
 | 配对 seed 数 | {} |\n\
 | netEdge 残差 均值 | {} |\n\
 | 残差 P5 / P50 / P95 | {} / {} / {} |\n\
 | 残差 min / max | {} / {} |\n\
 | max \\|残差\\| | {:.6e} |\n\
-| 推导 tolerance（合计） | {:.6e} |\n\
+| reference scale（合计，非上界） | {:.6e} |\n\
 | ├ 量化项 | {:.6e} |\n\
 | ├ 套利搜索项 | {:.6e} |\n\
 | └ 路由拆分搜索项 | {:.6e} |\n\
-| 超出 tolerance 的 seed 数 | {} |\n\
-| full-range 容量不足订单数 | {} |\n",
-            if gate.passed() { "PASS" } else { "FAIL" },
+| 残差高于 reference scale 的 seed 数 | {} |\n",
             gate.samples,
             signed(gate.residuals.mean),
             signed(gate.residuals.p5),
@@ -447,17 +466,17 @@ pub fn vs_baselines(
             signed(gate.residuals.min),
             signed(gate.residuals.max),
             gate.max_abs_residual,
-            gate.tolerance,
-            gate.tolerance_terms.quantisation,
-            gate.tolerance_terms.arb_search,
-            gate.tolerance_terms.router_search,
-            gate.seeds_over_tolerance,
-            gate.full_range_capacity_limited_orders
+            gate.reference_scale,
+            gate.scale_terms.quantisation,
+            gate.scale_terms.arb_search,
+            gate.scale_terms.router_search,
+            gate.seeds_over_reference_scale
         );
         out.push_str(
-            "\nfull-range 仓位覆盖整个 tick 域，因此**不可能**因区间容量不足而拒单；\
-上表最后一行必须为 0，非 0 表示区间或 adapter 有问题，而不是「市场走开了」。\n\n",
+            "\n注意 reference scale 的**主项是搜索误差，不是量化误差**——\
+第 2、3 项与曲线本身无关，是模拟器搜索精度的性质。\n\n",
         );
+
         if !univ3_minus_univ2.is_empty() {
             out.push_str("逐指标配对差：\n\n");
             out.push_str("| 指标 | 均值差 | 95% CI | t | paired win rate | 判定 |\n");
@@ -478,10 +497,10 @@ pub fn vs_baselines(
             out.push('\n');
         }
         out.push_str(
-            "> 这条 sanity gate 只能声明：**在锁定的初始状态、已测试的输入域和当前 nano adapter 精度下，\
-残差不超过由量化误差推导出的上界**。它**不是**「V3 与 V2 全局逐 wei 等价」的证明——\
-两者是不同的实现，V3 的有限 tick 区间会在端点处留下结构性偏移。\
-期初状态下的逐笔报价对比见同一目录的 `quote-matrix.csv`。\n\n",
+            "> 本节只能声明：**三项硬性 gate 通过，且残差量级已如实报告**。它**不是**\
+「V3 与 V2 全局逐 wei 等价」的证明，也**不是**「残差不超过某个推导上界」的证明——\
+当前 reference scale 不具备上界资格。两者是不同的实现，V3 的有限 tick 区间会在端点处\
+留下结构性偏移。期初状态下的逐笔报价对比见同一目录的 `quote-matrix.csv`。\n\n",
         );
     }
 
@@ -728,14 +747,16 @@ mod tests {
             residuals: crate::metrics::Distribution::from_samples(&[1e-7, -2e-7, 3e-8]),
             samples: 3,
             max_abs_residual: 3e-7,
-            tolerance: 1e-5,
-            tolerance_terms: crate::paired::ToleranceTerms {
+            reference_scale: 1e-5,
+            scale_terms: crate::paired::ScaleTerms {
                 quantisation: 1e-7,
                 arb_search: 9e-6,
                 router_search: 9e-7,
             },
-            seeds_over_tolerance: 0,
+            seeds_over_reference_scale: 0,
             full_range_capacity_limited_orders: 0,
+            capacity_probe_reverts: 0,
+            curve_reverts: 0,
         };
         let markdown = vs_baselines(
             &meta(),
@@ -746,10 +767,10 @@ mod tests {
             Some(&gate),
             &[],
         );
-        assert!(markdown.contains("Sanity gate"));
+        assert!(markdown.contains("Sanity check"));
         assert!(markdown.contains("PASS"));
         // The tolerance must be shown as derived, not asserted as exact equality.
-        assert!(markdown.contains("无任何拟合常数"));
+        assert!(markdown.contains("不是数学上界"));
         assert!(!markdown.contains("期望值是 0"));
         assert!(
             !markdown.contains("全局逐 wei 等价\n"),

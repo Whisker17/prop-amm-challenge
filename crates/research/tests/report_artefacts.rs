@@ -167,18 +167,29 @@ fn the_baselines_report_carries_the_univ3_baseline() {
         "the V3 baseline row uses the wrong strategy id"
     );
     assert!(
-        markdown.contains("Sanity gate"),
-        "the sanity gate section is missing"
+        markdown.contains("Sanity check"),
+        "the sanity section is missing"
     );
-    // The gate must be stated as a derived tolerance, never as exact equality.
+    // The residual must be presented as a heuristic diagnostic, never as a
+    // bound and never as proof of equality.
     assert!(
-        markdown.contains("无任何拟合常数"),
-        "the tolerance must be shown as derived"
+        markdown.contains("不是数学上界"),
+        "the reference scale must be labelled as not a bound"
     );
     assert!(
-        !markdown.contains("期望值是 0"),
-        "the report must not claim the residual is exactly zero"
+        markdown.contains("不进入判定"),
+        "the residual must be excluded from the verdict in the text too"
     );
+    for forbidden in [
+        "期望值是 0",
+        "残差不超过由量化误差推导出的上界",
+        "由量化误差推导出的上界",
+    ] {
+        assert!(
+            !markdown.contains(forbidden),
+            "the report still claims: {forbidden}"
+        );
+    }
 
     let csv = read(scratch.path(), "versus-baselines.csv");
     assert!(
@@ -223,6 +234,7 @@ fn the_capacity_csv_separates_quote_probes_from_order_counts() {
     for column in [
         "retail_orders_probed",
         "retail_full_order_capacity_limited_count",
+        "retail_capacity_probe_revert_count",
         "retail_capacity_shortfall_notional_y_mean",
         "retail_notional_served_mean",
         "quote_capacity_reject_count",
@@ -285,9 +297,14 @@ fn the_sanity_gate_passes_on_a_short_run() {
         "a full-range position cannot run out of room"
     );
     assert_eq!(gate.samples, 4, "every seed must be paired");
+    assert_eq!(
+        gate.capacity_probe_reverts, 0,
+        "a canonical capacity probe reverted"
+    );
+    assert_eq!(gate.curve_reverts, 0, "a ported quote function reverted");
     assert!(
-        gate.tolerance > 0.0,
-        "the derived tolerance must be a real bound, not zero"
+        gate.reference_scale > 0.0,
+        "the reference scale must be a real quantity, even though it is not a bound"
     );
     assert!(
         gate.passed(),
@@ -299,14 +316,16 @@ fn the_sanity_gate_passes_on_a_short_run() {
     );
 }
 
-/// The tolerance mirrors two private constants in `prop_amm_sim`. If either
-/// changes, the derivation silently stops describing the simulation. There is no
-/// way to read a private const, so this pins the *consequence*: the search terms
-/// must dominate the quantisation term by orders of magnitude, which is only
+/// The reference scale mirrors two private constants in `prop_amm_sim`. If
+/// either changes, the scale silently stops describing the simulation. There is
+/// no way to read a private const, so this pins the *consequence*: the search
+/// terms dominate the quantisation term by orders of magnitude, which is only
 /// true while the mirrored values are right.
+///
+/// Note this says nothing about the scale being a bound. It is not one.
 #[test]
-fn the_sanity_tolerance_terms_are_ordered_as_derived() {
-    use prop_amm_research::paired::{tolerance_terms, ARB_INPUT_REL_TOL, NANO, ROUTER_ALPHA_TOL};
+fn the_reference_scale_terms_are_ordered_as_documented() {
+    use prop_amm_research::paired::{reference_scale, ARB_INPUT_REL_TOL, NANO, ROUTER_ALPHA_TOL};
 
     let batch = BatchConfig {
         simulations: 4,
@@ -319,7 +338,7 @@ fn the_sanity_tolerance_terms_are_ordered_as_derived() {
     let strategy = strategies::strategy_by_id("univ3-full-range-zero-fee").unwrap();
     let configs = experiment::seed_configs(&batch);
     let run = experiment::run_single(&strategy, Competitor::Normalizer, &configs[0]);
-    let terms = tolerance_terms(&run);
+    let terms = reference_scale(&run);
 
     assert!(terms.quantisation > 0.0 && terms.arb_search > 0.0);
     assert!(
@@ -340,4 +359,161 @@ fn the_sanity_tolerance_terms_are_ordered_as_derived() {
             < f64::EPSILON,
         "total must be the sum of the terms"
     );
+}
+
+/// Shave one basis point off every Uniswap V3 quote.
+///
+/// 1 bp is an economically meaningful mispricing and far larger than any
+/// integer-level artefact: the two implementations differ by at most 1 693 wei
+/// (1.7e-15 tokens) on a single quote, while this removes 1e-4 of the output.
+/// The real formula is untouched — this wraps it from outside.
+fn univ3_quote_shaved_one_bp(data: &[u8]) -> u64 {
+    let honest = prop_amm_research::univ3_curve::univ3_compute_swap(data);
+    honest - honest / 10_000
+}
+
+/// **The evidence that the residual diagnostic has any discriminating power.**
+///
+/// The reference scale is explicitly not an upper bound, so a residual below it
+/// proves nothing by itself. What can be shown is that the diagnostic separates
+/// a deliberately mispriced curve from the real one by orders of magnitude on
+/// the same seeds — i.e. that it is not simply insensitive to pricing.
+///
+/// Without this, "the residual was small" would be an unfalsifiable claim.
+#[test]
+fn a_mispriced_curve_moves_the_residual_by_orders_of_magnitude() {
+    let batch = BatchConfig {
+        simulations: 6,
+        steps: 500,
+        seed_start: 0,
+        seed_stride: 1,
+        competitor: Competitor::Normalizer,
+        workers: 1,
+    };
+    let configs = experiment::seed_configs(&batch);
+    let v3 = strategies::strategy_by_id("univ3-full-range-zero-fee").unwrap();
+    let v2 = strategies::strategy_by_id("univ2-zero-fee").unwrap();
+
+    let mut honest_max = 0.0_f64;
+    let mut shaved_max = 0.0_f64;
+    let mut scale_max = 0.0_f64;
+    for config in &configs {
+        let baseline = experiment::run_single(&v2, Competitor::Normalizer, config);
+        let honest = experiment::run_single(&v3, Competitor::Normalizer, config);
+        let shaved = experiment::run_single_with_swap_fn(
+            &v3,
+            Competitor::Normalizer,
+            config,
+            univ3_quote_shaved_one_bp,
+        );
+        honest_max = honest_max.max((honest.net_edge - baseline.net_edge).abs());
+        shaved_max = shaved_max.max((shaved.net_edge - baseline.net_edge).abs());
+        scale_max = scale_max.max(paired::reference_scale(&honest).total());
+    }
+
+    assert!(
+        honest_max > 0.0 && shaved_max > 0.0,
+        "both residuals should be non-zero; got honest {honest_max}, shaved {shaved_max}"
+    );
+    assert!(
+        shaved_max > honest_max * 100.0,
+        "a 1 bp mispricing moved the residual only from {honest_max:e} to {shaved_max:e}; \
+         the diagnostic is too insensitive to be worth reporting"
+    );
+    assert!(
+        shaved_max > scale_max,
+        "a 1 bp mispricing ({shaved_max:e}) stayed below the reference scale \
+         ({scale_max:e}), so the scale cannot separate a mispriced curve at all"
+    );
+    assert!(
+        honest_max < scale_max,
+        "the honest residual ({honest_max:e}) exceeded the reference scale \
+         ({scale_max:e}); the scale no longer describes normal behaviour"
+    );
+}
+
+/// A reverted capacity probe is not a capacity result and must not be counted
+/// as one. The full-range arm must never revert at all.
+#[test]
+fn a_reverted_capacity_probe_is_counted_separately_and_gated_on_zero() {
+    let batch = BatchConfig {
+        simulations: 4,
+        steps: 400,
+        seed_start: 0,
+        seed_stride: 1,
+        competitor: Competitor::Normalizer,
+        workers: 1,
+    };
+    let configs = experiment::seed_configs(&batch);
+
+    for id in [
+        "univ3-full-range-zero-fee",
+        "univ3-conc-c100",
+        "univ3-conc-c1000",
+    ] {
+        let strategy = strategies::strategy_by_id(id).unwrap();
+        for config in &configs {
+            let v3 = experiment::run_single(&strategy, Competitor::Normalizer, config)
+                .univ3
+                .unwrap();
+            assert_eq!(
+                v3.retail_capacity_probe_revert_count, 0,
+                "{id} seed {}: a canonical capacity probe reverted, so the capacity \
+                 figures for that order were never measured",
+                config.seed
+            );
+            // filled + capacity-limited + reverted must account for every probe.
+            assert!(
+                v3.retail_full_order_capacity_limited_count + v3.retail_capacity_probe_revert_count
+                    <= v3.retail_orders_probed,
+                "{id}: outcome counts exceed the number of probes"
+            );
+        }
+    }
+}
+
+/// The gate's verdict must not depend on the residual, which is a heuristic.
+/// Only the three provable properties may decide it.
+#[test]
+fn the_gate_verdict_ignores_the_residual() {
+    use prop_amm_research::metrics::Distribution;
+    use prop_amm_research::paired::{ScaleTerms, Univ3SanityGate};
+
+    let terms = ScaleTerms {
+        quantisation: 1e-7,
+        arb_search: 1e-3,
+        router_search: 1e-5,
+    };
+    // An absurd residual, far above the reference scale, with every hard gate
+    // satisfied: the verdict must still be PASS.
+    let wild = Univ3SanityGate {
+        residuals: Distribution::from_samples(&[1e6, -1e6]),
+        samples: 2,
+        max_abs_residual: 1e6,
+        reference_scale: terms.total(),
+        scale_terms: terms,
+        seeds_over_reference_scale: 2,
+        full_range_capacity_limited_orders: 0,
+        capacity_probe_reverts: 0,
+        curve_reverts: 0,
+    };
+    assert!(
+        wild.passed(),
+        "the residual must not enter the verdict; it is a diagnostic"
+    );
+
+    // A single probe revert, with a perfect residual: the verdict must be FAIL.
+    let broken = Univ3SanityGate {
+        residuals: Distribution::from_samples(&[0.0, 0.0]),
+        samples: 2,
+        max_abs_residual: 0.0,
+        reference_scale: terms.total(),
+        scale_terms: terms,
+        seeds_over_reference_scale: 0,
+        full_range_capacity_limited_orders: 0,
+        capacity_probe_reverts: 1,
+        curve_reverts: 0,
+    };
+    assert!(!broken.passed(), "a probe revert must fail the gate");
+    assert!(broken.summary_line().contains("FAIL"));
 }

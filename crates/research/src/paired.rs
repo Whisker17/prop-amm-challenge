@@ -353,11 +353,11 @@ pub fn univ3_full_range_minus_univ2(results: &[(Strategy, Vec<RunMetrics>)]) -> 
         .collect()
 }
 
-/// The full-range V3 sanity gate: residuals against UniV2, with a derived bound.
+/// The full-range V3 sanity check: hard gates plus a residual diagnostic.
 ///
 /// Both arms are passive, zero-fee, and hold the same opening capital, so their
-/// per-seed edges should agree — but **not exactly**, and this deliberately does
-/// not assert that they do. Two real sources of residual are already measured:
+/// per-seed edges should agree — but **not exactly**, and nothing here asserts
+/// that they do. Two real sources of residual are already measured:
 ///
 /// * from the *same* state, the two formulas differ by up to **1 693 wei** on a
 ///   single quote (`univ3_vs_univ2_continuous`), because V3 derives the output
@@ -365,12 +365,25 @@ pub fn univ3_full_range_minus_univ2(results: &[(Strategy, Vec<RunMetrics>)]) -> 
 /// * once the two are allowed to run independently, their states drift by up to
 ///   **484 wei** over 400 swaps in the same test.
 ///
-/// Both are far below the adapter's own quantisation, which is the term that
-/// actually dominates: every quote leaves the integer domain through a floor to
-/// nano (`1e-9`), so a single fill can differ by up to one nano of the received
-/// token. Marked at the fair price that is `1e-9 · max(1, price)` per trade, and
-/// a run does `retail_trade_count + arb_count` trades. [`derived_tolerance`]
-/// is exactly that product — no fitted constant.
+/// # What this proves and what it does not
+///
+/// [`Self::passed`] is decided **only** by properties that are actually
+/// provable from the construction:
+///
+/// * a full-range position spans the entire tick domain, so it cannot be
+///   capacity-limited — a non-zero count means the range or the adapter is
+///   wrong, not that the market moved;
+/// * a canonical capacity probe must never hit a revert branch, or the capacity
+///   figures for that order were never measured at all.
+///
+/// The residual is **not** part of the verdict. It is reported as a
+/// distribution against [`reference_scale`], which is a heuristic with the right
+/// units and scaling behaviour, **not an upper bound** — see that function for
+/// the three specific reasons it is not one. A residual below the reference
+/// scale is evidence of nothing on its own; what gives the diagnostic power is
+/// `a_mispriced_curve_moves_the_residual_by_orders_of_magnitude` in
+/// `tests/report_artefacts.rs`, which shows a 1 bp pricing error separating from
+/// the real curve by several orders of magnitude on the same seeds.
 #[derive(Debug, Clone)]
 pub struct Univ3SanityGate {
     /// Per-seed `V3 − V2` net-edge residuals, aligned by seed.
@@ -378,45 +391,49 @@ pub struct Univ3SanityGate {
     pub samples: usize,
     /// Largest `|residual|` seen.
     pub max_abs_residual: f64,
-    /// Largest tolerance derived across the seeds.
-    pub tolerance: f64,
-    /// That tolerance broken into its terms, for the seed that produced it.
-    pub tolerance_terms: ToleranceTerms,
-    /// Seeds whose `|residual|` exceeded their own derived tolerance.
-    pub seeds_over_tolerance: usize,
-    /// Capacity rejections recorded by the full-range arm. Must be zero: a
-    /// full-range position spans the whole tick domain, so nothing can be
-    /// refused for want of room, and a non-zero value means the range or the
-    /// adapter is wrong rather than that the market moved.
+    /// Largest reference scale across the seeds. **Not a bound.**
+    pub reference_scale: f64,
+    /// That scale broken into its terms, for the seed that produced it.
+    pub scale_terms: ScaleTerms,
+    /// Seeds whose `|residual|` exceeded their own reference scale. Reported
+    /// because it is informative; it does **not** enter [`Self::passed`].
+    pub seeds_over_reference_scale: usize,
+    /// Capacity-limited orders recorded by the full-range arm. Must be zero.
     pub full_range_capacity_limited_orders: u64,
+    /// Canonical capacity probes that reverted. Must be zero.
+    pub capacity_probe_reverts: u64,
+    /// Curve calls that hit a revert branch. Must be zero.
+    pub curve_reverts: u64,
 }
 
 impl Univ3SanityGate {
-    /// Whether every seed stayed inside its derived tolerance and the
-    /// full-range arm refused nothing.
+    /// The hard gates only: nothing here depends on the residual.
     pub fn passed(&self) -> bool {
-        self.seeds_over_tolerance == 0 && self.full_range_capacity_limited_orders == 0
+        self.full_range_capacity_limited_orders == 0
+            && self.capacity_probe_reverts == 0
+            && self.curve_reverts == 0
     }
 
     pub fn summary_line(&self) -> String {
         format!(
-            "full-range V3 sanity gate: {} — max |netEdge residual vs UniV2| {:.3e} over {} seeds, \
-             derived tolerance {:.3e}, {} seed(s) over tolerance, {} capacity-limited order(s)",
+            "full-range V3 sanity: gates {} ({} capacity-limited, {} probe reverts, \
+             {} curve reverts) | DIAGNOSTIC (not a bound): max |netEdge residual vs UniV2| \
+             {:.3e} over {} seeds, reference scale {:.3e}, {} seed(s) above it",
             if self.passed() { "PASS" } else { "FAIL" },
+            self.full_range_capacity_limited_orders,
+            self.capacity_probe_reverts,
+            self.curve_reverts,
             self.max_abs_residual,
             self.samples,
-            self.tolerance,
-            self.seeds_over_tolerance,
-            self.full_range_capacity_limited_orders
+            self.reference_scale,
+            self.seeds_over_reference_scale
         )
     }
 }
 
 /// Golden-section stopping tolerance on the router's split fraction.
 ///
-/// Mirrors `GOLDEN_ALPHA_TOL` in `prop_amm_sim::router`, which is private. If
-/// that constant changes, this bound is wrong — `the_sanity_tolerance_terms_are_ordered`
-/// is the tripwire.
+/// Mirrors `GOLDEN_ALPHA_TOL` in `prop_amm_sim::router`, which is private.
 pub const ROUTER_ALPHA_TOL: f64 = 1e-3;
 
 /// Golden-section stopping tolerance on the arbitrageur's input size, relative.
@@ -426,11 +443,12 @@ pub const ARB_INPUT_REL_TOL: f64 = 1e-2;
 /// One nano, the adapter's quantisation step.
 pub const NANO: f64 = 1e-9;
 
-/// The three terms of the sanity tolerance, kept apart so the report can say
-/// which one dominates instead of quoting one opaque number.
+/// The three terms of the residual **reference scale**.
+///
+/// See [`reference_scale`] for why this is a scale and not a bound.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ToleranceTerms {
-    /// Floor-to-nano on every fill, marked at the fair price.
+pub struct ScaleTerms {
+    /// Floor-to-nano on every fill, marked at the run's closing price.
     pub quantisation: f64,
     /// The arbitrageur's size search, which stops at a relative tolerance.
     pub arb_search: f64,
@@ -439,54 +457,64 @@ pub struct ToleranceTerms {
     pub router_search: f64,
 }
 
-impl ToleranceTerms {
+impl ScaleTerms {
     pub fn total(&self) -> f64 {
         self.quantisation + self.arb_search + self.router_search
     }
 }
 
-/// Tolerance for the full-range V3 vs UniV2 residual, derived term by term.
+/// An order-of-magnitude **reference scale** for the full-range V3 vs UniV2
+/// residual. **This is a heuristic diagnostic, not a proven upper bound, and a
+/// residual below it proves nothing.**
 ///
-/// **Quantisation.** Every quote leaves the integer domain through a floor to
-/// nano, so one fill can differ by up to one nano of the received token. Marked
-/// at the fair price that is `1e-9 · max(1, price)` per trade, over
-/// `retail_trade_count + arb_count` trades.
+/// What the three terms are meant to capture:
 ///
-/// **Search.** This is the term that actually dominates, and it is not a
-/// property of either curve: the simulation's arbitrageur resolves its trade
-/// size only to [`ARB_INPUT_REL_TOL`] (1% relative) and the router resolves its
-/// split only to [`ROUTER_ALPHA_TOL`] (1e-3 absolute). A one-wei difference in a
-/// quote can therefore land the golden-section search on a different point
-/// inside its own stopping window. Both searches maximise a smooth objective, so
-/// at the optimum the gradient vanishes and a displacement `δ` costs `O(δ²)` of
-/// the objective — whose scale is the flow's notional. Hence
-/// `arb_notional · ARB_INPUT_REL_TOL²` and `retail_notional · ROUTER_ALPHA_TOL²`.
+/// * **quantisation** — every quote leaves the integer domain through a floor to
+///   nano, so one fill can differ by up to one nano of the received token, over
+///   `retail_trade_count + arb_count` trades;
+/// * **arb search** — the simulation's arbitrageur resolves its trade size only
+///   to [`ARB_INPUT_REL_TOL`], so a one-wei quote difference can land its
+///   golden-section search on a different point inside its own stopping window;
+/// * **router search** — likewise for the split fraction at [`ROUTER_ALPHA_TOL`].
 ///
-/// Measured at the time of writing over 8 seeds, the quantisation term is two to
-/// three orders of magnitude below the observed residual while the arb-search
-/// term is one to two orders above it:
+/// # Why this is not an upper bound
 ///
-/// | steps | observed max residual | quantisation | arb search |
-/// | --- | --- | --- | --- |
-/// | 300 | 5.3e-3 | 4.4e-5 | 7.1e-1 |
-/// | 1 000 | 9.0e-2 | 1.6e-4 | 2.7e0 |
-/// | 3 000 | 7.8e-2 | 4.6e-4 | 7.2e0 |
+/// Three assumptions in the construction are unproven, and at least two are
+/// known to be false in general:
 ///
-/// The bound is therefore conservative by roughly 30x-130x. It is kept anyway
-/// because it is derived rather than fitted and it scales with the run: a
-/// formula regression large enough to matter is far larger than this.
-pub fn tolerance_terms(run: &RunMetrics) -> ToleranceTerms {
+/// 1. The `δ²` form assumes each search sits at an interior stationary point of
+///    a smooth objective. The objective is neither smooth nor unconstrained: it
+///    is floored to nano, so it is a step function, and the optimum is regularly
+///    at a boundary (`α = 0` or `α = 1`, or an arbitrage size clamped by
+///    `MIN_INPUT`). At a boundary optimum the first-order term does not vanish
+///    and the error is `O(δ)`, not `O(δ²)`.
+/// 2. The coefficient on `arb_notional · δ²` is asserted, not derived. Nothing
+///    here establishes that the curvature of the arbitrage objective is bounded
+///    by its own notional.
+/// 3. The quantisation term uses `final_fair_price`, which is the price at the
+///    end of the run, not a bound over the prices at which the trades actually
+///    happened. A path that ends low understates it.
+///
+/// It also ignores error propagation entirely: the two pools evolve
+/// independently once they diverge, and a per-trade bound summed over trades is
+/// not a bound on a compounding trajectory.
+///
+/// # What it is for
+///
+/// Reporting the residual against *something* with the right units and the right
+/// scaling behaviour, so a reader can see whether a residual is 1e-2 or 1e2
+/// without having to hold the run size in their head. Correctness claims must
+/// rest on [`Univ3SanityGate::passed`], which checks only properties that are
+/// actually provable, and on the mutation test in
+/// `tests/report_artefacts.rs`, which demonstrates the diagnostic separates a
+/// deliberately mispriced curve from the real one.
+pub fn reference_scale(run: &RunMetrics) -> ScaleTerms {
     let trades = (run.retail_trade_count + run.arb_count) as f64;
-    ToleranceTerms {
+    ScaleTerms {
         quantisation: trades * NANO * run.final_fair_price.max(1.0),
         arb_search: run.arb_notional * ARB_INPUT_REL_TOL * ARB_INPUT_REL_TOL,
         router_search: run.retail_notional * ROUTER_ALPHA_TOL * ROUTER_ALPHA_TOL,
     }
-}
-
-/// [`tolerance_terms`] summed.
-pub fn derived_tolerance(run: &RunMetrics) -> f64 {
-    tolerance_terms(run).total()
 }
 
 /// Build the sanity gate. `None` when the run had no V3 full-range arm.
@@ -503,8 +531,8 @@ pub fn univ3_full_range_sanity(results: &[(Strategy, Vec<RunMetrics>)]) -> Optio
 
     let mut residuals = Vec::new();
     let mut max_abs = 0.0_f64;
-    let mut tolerance = 0.0_f64;
-    let mut terms = ToleranceTerms {
+    let mut scale = 0.0_f64;
+    let mut terms = ScaleTerms {
         quantisation: 0.0,
         arb_search: 0.0,
         router_search: 0.0,
@@ -518,14 +546,14 @@ pub fn univ3_full_range_sanity(results: &[(Strategy, Vec<RunMetrics>)]) -> Optio
         if !residual.is_finite() {
             continue;
         }
-        let seed_terms = tolerance_terms(run);
-        let seed_tolerance = seed_terms.total();
-        if residual.abs() > seed_tolerance {
+        let seed_terms = reference_scale(run);
+        let seed_scale = seed_terms.total();
+        if residual.abs() > seed_scale {
             over += 1;
         }
         max_abs = max_abs.max(residual.abs());
-        if seed_tolerance > tolerance {
-            tolerance = seed_tolerance;
+        if seed_scale > scale {
+            scale = seed_scale;
             terms = seed_terms;
         }
         residuals.push(residual);
@@ -538,14 +566,20 @@ pub fn univ3_full_range_sanity(results: &[(Strategy, Vec<RunMetrics>)]) -> Optio
         samples: residuals.len(),
         residuals: Distribution::from_samples(&residuals),
         max_abs_residual: max_abs,
-        tolerance,
-        tolerance_terms: terms,
-        seeds_over_tolerance: over,
+        reference_scale: scale,
+        scale_terms: terms,
+        seeds_over_reference_scale: over,
         full_range_capacity_limited_orders: univ3_runs
             .iter()
             .filter_map(|run| run.univ3)
             .map(|m| m.retail_full_order_capacity_limited_count)
             .sum(),
+        capacity_probe_reverts: univ3_runs
+            .iter()
+            .filter_map(|run| run.univ3)
+            .map(|m| m.retail_capacity_probe_revert_count)
+            .sum(),
+        curve_reverts: univ3_runs.iter().map(|run| run.curve_revert_count).sum(),
     })
 }
 

@@ -303,6 +303,7 @@ pub fn univ3_capacity_csv(summaries: &[StrategySummary]) -> String {
     out.push_str(
         "strategy,family,parameter,simulations,steps,\
 retail_orders_probed,retail_full_order_capacity_limited_count,\
+retail_capacity_probe_revert_count,\
 retail_capacity_limited_rate_mean,retail_capacity_shortfall_notional_y_mean,\
 retail_capacity_shortfall_notional_y_p95,retail_notional_served_mean,\
 quote_capacity_reject_count,quote_retail_reject_count,quote_arb_reject_count,\
@@ -316,7 +317,7 @@ active_liquidity_rate_mean,first_out_of_range_step_mean,seeds_that_left_range\n"
         let Some(v3) = &s.univ3 else { continue };
         let _ = writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             s.strategy_id,
             csv_field(&s.family),
             csv_field(&s.parameter),
@@ -324,6 +325,7 @@ active_liquidity_rate_mean,first_out_of_range_step_mean,seeds_that_left_range\n"
             s.steps,
             v3.total_retail_orders_probed,
             v3.total_retail_capacity_limited_orders,
+            v3.total_retail_capacity_probe_reverts,
             v3.retail_capacity_limited_rate.mean,
             v3.retail_capacity_shortfall_notional_y.mean,
             v3.retail_capacity_shortfall_notional_y.p95,
@@ -1107,17 +1109,18 @@ fn univ3_section_zh(
         "对每笔零售订单，在**路由前**的池状态上、按**订单全额**做一次 canonical probe，\
          每单一次，与搜索次数无关。缺口按**订单当步的公允价**折算成 Y。\n\n",
     );
-    out.push_str("| 策略 | 参数 | 探测订单数 | 容量不足订单数 | 占比 | 缺口 Y 均值 | 缺口 Y P95 | V3 实际服务的零售 Y |\n");
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("| 策略 | 参数 | 探测订单数 | 容量不足订单数 | probe revert 数 | 占比 | 缺口 Y 均值 | 缺口 Y P95 | V3 实际服务的零售 Y |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for s in &v3 {
         let Some(m) = &s.univ3 else { continue };
         let _ = writeln!(
             out,
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} |",
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} |",
             s.strategy_id,
             s.parameter,
             m.total_retail_orders_probed,
             m.total_retail_capacity_limited_orders,
+            m.total_retail_capacity_probe_reverts,
             pct(m.retail_capacity_limited_rate.mean),
             fixed(m.retail_capacity_shortfall_notional_y.mean),
             fixed(m.retail_capacity_shortfall_notional_y.p95),

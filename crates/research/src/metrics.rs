@@ -106,12 +106,27 @@ pub struct Univ3RunMetrics {
     /// Retail orders the pool **alone** could not have taken in full, measured
     /// once per order on the pre-route state at the full order size.
     ///
+    /// A probe has three outcomes and they are counted separately: filled,
+    /// capacity-limited (this field) and reverted
+    /// ([`Self::retail_capacity_probe_revert_count`]). A revert is **not** a
+    /// capacity result — the pool did not decline for want of room, the pricing
+    /// maths refused to produce an answer at all — so it contributes to neither
+    /// this count nor the shortfall.
+    ///
     /// This is a statement about the pool's capacity, **not** about where the
     /// flow went: the router splits on price as well as capacity, so an order
     /// counted here may still have been served in full by the pool plus the
     /// competitor, and an order not counted here may still have gone to the
     /// competitor because the competitor quoted better.
     pub retail_full_order_capacity_limited_count: u64,
+    /// Canonical probes that hit a revert branch (overflow, underflow, division
+    /// by zero, a price outside the tick domain).
+    ///
+    /// Must be zero in any result that is published. A non-zero value means the
+    /// probe could not answer the capacity question for that order, so both the
+    /// limited count and the shortfall are silently under-measured, and the
+    /// capacity figures cannot be trusted.
+    pub retail_capacity_probe_revert_count: u64,
     /// Summed shortfall of those orders — `requested - fillable` — converted to
     /// Y at **the fair price of the step the order arrived in**, never at the
     /// run's final price.
@@ -281,6 +296,9 @@ pub struct Univ3Summary {
     // order-level capacity
     pub total_retail_orders_probed: u64,
     pub total_retail_capacity_limited_orders: u64,
+    /// Must be zero in a publishable result. See
+    /// [`Univ3RunMetrics::retail_capacity_probe_revert_count`].
+    pub total_retail_capacity_probe_reverts: u64,
     pub retail_capacity_limited_rate: Distribution,
     pub retail_capacity_shortfall_notional_y: Distribution,
     pub retail_notional_served: Distribution,
@@ -329,6 +347,10 @@ impl Univ3Summary {
             total_retail_capacity_limited_orders: v3
                 .iter()
                 .map(|m| m.retail_full_order_capacity_limited_count)
+                .sum(),
+            total_retail_capacity_probe_reverts: v3
+                .iter()
+                .map(|m| m.retail_capacity_probe_revert_count)
                 .sum(),
             retail_capacity_limited_rate: Distribution::from_samples(&collect(|m| {
                 m.retail_capacity_limited_rate()
