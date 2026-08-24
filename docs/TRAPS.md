@@ -1,7 +1,7 @@
-> **Canonical home (expand half of expand–contract).** This file is the intended
-> canonical home of the trap registry. Until the follow-up governance PR lands,
-> `/orchestrate` still reads `.claude/skills/orchestrate/traps.md`. Do not add new
-> entries in this PR (WHI-1253 is copy-only).
+> **Canonical home.** This file is the trap registry. `/orchestrate` pastes it into
+> every implementer launch prompt. `.claude/skills/orchestrate/traps.md` is a
+> pointer, not the list — append entries here (a version-scoped docs PR, not a
+> governance PR).
 
 # Trap registry — append-only, repo-specific
 
