@@ -161,7 +161,7 @@ why. Two things always qualify:
 
 - a result that invalidates a later issue's design (a variant measured structurally invalid
   cannot serve as another issue's control), and
-- a trap that cost time — this propagates two ways: append it to `traps.md` (durable,
+- a trap that cost time — this propagates two ways: append it to `docs/TRAPS.md` (durable,
   read by whoever runs `/orchestrate` next), and put it directly in the *next* implementer's
   launch prompt (immediate — that prompt needs no commit at all to take effect).
 
@@ -187,7 +187,7 @@ Observed, not hypothetical:
 - **Checking liveness instead of correctness.** "Is it running?" is the easy question and
   rarely the useful one.
 - **Prescribing a fix for one failure mode that quietly reintroduces a worse one.** Trap 6
-  in `traps.md` (two-dot vs. three-dot diffs) is a case actually made this way: the first fix proposed
+  in `docs/TRAPS.md` (two-dot vs. three-dot diffs) is a case actually made this way: the first fix proposed
   for "empty diff looks like a clean pass" was itself wrong, and worse than the problem it
   replaced. Checking a proposed correction against this project's own canonical answer (here,
   `/code-review`'s three-dot form) is what catches this before it reaches an implementer —
@@ -199,9 +199,10 @@ a feature; do not close it by being authoritative.
 
 ## Trap registry — append-only, repo-specific
 
-Disclosed to [`traps.md`](traps.md) in this directory — pure on-demand reference, not
+Disclosed to `docs/TRAPS.md` — pure on-demand reference, not
 something the orchestrator's own step-by-step loop needs inline. Carry every entry from
 there into each launch prompt; cost is why they exist. Each entry is cited against the repo
 so it stays checkable; an entry that stops being true belongs in `docs/DEFERRED_ISSUES.md`'s
-own resolved section, not silently deleted from `traps.md`. Trimming it is self-declaring —
-`traps.md`'s own header states the rule; not restated here.
+own resolved section, not silently deleted from `docs/TRAPS.md`. Trimming it is self-declaring —
+`docs/TRAPS.md`'s own header states the rule; not restated here. [`traps.md`](traps.md) in this
+directory is a pointer, not the registry — do not append entries there.
