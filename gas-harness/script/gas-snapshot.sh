@@ -38,17 +38,24 @@ forge build
 
 echo
 echo "== provenance and structure guards =="
-# these MUST pass before any number is written
+# These MUST pass before any number is written, so they run first, in their own
+# invocations, and `set -e` aborts the script if either fails. Neither uses
+# `vm.deployCode`, which is why they can be filtered (see below).
 forge test --match-path 'test/VendorPins.t.sol' -vv
 forge test --match-path 'test/NullTwin.t.sol'   -vv
 
 echo
-echo "== layer C bytecode hashes =="
-forge test --match-path 'test/Bytecode.t.sol' -vv
-
-echo
-echo "== the sweep =="
-forge test --match-path 'test/GasSnapshot.t.sol' -vv
+echo "== bytecode hashes and the sweep =="
+# UNFILTERED, deliberately. A filtered `forge test` -- by --match-path OR
+# --match-contract -- narrows the artifact index `vm.getCode` resolves against
+# to the filtered compilation set. `UniswapV2Pair` and `UniswapV3Factory` are
+# reachable only through src/targets/Build*.sol, which no test imports, so under
+# any filter `deployCode("UniswapV2Pair.sol:UniswapV2Pair")` fails with
+# "no matching artifact found" even though out/ holds the artifact.
+#
+# Running the whole suite costs a second and re-runs the two guards above, which
+# is harmless: they are assertions, and they have already gated this point.
+forge test -vv
 
 echo
 echo "== stamp the benchmark commit into the JSON =="

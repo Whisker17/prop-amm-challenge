@@ -84,10 +84,22 @@ pub const MANTLE_POOL_SHA256: &str =
 /// `src/MantlePropAmmTypes.sol` — the canonical `RState` enum.
 pub const MANTLE_TYPES_SHA256: &str =
     "bee141418f90a91e3f76f291468e47ba39d7865be27fb4ff172fe308149517c8";
-/// Mantle design document.
+/// Mantle design document, as read at [`MANTLE_COMMIT`].
 pub const MANTLE_DESIGN_DOC: &str = "docs/[TD] mantle PropAmm 合约设计.md";
+/// sha256 of the document **as it was read**. The reference repository is
+/// read-only to this benchmark but not frozen, and it has since advanced past
+/// `MANTLE_COMMIT`; at the time of writing the document there hashes to
+/// [`MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER`]. The hash below is deliberately
+/// *not* updated to match, because updating it would claim the newer text had
+/// been read when it has not.
 pub const MANTLE_DESIGN_DOC_SHA256: &str =
     "c395caa6eb5c68595274bf1c1af29882c23c1228fdf7a2dda019961fb7e52b3a";
+/// What the same path hashed to on a later check. Recorded so the divergence is
+/// visible rather than discovered. Every **code** file this port depends on
+/// (`MantlePropAmmPool.sol`, `MantlePropAmmTypes.sol` and the three DODO vendor
+/// copies) still matches its pinned hash, so no measurement is affected.
+pub const MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER: &str =
+    "f3f6f4aaafd4aa4e68515e19f3cb1c1fe4fa303d95e51a9be9c8c1ec175027dd";
 /// Vendored DODO sources as read (sha256 of the Mantle vendor copies).
 pub const MANTLE_VENDOR_DECIMAL_MATH_SHA256: &str =
     "27d9d19a79982c79bd9faa5ea2c2039be319b256acc898de282179d7bf256352";
@@ -364,7 +376,7 @@ pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> S
     out.push_str("{\n");
     let _ = write!(
         out,
-        "  \"provenance\": {{\n    \"benchmarkCommit\": \"{}\",\n    \"benchmarkWorkingTreeDirty\": {},\n    \"dodoUpstream\": {{\"repository\": \"https://github.com/DODOEX/contractV2\", \"commit\": \"{DODO_COMMIT}\"}},\n    \"flashbotsUpstream\": {{\"repository\": \"https://github.com/flashbots/priority-update-registry\", \"commit\": \"{FLASHBOTS_COMMIT}\"}},\n    \"univ2\": \"UniswapV2Library.getAmountOut with the fee numerator set to 1000/1000 (zero fee)\",\n    \"mantleReference\": {{\"repository\": \"mantle-propamm-contracts\", \"branch\": \"{MANTLE_BRANCH}\", \"commit\": \"{MANTLE_COMMIT}\", \"readOnly\": true, \"poolSha256\": \"{MANTLE_POOL_SHA256}\", \"typesSha256\": \"{MANTLE_TYPES_SHA256}\", \"designDoc\": \"{}\", \"designDocSha256\": \"{MANTLE_DESIGN_DOC_SHA256}\", \"vendorDecimalMathSha256\": \"{MANTLE_VENDOR_DECIMAL_MATH_SHA256}\", \"vendorDodoMathSha256\": \"{MANTLE_VENDOR_DODO_MATH_SHA256}\", \"vendorPmmPricingSha256\": \"{MANTLE_VENDOR_PMM_PRICING_SHA256}\"}},\n    \"pairingCaveat\": \"{}\",\n    \"scopeNote\": \"{}\",\n    \"curveRevertsNote\": \"{}\"\n  }},\n",
+        "  \"provenance\": {{\n    \"benchmarkCommit\": \"{}\",\n    \"benchmarkWorkingTreeDirty\": {},\n    \"dodoUpstream\": {{\"repository\": \"https://github.com/DODOEX/contractV2\", \"commit\": \"{DODO_COMMIT}\"}},\n    \"flashbotsUpstream\": {{\"repository\": \"https://github.com/flashbots/priority-update-registry\", \"commit\": \"{FLASHBOTS_COMMIT}\"}},\n    \"univ2\": \"UniswapV2Library.getAmountOut with the fee numerator set to 1000/1000 (zero fee)\",\n    \"mantleReference\": {{\"repository\": \"mantle-propamm-contracts\", \"branch\": \"{MANTLE_BRANCH}\", \"commit\": \"{MANTLE_COMMIT}\", \"readOnly\": true, \"poolSha256\": \"{MANTLE_POOL_SHA256}\", \"typesSha256\": \"{MANTLE_TYPES_SHA256}\", \"designDoc\": \"{}\", \"designDocSha256\": \"{MANTLE_DESIGN_DOC_SHA256}\", \"designDocSha256ObservedLater\": \"{MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER}\", \"designDocNote\": \"the design document has changed in the read-only reference repository since it was read; every code file this port depends on still matches its pinned hash\", \"vendorDecimalMathSha256\": \"{MANTLE_VENDOR_DECIMAL_MATH_SHA256}\", \"vendorDodoMathSha256\": \"{MANTLE_VENDOR_DODO_MATH_SHA256}\", \"vendorPmmPricingSha256\": \"{MANTLE_VENDOR_PMM_PRICING_SHA256}\"}},\n    \"pairingCaveat\": \"{}\",\n    \"scopeNote\": \"{}\",\n    \"curveRevertsNote\": \"{}\"\n  }},\n",
         escape(&meta.benchmark_commit),
         meta.benchmark_dirty,
         escape(MANTLE_DESIGN_DOC),
