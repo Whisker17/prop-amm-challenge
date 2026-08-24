@@ -54,8 +54,10 @@ re-derive it and to stop and say so if it does not hold. Omit if there is none.}
 
 ## Base branch
 
-{{BASE}} — derived from {{SIGNALS}}. Confirm it yourself rather than trusting me:
-`git tag` and `git ls-remote --tags origin` for the bootstrap precondition, and the title
+{{BASE}} — derived from {{SIGNALS}}. The resolution rule itself is `AGENTS.md` § Git
+workflow / `docs/GIT_WORKFLOW.md` § Resolving the base branch, not restated here; treat those
+as authoritative if this paragraph ever goes stale. Confirm it yourself rather than trusting
+me: `git tag` and `git ls-remote --tags origin` for the bootstrap precondition, and the title
 prefix against the linked release. **Do NOT create `origin/release/v*`** — cutting an
 integration branch is the owner's deliberate act, never a side effect of picking up a ticket.
 
@@ -77,13 +79,13 @@ with a real one-shot dispatch (`docs/agents/runtime.md` § Degraded mode), not j
 REVIEWER and ESCALATOR are whatever `config/agent-roles.conf` currently names — read it, don't
 assume a specific model.
 
-What is genuinely specific to this repo, on top of both skills — **commit before every
-dispatch, then hand reviewers a three-dot diff, and confirm it is non-empty before
-dispatching** — see the Traps section below (this is trap 6 there); it is not restated here.
-Record the exact command you passed, per round, per axis, and confirm each reviewer actually
-saw content, not just that the dispatch exited 0. (The remaining repo-specific deltas —
-`--repo`, the post-merge checkout, the semantic-conflict check — belong to the merge sequence,
-not the review loop; see § Take it all the way below.)
+What is genuinely specific to this repo is trap 6 below (commit before every dispatch, then
+hand reviewers a three-dot diff, and confirm it is non-empty before dispatching) — read it
+there; this sentence is a pointer, not the rule. Record the exact command you passed, per
+round, per axis, and confirm each reviewer actually saw content, not just that the dispatch
+exited 0. (The remaining repo-specific deltas — `--repo`, the post-merge checkout, the
+semantic-conflict check — belong to the merge sequence, not the review loop; see § Take it
+all the way below.)
 
 ## Scope — {{ISSUE_ID}}'s own constraint
 

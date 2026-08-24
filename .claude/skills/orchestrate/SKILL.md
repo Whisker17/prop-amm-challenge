@@ -13,7 +13,8 @@ defines how review is dispatched — do not restate either here. You spawn imple
 follow `/implement`, which in turn drives `/code-review`.
 
 **The least valuable thing you can do is manage progress.** An implementer that says "still
-running" needs a sentinel, not a reply. Spend your attention on the four things below.
+running" needs a sentinel, not a reply. Spend your attention on what follows, not on
+progress narration.
 
 ## Before the first issue: three gates
 
@@ -42,6 +43,8 @@ Check the **bootstrap** clause before expecting a `release/v*` branch — with n
 tag (`git tag` *and* `git ls-remote --tags origin` both empty) the version-scoped row
 resolves to `dev`, which is a resolved value, not a fallback. Never create a release branch
 as a side effect. Governance issues (carve-out files only) carry no version and target `dev`.
+This is a compressed summary, not the rule itself — `docs/GIT_WORKFLOW.md` is authoritative
+if the two ever disagree; re-read it, don't rely on this paragraph alone.
 
 **G3 — Order the set.** Enumerate the issues, build the real dependency graph, and default
 to **serial**. Two issues are serial if either holds:
@@ -66,8 +69,8 @@ order anyway.
    placeholder — especially the trap list, which is the highest-leverage part.
 3. On each notification: **verify state yourself**, then choose exactly one of — intervene,
    set a sentinel and wait, or resume. Never all three.
-4. On a claimed completion: run the four-axis verification below. A self-report is not
-   evidence.
+4. On a claimed completion: run every check in § Verify, never accept below. A self-report
+   is not evidence.
 5. Feed forward, then next issue.
 
 Everything the next issue depends on — a measured number, an invalidated design, a new trap —
@@ -201,9 +204,10 @@ cited against the repo so it stays checkable; an entry that stops being true bel
 1. **`gh pr create` needs `--repo <owner/repo>`.** This clone (`git remote -v`) is a fork of
    `benedictbrady/prop-amm-challenge`, with `upstream` set to `no_push` — `gh` otherwise
    resolves the PR base against `upstream` and fails.
-2. **Never `cargo fmt --all`.** It ignores trailing file arguments and reformats
-   upstream-owned files (`docs/DEFERRED_ISSUES.md`'s fmt-drift entry). Use plain
-   `rustfmt <files>`.
+2. **Never `cargo fmt --all`.** A repo-wide run touches the 6 upstream files with known
+   fmt drift and makes every future upstream-sync merge conflict on formatting
+   (`docs/DEFERRED_ISSUES.md`'s fmt-drift entry, which prescribes running `cargo fmt` on
+   just the files you touched instead — never `--all`).
 3. **`cargo clippy -- -D warnings` and `cargo fmt --check` already fail on inherited upstream
    code** (`AGENTS.md`'s lint/format caveat; exact list in `docs/DEFERRED_ISSUES.md`). That is
    the baseline, not the implementer's bug.
@@ -226,6 +230,8 @@ cited against the repo so it stays checkable; an entry that stops being true bel
    empty diff it was meant to fix. Commit first (so three-dot is never comparing against an
    empty commit range) and use three-dot.
 7. **Report slots are per-stage-per-day and stage names may omit the segment.** Same-day runs
-   of one target on two segments can collide on one filename
-   (`docs/DEFERRED_ISSUES.md`, WHI-1195, resolved by WHI-1215's per-target stage naming —
-   check the current stage-naming code before assuming the collision still applies).
+   of one target on two segments can collide on one filename (`docs/DEFERRED_ISSUES.md`,
+   WHI-1195). WHI-1215 resolved this for `grid`/`l1`/`compare` only (per-target stage naming) —
+   `anchor.rs::STAGE` is still a constant and still collides (`docs/DEFERRED_ISSUES.md`'s
+   WHI-1215 follow-on note); check the current stage-naming code before assuming a given
+   command is fixed.
