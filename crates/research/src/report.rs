@@ -10,6 +10,7 @@ use crate::metrics::{Distribution, RunMetrics, StrategySummary, Univ3Summary};
 use crate::paired::Univ3SanityGate;
 use crate::paired::{self, Attribution, PairedDelta, Univ3Attribution};
 use crate::probe::QuoteRow;
+use crate::provenance::Provenance;
 use crate::report_focus;
 use crate::strategies::StrategySet;
 use crate::u256::U256;
@@ -27,10 +28,10 @@ pub struct RunMeta {
     pub initial_x: f64,
     pub initial_y: f64,
     pub elapsed_seconds: f64,
-    /// Commit of *this* repository that produced the result set.
-    pub benchmark_commit: String,
-    /// Whether the working tree had uncommitted changes at run time.
-    pub benchmark_dirty: bool,
+    /// Where this result set came from: the commit the **binary** was built
+    /// from, plus the repository state at run start and run end. See
+    /// [`crate::provenance`] for why one runtime capture is not enough.
+    pub provenance: Provenance,
     /// Which catalogue was run. Recorded because two result sets are only
     /// comparable when they contain the same strategies.
     pub strategy_set: String,
@@ -46,10 +47,19 @@ impl RunMeta {
         elapsed_seconds: f64,
         set: StrategySet,
     ) -> RunMeta {
-        let (benchmark_commit, benchmark_dirty) = git_metadata();
+        let mut provenance = Provenance::begin();
+        provenance.finish();
+        RunMeta::from_batch_with_provenance(batch, elapsed_seconds, set, provenance)
+    }
+
+    pub fn from_batch_with_provenance(
+        batch: &BatchConfig,
+        elapsed_seconds: f64,
+        set: StrategySet,
+        provenance: Provenance,
+    ) -> RunMeta {
         RunMeta {
-            benchmark_commit,
-            benchmark_dirty,
+            provenance,
             strategy_set: set.as_str().to_string(),
             simulations: batch.simulations,
             steps: batch.steps,
@@ -67,6 +77,18 @@ impl RunMeta {
             initial_y: prop_amm_shared::config::INITIAL_Y,
             elapsed_seconds,
         }
+    }
+}
+
+impl RunMeta {
+    /// The commit a result set may claim: the one that built the binary.
+    pub fn benchmark_commit(&self) -> &str {
+        self.provenance.benchmark_commit()
+    }
+
+    /// True when binary, run-start and run-end all agree and all are clean.
+    pub fn provenance_match(&self) -> bool {
+        self.provenance.matches()
     }
 }
 
@@ -373,14 +395,59 @@ full_range_vs_univ2,concentration_effect,total_vs_univ2\n",
     out
 }
 
+/// Whether the result set may be published: provenance agrees **and** every hard
+/// gate passed. A `false` here means the numbers can be looked at but must not
+/// be presented as a deliverable.
+pub fn publishable(meta: &RunMeta, summaries: &[StrategySummary]) -> bool {
+    meta.provenance_match()
+        && total_curve_reverts(summaries) == 0
+        && total_capacity_probe_reverts(summaries) == 0
+        && full_range_capacity_limited(summaries) == 0
+}
+
+pub fn total_curve_reverts(summaries: &[StrategySummary]) -> u64 {
+    summaries.iter().map(|s| s.total_curve_reverts).sum()
+}
+
+/// Canonical capacity probes that reverted, across every V3 arm.
+pub fn total_capacity_probe_reverts(summaries: &[StrategySummary]) -> u64 {
+    summaries
+        .iter()
+        .filter_map(|s| s.univ3.as_ref())
+        .map(|v3| v3.total_retail_capacity_probe_reverts)
+        .sum()
+}
+
+/// Capacity-limited orders on the full-range arm, which must be impossible.
+pub fn full_range_capacity_limited(summaries: &[StrategySummary]) -> u64 {
+    summaries
+        .iter()
+        .filter(|s| s.strategy_id == paired::UNIV3_FULL_RANGE_ID)
+        .filter_map(|s| s.univ3.as_ref())
+        .map(|v3| v3.total_retail_capacity_limited_orders)
+        .sum()
+}
+
 pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     let _ = write!(
         out,
-        "  \"provenance\": {{\n    \"benchmarkCommit\": \"{}\",\n    \"benchmarkWorkingTreeDirty\": {},\n    \"dodoUpstream\": {{\"repository\": \"https://github.com/DODOEX/contractV2\", \"commit\": \"{DODO_COMMIT}\"}},\n    \"flashbotsUpstream\": {{\"repository\": \"https://github.com/flashbots/priority-update-registry\", \"commit\": \"{FLASHBOTS_COMMIT}\"}},\n    \"univ2\": \"UniswapV2Library.getAmountOut with the fee numerator set to 1000/1000 (zero fee)\",\n    \"mantleReference\": {{\"repository\": \"mantle-propamm-contracts\", \"branch\": \"{MANTLE_BRANCH}\", \"commit\": \"{MANTLE_COMMIT}\", \"readOnly\": true, \"poolSha256\": \"{MANTLE_POOL_SHA256}\", \"typesSha256\": \"{MANTLE_TYPES_SHA256}\", \"designDoc\": \"{}\", \"designDocSha256\": \"{MANTLE_DESIGN_DOC_SHA256}\", \"designDocSha256ObservedLater\": \"{MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER}\", \"designDocNote\": \"the design document has changed in the read-only reference repository since it was read; every code file this port depends on still matches its pinned hash\", \"vendorDecimalMathSha256\": \"{MANTLE_VENDOR_DECIMAL_MATH_SHA256}\", \"vendorDodoMathSha256\": \"{MANTLE_VENDOR_DODO_MATH_SHA256}\", \"vendorPmmPricingSha256\": \"{MANTLE_VENDOR_PMM_PRICING_SHA256}\"}},\n    \"pairingCaveat\": \"{}\",\n    \"scopeNote\": \"{}\",\n    \"curveRevertsNote\": \"{}\"\n  }},\n",
-        escape(&meta.benchmark_commit),
-        meta.benchmark_dirty,
+        "  \"provenance\": {{\n    \"benchmarkCommit\": \"{}\",\n    \"benchmarkCommitIs\": \"the commit the BINARY was built from, not the repository HEAD when the report was written\",\n    \"binaryCommit\": \"{}\",\n    \"binaryWorkingTreeDirty\": {},\n    \"runStartCommit\": \"{}\",\n    \"runStartWorkingTreeDirty\": {},\n    \"runEndCommit\": \"{}\",\n    \"runEndWorkingTreeDirty\": {},\n    \"provenanceMatch\": {},\n    \"provenanceMismatchReasons\": [{}],\n    \"dodoUpstream\": {{\"repository\": \"https://github.com/DODOEX/contractV2\", \"commit\": \"{DODO_COMMIT}\"}},\n    \"flashbotsUpstream\": {{\"repository\": \"https://github.com/flashbots/priority-update-registry\", \"commit\": \"{FLASHBOTS_COMMIT}\"}},\n    \"univ2\": \"UniswapV2Library.getAmountOut with the fee numerator set to 1000/1000 (zero fee)\",\n    \"mantleReference\": {{\"repository\": \"mantle-propamm-contracts\", \"branch\": \"{MANTLE_BRANCH}\", \"commit\": \"{MANTLE_COMMIT}\", \"readOnly\": true, \"poolSha256\": \"{MANTLE_POOL_SHA256}\", \"typesSha256\": \"{MANTLE_TYPES_SHA256}\", \"designDoc\": \"{}\", \"designDocSha256\": \"{MANTLE_DESIGN_DOC_SHA256}\", \"designDocSha256ObservedLater\": \"{MANTLE_DESIGN_DOC_SHA256_OBSERVED_LATER}\", \"designDocNote\": \"the design document has changed in the read-only reference repository since it was read; every code file this port depends on still matches its pinned hash\", \"vendorDecimalMathSha256\": \"{MANTLE_VENDOR_DECIMAL_MATH_SHA256}\", \"vendorDodoMathSha256\": \"{MANTLE_VENDOR_DODO_MATH_SHA256}\", \"vendorPmmPricingSha256\": \"{MANTLE_VENDOR_PMM_PRICING_SHA256}\"}},\n    \"pairingCaveat\": \"{}\",\n    \"scopeNote\": \"{}\",\n    \"curveRevertsNote\": \"{}\"\n  }},\n",
+        escape(meta.benchmark_commit()),
+        escape(&meta.provenance.binary_commit),
+        meta.provenance.binary_dirty,
+        escape(&meta.provenance.run_start.commit),
+        meta.provenance.run_start.dirty,
+        escape(&meta.provenance.run_end.commit),
+        meta.provenance.run_end.dirty,
+        meta.provenance_match(),
+        meta.provenance
+            .mismatch_reasons()
+            .iter()
+            .map(|reason| format!("\"{}\"", escape(reason)))
+            .collect::<Vec<_>>()
+            .join(", "),
         escape(MANTLE_DESIGN_DOC),
         escape(PAIRING_CAVEAT_ZH),
         escape(SCOPE_NOTE_ZH),
@@ -388,7 +455,7 @@ pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> S
     );
     let _ = writeln!(
         out,
-        "  \"config\": {{\"simulations\": {}, \"steps\": {}, \"seedStart\": {}, \"seedStride\": {}, \"competitor\": \"{}\", \"strategySet\": \"{}\", \"workers\": {}, \"initialPrice\": {}, \"initialX\": {}, \"initialY\": {}, \"lpFeeRate\": 0, \"elapsedSeconds\": {}}},",
+        "  \"config\": {{\"simulations\": {}, \"steps\": {}, \"seedStart\": {}, \"seedStride\": {}, \"competitor\": \"{}\", \"strategySet\": \"{}\", \"workers\": {}, \"initialPrice\": {}, \"initialX\": {}, \"initialY\": {}, \"lpFeeRate\": 0, \"elapsedSeconds\": {}}},\n  \"publishable\": {},\n  \"publishableIs\": \"provenanceMatch AND every gate passed; false means the result set may be read but not published\",\n  \"gates\": {{\"curveReverts\": {}, \"univ3CapacityProbeReverts\": {}, \"univ3FullRangeCapacityLimitedOrders\": {}}},",
         meta.simulations,
         meta.steps,
         meta.seed_start,
@@ -399,7 +466,11 @@ pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> S
         num(meta.initial_price),
         num(meta.initial_x),
         num(meta.initial_y),
-        num(meta.elapsed_seconds)
+        num(meta.elapsed_seconds),
+        publishable(meta, summaries),
+        total_curve_reverts(summaries),
+        total_capacity_probe_reverts(summaries),
+        full_range_capacity_limited(summaries)
     );
     out.push_str("  \"strategies\": [\n");
     let bodies: Vec<String> = summaries
@@ -592,7 +663,7 @@ pub fn paired_json_document(
     let _ = write!(
         out,
         "  \"benchmarkCommit\": \"{}\",\n  \"competitor\": \"{}\",\n  \"simulations\": {},\n  \"steps\": {},\n",
-        escape(&meta.benchmark_commit),
+        escape(meta.benchmark_commit()),
         meta.competitor.as_str(),
         meta.simulations,
         meta.steps
@@ -897,8 +968,8 @@ pub fn markdown_zh(
     let _ = writeln!(
         out,
         "- 生成结果的 benchmark commit：`{}`{}\n",
-        meta.benchmark_commit,
-        if meta.benchmark_dirty {
+        meta.benchmark_commit(),
+        if !meta.provenance_match() {
             "（运行时工作区有未提交改动）"
         } else {
             ""
@@ -1356,8 +1427,18 @@ mod tests {
             initial_x: 100.0,
             initial_y: 10_000.0,
             elapsed_seconds: 1.25,
-            benchmark_commit: "0123456789abcdef".to_string(),
-            benchmark_dirty: false,
+            provenance: crate::provenance::Provenance {
+                binary_commit: "0".repeat(40),
+                binary_dirty: false,
+                run_start: crate::provenance::GitState {
+                    commit: "0".repeat(40),
+                    dirty: false,
+                },
+                run_end: crate::provenance::GitState {
+                    commit: "0".repeat(40),
+                    dirty: false,
+                },
+            },
             strategy_set: "legacy".to_string(),
         }
     }
@@ -1447,7 +1528,10 @@ mod tests {
         assert!(markdown.contains(MANTLE_COMMIT));
         assert!(markdown.contains(MANTLE_POOL_SHA256));
         assert!(markdown.contains(MANTLE_DESIGN_DOC_SHA256));
-        assert!(markdown.contains("0123456789abcdef"));
+        assert!(
+            markdown.contains(&"0".repeat(40)),
+            "the binary commit must appear"
+        );
     }
 
     #[test]
@@ -1521,15 +1605,49 @@ mod tests {
         let provenance = json.get("provenance").unwrap();
         assert_eq!(
             provenance.get("benchmarkCommit").unwrap().as_str(),
-            Some("0123456789abcdef")
+            Some("0".repeat(40).as_str())
         );
+        // The three captures must all be present and named for what they are.
+        for (field, expected) in [
+            ("binaryCommit", "0".repeat(40)),
+            ("runStartCommit", "0".repeat(40)),
+            ("runEndCommit", "0".repeat(40)),
+        ] {
+            assert_eq!(
+                provenance.get(field).unwrap().as_str(),
+                Some(expected.as_str()),
+                "{field}"
+            );
+        }
+        for field in [
+            "binaryWorkingTreeDirty",
+            "runStartWorkingTreeDirty",
+            "runEndWorkingTreeDirty",
+        ] {
+            assert_eq!(
+                provenance.get(field).unwrap().as_bool(),
+                Some(false),
+                "{field}"
+            );
+        }
         assert_eq!(
-            provenance
-                .get("benchmarkWorkingTreeDirty")
-                .unwrap()
-                .as_bool(),
-            Some(false)
+            provenance.get("provenanceMatch").unwrap().as_bool(),
+            Some(true)
         );
+        // benchmarkCommit must be the BINARY's commit, and say so.
+        assert!(provenance
+            .get("benchmarkCommitIs")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("BINARY"));
+        // The old single-capture field must be gone: it invited exactly the
+        // mis-stamping this replaced.
+        assert!(
+            provenance.get("benchmarkWorkingTreeDirty").is_none(),
+            "the ambiguous single dirty flag must not come back"
+        );
+        assert_eq!(json.get("publishable").unwrap().as_bool(), Some(true));
         assert_eq!(
             provenance
                 .get("mantleReference")

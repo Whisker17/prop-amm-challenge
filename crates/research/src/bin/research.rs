@@ -13,9 +13,11 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 
 use prop_amm_research::experiment::{self, BatchConfig, Competitor};
+use prop_amm_research::manifest;
 use prop_amm_research::metrics::StrategySummary;
 use prop_amm_research::paired;
 use prop_amm_research::probe;
+use prop_amm_research::provenance::Provenance;
 use prop_amm_research::report::{self, RunMeta};
 use prop_amm_research::strategies::{self, Strategy, StrategySet};
 use prop_amm_research::wad::price_to_wad;
@@ -89,6 +91,15 @@ enum Command {
         /// `--strategy-set`.
         #[arg(long)]
         strategy: Vec<String>,
+        /// Run even when the binary's commit, the repository HEAD or the
+        /// working tree disagree.
+        ///
+        /// Without this the run refuses to start, because a mismatch cannot be
+        /// repaired afterwards: the output would carry a provenance it does not
+        /// have. Results produced with this flag are marked
+        /// `publishable: false`.
+        #[arg(long)]
+        allow_provenance_mismatch: bool,
         /// Output directory for JSON / CSV / Markdown.
         #[arg(long, default_value = "research-out")]
         out: PathBuf,
@@ -152,18 +163,20 @@ fn main() -> anyhow::Result<()> {
             workers,
             strategy_set,
             strategy,
+            allow_provenance_mismatch,
             out,
-        } => bench(
+        } => bench(BenchOptions {
             simulations,
             steps,
             seed_start,
             seed_stride,
-            &mode,
+            mode,
             workers,
-            parse_strategy_set(&strategy_set)?,
-            &strategy,
+            set: parse_strategy_set(&strategy_set)?,
+            strategy_filter: strategy,
+            allow_provenance_mismatch,
             out,
-        ),
+        }),
     }
 }
 
@@ -282,18 +295,62 @@ fn quote_matrix(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn bench(
+struct BenchOptions {
     simulations: u32,
     steps: u32,
     seed_start: u64,
     seed_stride: u64,
-    mode: &str,
+    mode: String,
     workers: usize,
     set: StrategySet,
-    strategy_filter: &[String],
+    strategy_filter: Vec<String>,
+    allow_provenance_mismatch: bool,
     out: PathBuf,
-) -> anyhow::Result<()> {
+}
+
+fn bench(options: BenchOptions) -> anyhow::Result<()> {
+    let BenchOptions {
+        simulations,
+        steps,
+        seed_start,
+        seed_stride,
+        mode,
+        workers,
+        set,
+        strategy_filter,
+        allow_provenance_mismatch,
+        out,
+    } = options;
+    let mode = mode.as_str();
+    let strategy_filter = strategy_filter.as_slice();
+
+    // Provenance is captured and checked BEFORE any work. A mismatch found
+    // after a forty-minute run cannot be repaired, only re-run.
+    let mut run_provenance = Provenance::begin();
+    println!("{}", run_provenance.start_line());
+    if !run_provenance.start_mismatch_reasons().is_empty() {
+        let reasons = run_provenance
+            .start_mismatch_reasons()
+            .iter()
+            .map(|reason| format!("  - {reason}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if allow_provenance_mismatch {
+            println!(
+                "WARNING: provenance does not agree, continuing because \
+                 --allow-provenance-mismatch was given:\n{reasons}\n\
+                 This result set will be marked publishable: false."
+            );
+        } else {
+            anyhow::bail!(
+                "refusing to start: provenance does not agree.\n{reasons}\n\n\
+                 Commit or stash your changes and rebuild, so the binary, HEAD and the \
+                 working tree agree. To run anyway and accept a provisional result set, \
+                 pass --allow-provenance-mismatch."
+            );
+        }
+    }
+
     let competitor = Competitor::parse(mode)
         .ok_or_else(|| anyhow::anyhow!("unknown mode `{mode}` (expected `paired` or `solo`)"))?;
     let strategies = selected_strategies(set, strategy_filter)?;
@@ -349,7 +406,8 @@ fn bench(
     let univ3_capacity_deltas = paired::univ3_capacity_deltas(&results);
     let sanity = paired::univ3_full_range_sanity(&results);
 
-    let meta = RunMeta::from_batch_with_set(&batch, elapsed, set);
+    run_provenance.finish();
+    let meta = RunMeta::from_batch_with_provenance(&batch, elapsed, set, run_provenance);
 
     // The static probes describe the curves the numbers came from, and the
     // focused reports quote them, so they are built before `write_all`.
@@ -478,8 +536,40 @@ this is not a claim that a full on-chain swap would succeed \u{2014} pool-level 
         );
     }
     println!("finished in {elapsed:.1}s");
-    for path in written {
+    for path in &written {
         println!("wrote {}", path.display());
+    }
+
+    // Written last, over everything else, and excluded from itself.
+    let manifest_path = manifest::write(&out)?;
+    println!("wrote {}", manifest_path.display());
+
+    let publishable = report::publishable(&meta, &summaries);
+    println!(
+        "\nprovenance: binary {} | run start {} | run end {} | match: {}",
+        &meta
+            .provenance
+            .binary_commit
+            .chars()
+            .take(12)
+            .collect::<String>(),
+        meta.provenance.run_start.short(),
+        meta.provenance.run_end.short(),
+        if meta.provenance_match() { "yes" } else { "NO" }
+    );
+    for reason in meta.provenance.mismatch_reasons() {
+        println!("  - {reason}");
+    }
+    println!(
+        "publishable: {}  (provenanceMatch && curveReverts=={} && capacityProbeReverts=={} \
+         && fullRangeCapacityLimited=={})",
+        if publishable { "YES" } else { "NO" },
+        report::total_curve_reverts(&summaries),
+        report::total_capacity_probe_reverts(&summaries),
+        report::full_range_capacity_limited(&summaries)
+    );
+    if !publishable {
+        println!("  -> this result set may be READ but must not be published as a deliverable");
     }
     Ok(())
 }

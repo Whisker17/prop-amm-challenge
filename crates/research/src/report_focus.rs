@@ -95,8 +95,8 @@ pub fn dodo_vs_flashbots(
     let _ = writeln!(
         out,
         "生成结果的 benchmark commit：`{}`{}\n",
-        meta.benchmark_commit,
-        if meta.benchmark_dirty {
+        meta.benchmark_commit(),
+        if !meta.provenance_match() {
             "（运行时工作区有未提交改动）"
         } else {
             ""
@@ -294,8 +294,8 @@ pub fn dodo_vs_flashbots_json(meta: &RunMeta, flashbots_minus_dodo: &[PairedDelt
     let _ = write!(
         out,
         "{{\n  \"benchmarkCommit\": \"{}\",\n  \"workingTreeDirty\": {},\n  \"simulations\": {},\n  \"steps\": {},\n  \"competitor\": \"{}\",\n",
-        escape(&meta.benchmark_commit),
-        meta.benchmark_dirty,
+        escape(meta.benchmark_commit()),
+        !meta.provenance_match(),
         meta.simulations,
         meta.steps,
         meta.competitor.as_str()
@@ -360,8 +360,8 @@ pub fn vs_baselines(
     let _ = writeln!(
         out,
         "生成结果的 benchmark commit：`{}`{}，模拟 {} 次 × {} 步。\n",
-        meta.benchmark_commit,
-        if meta.benchmark_dirty {
+        meta.benchmark_commit(),
+        if !meta.provenance_match() {
             "（工作区不干净）"
         } else {
             ""
@@ -592,8 +592,8 @@ pub fn vs_baselines_json(
     let _ = write!(
         out,
         "{{\n  \"benchmarkCommit\": \"{}\",\n  \"workingTreeDirty\": {},\n  \"simulations\": {},\n  \"steps\": {},\n",
-        escape(&meta.benchmark_commit),
-        meta.benchmark_dirty,
+        escape(meta.benchmark_commit()),
+        !meta.provenance_match(),
         meta.simulations,
         meta.steps
     );
@@ -658,8 +658,18 @@ mod tests {
             initial_x: 100.0,
             initial_y: 10_000.0,
             elapsed_seconds: 1.0,
-            benchmark_commit: "abc123".to_string(),
-            benchmark_dirty: false,
+            provenance: crate::provenance::Provenance {
+                binary_commit: "a".repeat(40),
+                binary_dirty: false,
+                run_start: crate::provenance::GitState {
+                    commit: "a".repeat(40),
+                    dirty: false,
+                },
+                run_end: crate::provenance::GitState {
+                    commit: "a".repeat(40),
+                    dirty: false,
+                },
+            },
             strategy_set: "legacy".to_string(),
         }
     }
