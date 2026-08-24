@@ -26,8 +26,13 @@ emit() {
     echo "error: pinned source $upstream is missing" >&2
     exit 1
   fi
+  # `--label` replaces the default `path<TAB>mtime` header. Without it the
+  # header carries the file's modification time, fetch-vendor.sh rewrites that
+  # time on every run, and the patch would then differ on every run -- leaving
+  # the working tree dirty and every gas snapshot stamped `dirty: true`.
+  #
   # diff exits 1 when the files differ, which is the expected case here.
-  diff -u "$upstream" "$patched" > "$out" || true
+  diff -u --label "$upstream" --label "$patched" "$upstream" "$patched" > "$out" || true
   if [[ ! -s "$out" ]]; then
     echo "error: $patched is identical to $upstream; the patch did not take effect" >&2
     exit 1

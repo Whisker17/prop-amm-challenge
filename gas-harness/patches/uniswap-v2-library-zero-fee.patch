@@ -1,5 +1,5 @@
---- lib/vendor/univ2periphery/UniswapV2Library.sol	2026-08-24 16:41:13
-+++ src/patched/UniswapV2LibraryZeroFee.sol	2026-08-24 12:03:30
+--- lib/vendor/univ2periphery/UniswapV2Library.sol
++++ src/patched/UniswapV2LibraryZeroFee.sol
 @@ -2,9 +2,9 @@
  
  import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol';

@@ -1,5 +1,5 @@
---- lib/vendor/univ2core/contracts/UniswapV2Pair.sol	2026-08-24 16:41:13
-+++ src/patched/UniswapV2PairZeroFee.sol	2026-08-24 12:02:08
+--- lib/vendor/univ2core/contracts/UniswapV2Pair.sol
++++ src/patched/UniswapV2PairZeroFee.sol
 @@ -1,14 +1,14 @@
  pragma solidity =0.5.16;
  
