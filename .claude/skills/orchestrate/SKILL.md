@@ -203,4 +203,5 @@ Disclosed to [`traps.md`](traps.md) in this directory — pure on-demand referen
 something the orchestrator's own step-by-step loop needs inline. Carry every entry from
 there into each launch prompt; cost is why they exist. Each entry is cited against the repo
 so it stays checkable; an entry that stops being true belongs in `docs/DEFERRED_ISSUES.md`'s
-own resolved section, not silently deleted from `traps.md`.
+own resolved section, not silently deleted from `traps.md`. Trimming it is self-declaring —
+`traps.md`'s own header states the rule; not restated here.

@@ -1,9 +1,13 @@
 # Trap registry — append-only, repo-specific
 
-This registry is the **sole channel** by which traps reach an implementer —
-`implementer-prompt.md`'s launch prompt pastes it verbatim, and an entry missing here reaches
-nobody. Carry every entry into each launch prompt. Cost is why they are here. Each entry below
-is cited against the repo so it stays checkable; an entry that stops being true belongs in
+This registry is the **durable channel** by which a trap reaches every implementer after the
+first one it's handed to — `implementer-prompt.md`'s launch prompt pastes it verbatim into
+every issue's prompt. (`SKILL.md`'s "Feed forward" step already names the other, immediate
+channel: mentioning a fresh trap directly in the very next launch prompt, which takes effect
+with no commit at all but doesn't outlive that one issue.) An entry that never makes it into
+this file does not survive past whichever single issue it may have been mentioned to by hand.
+Carry every entry into each launch prompt. Cost is why they are here. Each entry below is
+cited against the repo so it stays checkable; an entry that stops being true belongs in
 `docs/DEFERRED_ISSUES.md`'s own resolved section, not silently deleted here.
 
 **A trim is self-declaring.** An entry leaves this file in one of exactly two ways: it
@@ -16,9 +20,8 @@ of a third (the *ordering* half of the generate-once lesson; only its *provenanc
 it through as entry 5) — and the implementer's own final report ("all 7 survived scrutiny")
 was accurate about the seven present and silent about what was missing. That is exactly the
 failure this rule exists to make impossible to repeat quietly. WHI-1252 restored the missing
-content (entries 8 and 9 below, plus entry 5's ordering half); its PR body carries the
-provenance for how it was recovered. A trim with no matching disclosure in its PR body is
-presumed accidental, not reviewed.
+content as entries 8 and 9 below, plus entry 5's ordering half. A trim with no disclosure of
+what left and why, stated in the PR that does it, is presumed accidental, not reviewed.
 
 1. **`gh pr create` needs `--repo <owner/repo>`.** This clone (`git remote -v`) is a fork of
    `benedictbrady/prop-amm-challenge`, with `upstream` set to `no_push` — `gh` otherwise
@@ -70,17 +73,21 @@ presumed accidental, not reviewed.
 8. **Release profile only — liveness and CPU do not prove it.** Echo the binary path
    immediately before every measurement and confirm it reads `target/release/`, not
    `target/debug/`; `ps` cannot tell the two apart — a healthy-looking, high-CPU process is
-   exactly what a debug build in the middle of a multi-minute run also looks like. WHI-1247's
-   own account, as related in WHI-1252, puts one such run at roughly 25 minutes of wall clock
-   against the ~7 a `target/release/` build takes for the same work, with `ps` pegged at 746%
-   CPU the entire time — no committed report in this repo independently reproduces those three
-   figures, so treat them as the reported cost, not a re-derived one. Either way, the
-   mechanical fix (echo the path, assert `release`) is what actually closes the trap, not any
-   CPU or liveness threshold.
+   exactly what a debug build in the middle of a multi-minute run also looks like. Every
+   strategy's own `NOTES.md` already runs its measurements as `cargo run -p prop-amm-bench
+   --release -- ...` (e.g. `strategies/004-ewma-shock-decay-fee/NOTES.md:214`) — this entry is
+   that same convention, made mechanically checkable instead of merely followed by habit.
+   WHI-1247's own account, as related in WHI-1252, puts one lapse at roughly 25 minutes of
+   wall clock against the ~7 a `target/release/` build takes for the same work, with `ps`
+   pegged at 746% CPU the entire time — no committed report in this repo independently
+   reproduces those three figures, so treat them as the reported cost, not a re-derived one.
+   Either way, the mechanical fix (echo the path, assert `release`) is what actually closes
+   the trap, not any CPU or liveness threshold.
 9. **`pgrep -fl` dumps this machine's entire shell-snapshot environment** instead of the one
-   process you meant to find. Verified directly (WHI-1252): against a backgrounded process,
-   `pgrep -fl sleep` printed a single ~37 KB line — the shell-snapshot-sourcing wrapper's own
-   command, matched by `-f`, repeating `export CODEX_COMPANION_SESSION_ID=...` and
-   `export CLAUDE_PLUGIN_DATA=...` dozens of times — while `pgrep -f sleep | head -1` printed
-   just the 6-character pid. Use the second form to get the pid, then
-   `ps -o pid,etime,command -p <pid>` to check it's alive and is the right binary.
+   process you meant to find. Verified directly (WHI-1252): backgrounding a process and
+   running `pgrep -fl sleep` matched 6 processes and printed 470 lines / ~37 KB total (longest
+   line 308 bytes) — one match is the shell-snapshot-sourcing wrapper itself, whose command
+   string embeds hundreds of literal `export CODEX_COMPANION_SESSION_ID=...` /
+   `export CLAUDE_PLUGIN_DATA=...` lines verbatim. `pgrep -f sleep | head -1` printed only the
+   5-digit pid. Use the second form to get the pid, then `ps -o pid,etime,command -p <pid>` to
+   check it's alive and is the right binary.
