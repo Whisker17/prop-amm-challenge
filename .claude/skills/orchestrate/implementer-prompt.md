@@ -79,8 +79,8 @@ with a real one-shot dispatch (`docs/agents/runtime.md` § Degraded mode), not j
 REVIEWER and ESCALATOR are whatever `config/agent-roles.conf` currently names — read it, don't
 assume a specific model.
 
-What is genuinely specific to this repo is trap 6 in `traps.md` (in the `orchestrate`
-skill folder) — read it there, it is not restated here. Record the exact command you passed,
+What is genuinely specific to this repo is trap 6 in `docs/TRAPS.md` — read it
+there, it is not restated here. Record the exact command you passed,
 per round, per axis, and confirm each reviewer actually saw content, not just that the
 dispatch exited 0. (The remaining repo-specific deltas — `--repo`, the post-merge checkout, the
 semantic-conflict check — belong to the merge sequence, not the review loop; see § Take it
@@ -95,7 +95,7 @@ rather than editing it. Scope creep is likeliest at the "while I'm here" moment.
 
 ## Traps — every one of these has already cost this project hours
 
-{{PASTE THE TRAP REGISTRY FROM traps.md (in the orchestrate skill folder), plus anything specific to this issue.}}
+{{PASTE THE TRAP REGISTRY FROM docs/TRAPS.md, plus anything specific to this issue.}}
 
 ## Long-running work
 
