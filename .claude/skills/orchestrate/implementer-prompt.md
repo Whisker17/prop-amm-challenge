@@ -1,7 +1,8 @@
 # Implementer launch prompt — template
 
-Fill every `{{PLACEHOLDER}}`. Delete nothing else: each paragraph is here because its absence
-cost time on a real issue. Spawn one subagent per issue with this as its prompt.
+Fill every `{{PLACEHOLDER}}`. Delete nothing except where a placeholder explicitly authorizes
+omission (e.g. "omit for a true entry point") — every other paragraph is here because its
+absence cost time on a real issue. Spawn one subagent per issue with this as its prompt.
 
 ---
 
@@ -67,31 +68,22 @@ integration branch is the owner's deliberate act, never a side effect of picking
 
 ## Adversarial review
 
-Follow `/implement`'s three-round loop and `/code-review`'s two-axis dispatch exactly as those
-skills describe — Standards and Spec, separate fresh contexts, never collapsed into one
-dispatch, the Spec axis getting {{ISSUE_ID}}'s full body, the smell baseline pasted into every
-Standards dispatch. This project dispatches both axes as **subprocesses**
-(`scripts/agent-dispatch.sh REVIEWER <prompt-file>`, twice per round) rather than through a
-native sub-agent primitive, because a spawned implementer session typically has no such
-primitive available to it; re-probe before each round with a real one-shot dispatch
-(`docs/agents/runtime.md` § Degraded mode), not just `--probe`. REVIEWER and ESCALATOR are
-whatever `config/agent-roles.conf` currently names — read it, don't assume a specific model.
+Follow `/implement`'s three-round loop and `/code-review`'s two-axis dispatch as those skills
+describe — this prompt does not restate either. This project's runtime dispatches both axes
+as **subprocesses** (`scripts/agent-dispatch.sh REVIEWER <prompt-file>`, twice per round: one
+per axis, never collapsed) rather than through a native sub-agent primitive, because a spawned
+implementer session typically has no such primitive available to it; re-probe before each round
+with a real one-shot dispatch (`docs/agents/runtime.md` § Degraded mode), not just `--probe`.
+REVIEWER and ESCALATOR are whatever `config/agent-roles.conf` currently names — read it, don't
+assume a specific model.
 
-What is genuinely specific to this repo, on top of both skills:
-
-- **Commit before every dispatch, then hand reviewers a three-dot diff, and confirm it is
-  non-empty before dispatching.** `git diff origin/{{BASE}}...HEAD` — the same form
-  `/code-review` itself uses, and for the same reason: it is the merge-base comparison, so it
-  cannot be contaminated if `origin/{{BASE}}` advances mid-loop the way a base-tip (two-dot)
-  diff would be. On an **uncommitted** branch this three-dot diff is empty, and a review of
-  nothing returns "no findings" — indistinguishable from a clean pass unless you check for
-  non-empty first. Commit first; the emptiness risk goes away, and the base-drift risk never
-  existed for three-dot in the first place. Record the exact command you passed, per round,
-  per axis, and confirm each reviewer actually saw content.
-- **Every `gh` call needs `--repo {{OWNER_REPO}}`.** This clone is a fork; `gh` otherwise
-  resolves against `upstream` and fails.
-- **Post-merge, explicitly `git checkout {{BASE}}` before the fast-forward.** Do not trust
-  whatever branch happens to be checked out.
+What is genuinely specific to this repo, on top of both skills — **commit before every
+dispatch, then hand reviewers a three-dot diff, and confirm it is non-empty before
+dispatching** — see the Traps section below (this is trap 6 there); it is not restated here.
+Record the exact command you passed, per round, per axis, and confirm each reviewer actually
+saw content, not just that the dispatch exited 0. (The remaining repo-specific deltas —
+`--repo`, the post-merge checkout, the semantic-conflict check — belong to the merge sequence,
+not the review loop; see § Take it all the way below.)
 
 ## Scope — {{ISSUE_ID}}'s own constraint
 
@@ -115,25 +107,27 @@ completion.
 
 ## Take it all the way
 
-{{GATED_OR_NOT — for an ungated PR, a completed review loop authorizes the self-merge.}}
+{{GATED_OR_NOT — for an ungated PR, a completed review loop authorizes the self-merge; check
+this issue against `/implement`'s own gated-change list (high-risk paths, `release/*` → `main`,
+a finished integration branch → `dev`) before assuming step 5 below applies. If gated, do steps
+1-2 only and stop at `In Review` for a human — say so explicitly rather than leaving this
+placeholder to imply the ungated path by default.}}
 
-1. Commit, push, `gh pr create --repo {{OWNER_REPO}} --base {{BASE}}` with `{{ISSUE_ID}}` in
-   the title and a body carrying the resolved base plus the signals it came from,
-   {{ANY_ARGUMENT_A_REVIEWER_WILL_RAISE}}, and a one-line note of any deferred criteria.
-2. Tracker → `In Review`.
-3. Verify MERGEABLE/CLEAN; if the base advanced, `git merge origin/{{BASE}}`, resolve, rerun
-   the affected tests, push. MERGEABLE/CLEAN is a git-conflict check only — separately confirm
-   nothing that landed on `{{BASE}}` since you branched semantically conflicts with this
-   issue's scope, even where git itself sees no conflict.
-4. `{{FULL_TEST_COMMAND}}` green; lint per the caveat.
-5. `gh pr merge <N> --squash --delete-branch --repo {{OWNER_REPO}}`.
-6. Post-merge cleanup from the primary clone, in order: `git worktree remove` + `prune`,
-   `git branch -D`, then **explicitly `git checkout {{BASE}}`** before
-   `git fetch origin --prune && git merge --ff-only origin/{{BASE}}`. Do not trust the
-   currently-checked-out branch.
-7. Fan-out: query for live `release/v*` (never a hardcoded list); if none, say it is a
-   **verified** no-op.
-8. Tracker → `Done`.
+Follow `/implement`'s own "take it all the way" steps (push, PR, `In Review`, verify
+MERGEABLE/CLEAN, tests+lint, squash-merge, post-merge cleanup, fan-out, `Done`) — not restated
+here. Only the repo-specific deltas on top of that sequence:
+
+- `gh pr create --repo {{OWNER_REPO}}` and every later `gh` call the same way (this clone is a
+  fork; `gh` otherwise resolves against `upstream`). PR title/body: `{{ISSUE_ID}}`, the resolved
+  base plus the signals it came from, {{ANY_ARGUMENT_A_REVIEWER_WILL_RAISE}}, and a one-line
+  note of any deferred criteria.
+- MERGEABLE/CLEAN is a git-conflict check only — separately confirm nothing that landed on
+  `{{BASE}}` since you branched **semantically** conflicts with this issue's scope, even where
+  git itself sees no conflict.
+- Post-merge, **explicitly `git checkout {{BASE}}`** before `git fetch origin --prune &&
+  git merge --ff-only origin/{{BASE}}`. Do not trust whatever branch happens to be checked out.
+- Fan-out: query for live `release/v*` (never a hardcoded list); if none, say it is a
+  **verified** no-op, not an assumed one.
 
 ## Report back
 

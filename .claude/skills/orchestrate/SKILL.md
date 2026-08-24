@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: "Drive a set of tracker issues to merged-and-closed through implementer subagents, verifying every claim independently. Use when the user asks to run, ship, or orchestrate a release's issues rather than implement one."
+description: "Drive a set of tracker issues to merged-and-closed through implementer subagents, verifying every claim independently."
 disable-model-invocation: true
 ---
 
@@ -62,7 +62,7 @@ order anyway.
    happen as the literal next action at each git milestone, because tracker state and git
    history are independently-updatable systems that can drift (`docs/agents/issue-tracker.md`
    § Decisions #2).
-2. Spawn one implementer subagent using `implementer-prompt.md` in this directory. Fill every
+2. Spawn one implementer subagent using [`implementer-prompt.md`](implementer-prompt.md) in this directory. Fill every
    placeholder — especially the trap list, which is the highest-leverage part.
 3. On each notification: **verify state yourself**, then choose exactly one of — intervene,
    set a sentinel and wait, or resume. Never all three.
@@ -181,12 +181,12 @@ Observed, not hypothetical:
   a literal-minded implementer will.
 - **Checking liveness instead of correctness.** "Is it running?" is the easy question and
   rarely the useful one.
-- **Prescribing a fix for one failure mode that quietly reintroduces a worse one.** A
-  two-dot diff fixes "empty diff looks like a clean pass" but, once the base advances mid-loop,
-  shows the reviewer foreign commits reversed and presented as the implementer's own change —
-  a *non-empty*, plausible, and therefore harder-to-catch failure than the one it replaced.
-  Checking your own corrections against this project's own canonical answer (here,
-  `/code-review`'s three-dot form) would have caught it before it reached an implementer.
+- **Prescribing a fix for one failure mode that quietly reintroduces a worse one.** Trap 6
+  below (two-dot vs. three-dot diffs) is a case actually made this way: the first fix proposed
+  for "empty diff looks like a clean pass" was itself wrong, and worse than the problem it
+  replaced. Checking a proposed correction against this project's own canonical answer (here,
+  `/code-review`'s three-dot form) is what catches this before it reaches an implementer —
+  do that check before shipping a fix, not after.
 
 Tell implementers to treat **your** claims as unverified assertions and check them. They
 have caught false orchestrator claims and one bad gate instruction that way. That channel is
