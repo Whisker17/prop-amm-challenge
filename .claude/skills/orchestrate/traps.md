@@ -6,16 +6,19 @@ nobody. Carry every entry into each launch prompt. Cost is why they are here. Ea
 is cited against the repo so it stays checkable; an entry that stops being true belongs in
 `docs/DEFERRED_ISSUES.md`'s own resolved section, not silently deleted here.
 
-**A trim is self-declaring.** The only way an entry is meant to leave this file is the
-graduation the paragraph above already describes, and even that departure — a removal or a
-merge into another entry — must say, in the PR that does it, which entry number left and why.
-WHI-1251 trimmed a reviewed 9-entry draft to the 7 that first landed here without disclosing
-the 3 that didn't survive, and the implementer's own final report ("all 7 survived scrutiny")
-was accurate about the seven present and silent about the ones absent — exactly the failure
-this rule exists to make impossible to repeat quietly. WHI-1252 is where those 3 were restored
-(entries 8 and 9 below, plus the ordering half of entry 5); its PR body carries the provenance
-for how they were recovered. A trim with no such disclosure in its PR body is presumed
-accidental, not reviewed.
+**A trim is self-declaring.** An entry leaves this file in one of exactly two ways: it
+graduates to `docs/DEFERRED_ISSUES.md`'s resolved section once it stops being true (the
+paragraph above), or it gets merged into another entry that already covers the same failure.
+Either way, the PR that does it must say which entry number left or was absorbed, and why.
+WHI-1251 trimmed a reviewed 9-entry draft down to the 7 that first landed here without
+disclosing what didn't survive — two entries outright (release profile; `pgrep -fl`) and half
+of a third (the *ordering* half of the generate-once lesson; only its *provenance* half made
+it through as entry 5) — and the implementer's own final report ("all 7 survived scrutiny")
+was accurate about the seven present and silent about what was missing. That is exactly the
+failure this rule exists to make impossible to repeat quietly. WHI-1252 restored the missing
+content (entries 8 and 9 below, plus entry 5's ordering half); its PR body carries the
+provenance for how it was recovered. A trim with no matching disclosure in its PR body is
+presumed accidental, not reviewed.
 
 1. **`gh pr create` needs `--repo <owner/repo>`.** This clone (`git remote -v`) is a fork of
    `benedictbrady/prop-amm-challenge`, with `upstream` set to `no_push` — `gh` otherwise
@@ -66,17 +69,18 @@ accidental, not reviewed.
    command is fixed.
 8. **Release profile only — liveness and CPU do not prove it.** Echo the binary path
    immediately before every measurement and confirm it reads `target/release/`, not
-   `target/debug/`; a bare `cargo run`/`cargo build` without `--release` is one to two orders
-   of magnitude slower, and `ps` cannot tell the difference — a healthy-looking, high-CPU
-   process is exactly what a debug build in the middle of a multi-minute run also looks like
-   too. WHI-1247's own account (the source WHI-1252 cites for restoring this entry) puts one
-   such run at roughly 25 minutes of wall clock against the ~7 a `target/release/` build takes
-   for the same work, with `ps` pegged at 746% CPU the entire time — no committed report in
-   this repo independently reproduces those two numbers, so treat them as the reported cost,
-   not a re-derived one. Either way, the mechanical fix (echo the path, assert `release`) is
-   what actually closes the trap, not any CPU or liveness threshold.
-9. **`pgrep -fl` dumps this machine's entire shell-snapshot environment** (hundreds of lines
-   of `export` noise) instead of the one process you meant to find. Use
-   `pgrep -f <pattern> | head -1` to get the pid, then `ps -o pid,etime,command -p <pid>` to
-   check it's alive and is the right binary — `implementer-prompt.md`'s "Long-running work"
-   section states this same two-step form directly.
+   `target/debug/`; `ps` cannot tell the two apart — a healthy-looking, high-CPU process is
+   exactly what a debug build in the middle of a multi-minute run also looks like. WHI-1247's
+   own account, as related in WHI-1252, puts one such run at roughly 25 minutes of wall clock
+   against the ~7 a `target/release/` build takes for the same work, with `ps` pegged at 746%
+   CPU the entire time — no committed report in this repo independently reproduces those three
+   figures, so treat them as the reported cost, not a re-derived one. Either way, the
+   mechanical fix (echo the path, assert `release`) is what actually closes the trap, not any
+   CPU or liveness threshold.
+9. **`pgrep -fl` dumps this machine's entire shell-snapshot environment** instead of the one
+   process you meant to find. Verified directly (WHI-1252): against a backgrounded process,
+   `pgrep -fl sleep` printed a single ~37 KB line — the shell-snapshot-sourcing wrapper's own
+   command, matched by `-f`, repeating `export CODEX_COMPANION_SESSION_ID=...` and
+   `export CLAUDE_PLUGIN_DATA=...` dozens of times — while `pgrep -f sleep | head -1` printed
+   just the 6-character pid. Use the second form to get the pid, then
+   `ps -o pid,etime,command -p <pid>` to check it's alive and is the right binary.

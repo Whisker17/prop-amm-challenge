@@ -99,14 +99,12 @@ rather than editing it. Scope creep is likeliest at the "while I'm here" moment.
 
 ## Long-running work
 
-When you background a measurement, find its pid with `pgrep -f <pattern> | head -1` — not
-`pgrep -fl`, which dumps this machine's entire shell-snapshot environment instead of the one
-line you wanted (`traps.md`'s `pgrep -fl` entry). Then verify with
-`ps -o pid,etime,command -p <pid>` that it is alive **and** is the binary you meant, and wait.
-Re-verify with `ps` before concluding a monitor will fire — waiting on a process that already
-exited or never started has burned whole turns here. Foreground tool calls cap out well below
-a multi-hour run, so yielding mid-wait is expected: when you do, state exactly what is running
-and what remains, and never imply completion.
+When you background a measurement, verify with `ps -o pid,etime,command -p <pid>` that it is
+alive **and** is the binary you meant, then wait. Re-verify with `ps` before concluding a
+monitor will fire — waiting on a process that already exited or never started has burned whole
+turns here. Foreground tool calls cap out well below a multi-hour run, so yielding mid-wait is
+expected: when you do, state exactly what is running and what remains, and never imply
+completion.
 
 ## Take it all the way
 
