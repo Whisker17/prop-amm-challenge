@@ -79,7 +79,7 @@ with a real one-shot dispatch (`docs/agents/runtime.md` § Degraded mode), not j
 REVIEWER and ESCALATOR are whatever `config/agent-roles.conf` currently names — read it, don't
 assume a specific model.
 
-What is genuinely specific to this repo is trap 6 in `traps.md` (in the `orchestrate`
+What is genuinely specific to this repo is trap 7 in `traps.md` (in the `orchestrate`
 skill folder) — read it there, it is not restated here. Record the exact command you passed,
 per round, per axis, and confirm each reviewer actually saw content, not just that the
 dispatch exited 0. (The remaining repo-specific deltas — `--repo`, the post-merge checkout, the
