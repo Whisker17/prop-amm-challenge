@@ -37,9 +37,10 @@ use prop_amm_sim::router::OrderRouter;
 use rayon::prelude::*;
 
 use crate::curves;
-use crate::metrics::RunMetrics;
+use crate::metrics::{RunMetrics, Univ3RunMetrics};
 use crate::strategies::Strategy;
 use crate::u256::U256;
+use crate::univ3_curve;
 use crate::wad::price_to_wad;
 
 /// Who the strategy competes with for retail flow.
@@ -171,8 +172,17 @@ pub fn run_single_traced(
     mut oracle_trace: Option<&mut Vec<U256>>,
 ) -> RunMetrics {
     curves::reset_revert_count();
+    // The V3 adapter accumulates capacity rejections in thread-local state, the
+    // same way the revert counter does. `run_single` never yields, so a reset
+    // here and a read at the end bracket exactly this run.
+    univ3_curve::reset_capacity_stats();
+    univ3_curve::clear_last_rejection();
+    univ3_curve::set_caller(univ3_curve::Caller::Other);
+
     let mut amm_strategy = build_strategy_amm(strategy, config);
     let mut amm_competitor = build_competitor_amm(competitor, config);
+    let track_univ3 = strategy.family.is_univ3();
+    let mut univ3_metrics = Univ3RunMetrics::default();
 
     let mut price = GBMPriceProcess::new(
         config.initial_price,
@@ -222,6 +232,33 @@ pub fn run_single_traced(
             }
         }
 
+        // Sample range occupancy against the PUBLISHED FAIR PRICE, before any
+        // trading this step. The pool's own tick only moves when somebody
+        // trades, so a tick-derived measure would say a pool is "in range" while
+        // the market has walked away from it.
+        if track_univ3 {
+            univ3_metrics.steps_sampled += 1;
+            let storage = amm_strategy.storage();
+            if let Some(price_wad) = price_to_wad(fair_price) {
+                match univ3_curve::fair_price_in_range(storage, price_wad) {
+                    Some(true) => {}
+                    Some(false) => {
+                        univ3_metrics.fair_price_out_of_range_steps += 1;
+                        if univ3_metrics.first_out_of_range_step.is_none() {
+                            univ3_metrics.first_out_of_range_step = Some(step as u64);
+                        }
+                    }
+                    // The price could not be placed against the range at all.
+                    // Counted in neither direction rather than guessed.
+                    None => univ3_metrics.steps_sampled -= 1,
+                }
+            }
+            if univ3_curve::active_liquidity(storage).is_some_and(|l| l > 0) {
+                univ3_metrics.active_liquidity_steps += 1;
+            }
+        }
+
+        univ3_curve::set_caller(univ3_curve::Caller::Arbitrage);
         if let Some(result) = arb.execute_arb(&mut amm_strategy, fair_price) {
             arb_count += 1;
             arbitrage_edge += result.edge;
@@ -232,11 +269,42 @@ pub fn run_single_traced(
             };
         }
         arb.execute_arb(&mut amm_competitor, fair_price);
+        univ3_curve::set_caller(univ3_curve::Caller::Other);
 
         let orders = retail.generate_orders();
         for order in &orders {
+            // ---- canonical, search-independent order-level capacity probe ----
+            //
+            // Taken on the PRE-ROUTE state, at the FULL order size, exactly once
+            // per order, and recording nothing in the adapter's counters. This
+            // is deliberately not derived from what the router's search saw: the
+            // search calls the curve many times per order and a refusal there
+            // says only that one candidate size did not fit, which is compatible
+            // with the order being filled in full a moment later.
+            if track_univ3 {
+                if let Some((side, input_nano)) = order_as_instruction(order, fair_price) {
+                    univ3_metrics.retail_orders_probed += 1;
+                    let probe =
+                        univ3_curve::probe_capacity(amm_strategy.storage(), side, input_nano);
+                    if !probe.filled {
+                        univ3_metrics.retail_full_order_capacity_limited_count += 1;
+                        // Marked to Y at THIS step's fair price, while it is the
+                        // live price. Nothing is re-marked at the end of the run.
+                        let shortfall = wad_to_f64(probe.canonical_unfilled_input());
+                        univ3_metrics.retail_capacity_shortfall_notional_y += if side == 1 {
+                            shortfall * fair_price
+                        } else {
+                            shortfall
+                        };
+                    }
+                }
+            }
+
+            univ3_curve::set_caller(univ3_curve::Caller::Retail);
             let trades =
                 router.route_order(order, &mut amm_strategy, &mut amm_competitor, fair_price);
+            univ3_curve::set_caller(univ3_curve::Caller::Other);
+
             for trade in trades {
                 let notional = if trade.amm_buys_x {
                     trade.amount_x * fair_price
@@ -251,6 +319,9 @@ pub fn run_single_traced(
                     };
                     retail_notional += notional;
                     retail_trade_count += 1;
+                    if track_univ3 {
+                        univ3_metrics.retail_notional_served += notional;
+                    }
                 } else {
                     competitor_retail_notional += notional;
                 }
@@ -260,6 +331,53 @@ pub fn run_single_traced(
         let deviation = (amm_strategy.reserve_x - config.initial_x) / config.initial_x;
         if deviation.abs() > max_inventory_deviation {
             max_inventory_deviation = deviation.abs();
+        }
+    }
+
+    if track_univ3 {
+        // Search diagnostics. These are per-CANDIDATE-QUOTE, not per order, and
+        // the amounts stay in the token they were offered in: the adapter has no
+        // fair price at the moment it records them, and marking them here would
+        // use the run's last price for events that happened at every other price
+        // in the path.
+        let stats = univ3_curve::capacity_stats();
+        for caller in [
+            univ3_curve::Caller::Retail,
+            univ3_curve::Caller::Arbitrage,
+            univ3_curve::Caller::Other,
+        ] {
+            for side in 0u8..2 {
+                let bucket = stats.bucket(caller, side);
+                if bucket.reject_count == 0 {
+                    continue;
+                }
+                univ3_metrics.capacity_quote_reject_count += bucket.reject_count;
+                let requested = wad_to_f64(bucket.requested_input);
+                let fillable = wad_to_f64(bucket.fillable_input);
+                let unfilled = wad_to_f64(bucket.canonical_unfilled_input());
+                if side == 0 {
+                    // side 0 spends Y to buy X.
+                    univ3_metrics.quote_rejected_requested_y += requested;
+                    univ3_metrics.quote_fillable_y += fillable;
+                    univ3_metrics.quote_canonical_unfilled_y += unfilled;
+                    univ3_metrics.quote_reject_count_buy_x += bucket.reject_count;
+                } else {
+                    // side 1 spends X to sell for Y.
+                    univ3_metrics.quote_rejected_requested_x += requested;
+                    univ3_metrics.quote_fillable_x += fillable;
+                    univ3_metrics.quote_canonical_unfilled_x += unfilled;
+                    univ3_metrics.quote_reject_count_sell_x += bucket.reject_count;
+                }
+                match caller {
+                    univ3_curve::Caller::Retail => {
+                        univ3_metrics.retail_quote_reject_count += bucket.reject_count
+                    }
+                    univ3_curve::Caller::Arbitrage => {
+                        univ3_metrics.arb_quote_reject_count += bucket.reject_count
+                    }
+                    univ3_curve::Caller::Other => {}
+                }
+            }
         }
     }
 
@@ -292,7 +410,41 @@ pub fn run_single_traced(
         final_reserve_y: amm_strategy.reserve_y,
         final_fair_price: fair_price,
         curve_revert_count: curves::revert_count(),
+        univ3: track_univ3.then_some(univ3_metrics),
     }
+}
+
+/// A retail order as `(side, input_nano)`, matching the swap instruction.
+///
+/// `RetailOrder.size` is a Y notional in both directions; `OrderRouter` converts
+/// a sell into `size / fair_price` units of X before quoting, and this reproduces
+/// that conversion exactly so the probe asks about the same trade the router will.
+///
+/// Side follows the instruction encoding: `0` spends Y to buy X, `1` spends X to
+/// sell for Y. Returns `None` for an order that quantises to nothing.
+fn order_as_instruction(
+    order: &prop_amm_sim::retail::RetailOrder,
+    fair_price: f64,
+) -> Option<(u8, u64)> {
+    let (side, input) = if order.is_buy {
+        (0u8, order.size)
+    } else {
+        (1u8, order.size / fair_price)
+    };
+    if !input.is_finite() || input <= 0.0 {
+        return None;
+    }
+    let nano = prop_amm_shared::nano::f64_to_nano(input);
+    (nano > 0).then_some((side, nano))
+}
+
+/// A WAD integer as an `f64` amount. Reporting only: no curve arithmetic passes
+/// through here, and the value has already left the integer domain by the time
+/// it is summed into a metric.
+fn wad_to_f64(value: U256) -> f64 {
+    let (whole, remainder) = value.div_rem_small(1_000_000_000_000_000_000);
+    let whole = whole.as_u128().unwrap_or(u128::MAX) as f64;
+    whole + remainder as f64 / 1e18
 }
 
 /// Run one strategy across the whole seed batch.
@@ -456,6 +608,265 @@ mod tests {
         let strategy = strategy_by_id("univ2-zero-fee").unwrap();
         assert!(!strategy.family.is_oracle_aware());
         assert_eq!(strategy.family, Family::UniV2);
+    }
+
+    #[test]
+    fn the_univ3_arms_complete_a_run_and_report_their_own_metrics() {
+        let batch = small_batch(300);
+        let configs = seed_configs(&batch);
+        for id in ["univ3-full-range-zero-fee", "univ3-conc-c100"] {
+            let strategy = strategy_by_id(id).unwrap();
+            let metrics = run_single(&strategy, Competitor::Normalizer, &configs[0]);
+            let v3 = metrics
+                .univ3
+                .unwrap_or_else(|| panic!("{id} produced no V3 metrics"));
+            assert_eq!(
+                v3.steps_sampled, 300,
+                "{id}: every step must be sampled for range occupancy"
+            );
+            assert!(
+                metrics.net_edge.is_finite(),
+                "{id} produced a non-finite edge"
+            );
+            // A capacity rejection is ordinary behaviour, a revert is not.
+            assert_eq!(metrics.curve_revert_count, 0, "{id} reverted");
+        }
+    }
+
+    /// The narrow arm must actually leave its range in this environment,
+    /// otherwise the sensitivity experiment is measuring nothing.
+    #[test]
+    fn the_narrow_univ3_arm_leaves_its_range_and_says_when() {
+        let batch = small_batch(400);
+        let configs = seed_configs(&batch);
+        let strategy = strategy_by_id("univ3-conc-c1000").unwrap();
+        let metrics = run_single(&strategy, Competitor::Normalizer, &configs[0]);
+        let v3 = metrics.univ3.unwrap();
+        assert!(
+            v3.fair_price_out_of_range_steps > 0,
+            "a 20-tick range should not contain a 400-step GBM path"
+        );
+        assert!(
+            v3.first_out_of_range_step.is_some(),
+            "the first exit step must be recorded whenever any step is out"
+        );
+        assert!(
+            v3.first_out_of_range_step.unwrap() < 400,
+            "the recorded exit step must be inside the run"
+        );
+    }
+
+    /// Non-V3 strategies must report `None`, never a zeroed struct that would
+    /// read as "measured, and it was zero".
+    #[test]
+    fn only_the_univ3_arms_carry_univ3_metrics() {
+        let batch = small_batch(120);
+        let configs = seed_configs(&batch);
+        for id in [
+            "univ2-zero-fee",
+            "dodo-k1000000000000000000",
+            "flashbots-c1",
+        ] {
+            let strategy = strategy_by_id(id).unwrap();
+            let metrics = run_single(&strategy, Competitor::Normalizer, &configs[0]);
+            assert!(metrics.univ3.is_none(), "{id} should carry no V3 metrics");
+        }
+    }
+
+    /// Refused candidate quotes must be attributable. This is about the search
+    /// diagnostics, and deliberately says nothing about orders.
+    #[test]
+    fn refused_candidate_quotes_are_attributed_to_a_caller() {
+        let batch = small_batch(500);
+        let configs = seed_configs(&batch);
+        let strategy = strategy_by_id("univ3-conc-c1000").unwrap();
+        let mut saw_rejections = false;
+        for config in &configs {
+            let v3 = run_single(&strategy, Competitor::Normalizer, config)
+                .univ3
+                .unwrap();
+            if v3.capacity_quote_reject_count == 0 {
+                continue;
+            }
+            saw_rejections = true;
+            assert_eq!(
+                v3.retail_quote_reject_count + v3.arb_quote_reject_count,
+                v3.capacity_quote_reject_count,
+                "every refused quote must land in the retail or arbitrage bucket"
+            );
+            assert_eq!(
+                v3.quote_reject_count_buy_x + v3.quote_reject_count_sell_x,
+                v3.capacity_quote_reject_count,
+                "every refused quote must land in a direction bucket"
+            );
+            assert!(
+                v3.quote_canonical_unfilled_x >= 0.0
+                    && v3.quote_canonical_unfilled_y >= 0.0
+                    && v3.quote_fillable_x >= 0.0
+                    && v3.quote_fillable_y >= 0.0,
+                "capacity amounts must be non-negative"
+            );
+        }
+        assert!(
+            saw_rejections,
+            "the narrowest arm refused no candidate quote across the batch; \
+             the capacity path is then untested here"
+        );
+    }
+
+    /// **The regression this test exists to prevent.**
+    ///
+    /// The router bisects towards a size that fits, so one retail order produces
+    /// many refused candidate quotes. An order-level metric must not be inferred
+    /// from "a refusal happened while the search was running", which is what a
+    /// sticky `last_rejection` gave.
+    ///
+    /// The proof is a counting argument that needs no assumption about any
+    /// individual order: the refused-quote count **exceeds the number of orders
+    /// that existed**. A quantity larger than the total order count cannot be an
+    /// order count, and the order-level metric is several times smaller.
+    ///
+    /// (Measured at the time of writing, `univ3-conc-c20` over 1 000 steps: 1 314
+    /// refused quotes against 401 orders, of which 122 were capacity-limited.)
+    #[test]
+    fn refused_candidate_quotes_are_not_order_counts() {
+        let batch = BatchConfig {
+            simulations: 12,
+            ..small_batch(1_000)
+        };
+        let configs = seed_configs(&batch);
+        let strategy = strategy_by_id("univ3-conc-c20").unwrap();
+
+        let mut saw_more_refusals_than_orders = false;
+        let mut saw_order_count_below_quote_count = false;
+        for config in &configs {
+            let v3 = run_single(&strategy, Competitor::Normalizer, config)
+                .univ3
+                .unwrap();
+
+            // An order-level count can never exceed the number of orders probed,
+            // however many candidates the search burned through.
+            assert!(
+                v3.retail_full_order_capacity_limited_count <= v3.retail_orders_probed,
+                "seed {}: capacity-limited orders {} exceeded orders probed {}",
+                config.seed,
+                v3.retail_full_order_capacity_limited_count,
+                v3.retail_orders_probed
+            );
+            if v3.retail_quote_reject_count > v3.retail_orders_probed {
+                saw_more_refusals_than_orders = true;
+            }
+            if v3.retail_quote_reject_count > 0 {
+                assert!(
+                    v3.retail_full_order_capacity_limited_count < v3.retail_quote_reject_count,
+                    "seed {}: the order-level count {} matched the quote-level count {}, \
+                     which is what contamination by the search would look like",
+                    config.seed,
+                    v3.retail_full_order_capacity_limited_count,
+                    v3.retail_quote_reject_count
+                );
+                saw_order_count_below_quote_count = true;
+            }
+        }
+        assert!(
+            saw_more_refusals_than_orders,
+            "no seed refused more candidate quotes than it had orders; the counting \
+             argument this test relies on is not exercised by this configuration"
+        );
+        assert!(
+            saw_order_count_below_quote_count,
+            "no seed refused a candidate quote at all, so nothing was compared"
+        );
+    }
+
+    /// The order-level probe is taken once per order and must not depend on how
+    /// many candidates the router happened to try. Two runs of the same seed
+    /// therefore agree exactly, and the count tracks orders, not search effort.
+    #[test]
+    fn the_order_level_capacity_probe_is_deterministic() {
+        let batch = small_batch(300);
+        let configs = seed_configs(&batch);
+        let strategy = strategy_by_id("univ3-conc-c1000").unwrap();
+        let first = run_single(&strategy, Competitor::Normalizer, &configs[0])
+            .univ3
+            .unwrap();
+        let second = run_single(&strategy, Competitor::Normalizer, &configs[0])
+            .univ3
+            .unwrap();
+        assert_eq!(
+            first.retail_orders_probed, second.retail_orders_probed,
+            "the probe must run once per order, deterministically"
+        );
+        assert_eq!(
+            first.retail_full_order_capacity_limited_count,
+            second.retail_full_order_capacity_limited_count
+        );
+        assert_eq!(
+            first.retail_capacity_shortfall_notional_y,
+            second.retail_capacity_shortfall_notional_y
+        );
+        assert!(
+            first.retail_capacity_shortfall_notional_y >= 0.0,
+            "a shortfall cannot be negative"
+        );
+    }
+
+    /// A full-range position spans the whole tick domain, so it can never be
+    /// capacity-limited. If it ever is, the range or the adapter is wrong.
+    #[test]
+    fn the_full_range_arm_is_never_capacity_limited() {
+        let batch = small_batch(600);
+        let configs = seed_configs(&batch);
+        let strategy = strategy_by_id("univ3-full-range-zero-fee").unwrap();
+        for config in &configs {
+            let v3 = run_single(&strategy, Competitor::Normalizer, config)
+                .univ3
+                .unwrap();
+            assert!(v3.retail_orders_probed > 0, "no orders were probed at all");
+            assert_eq!(
+                v3.retail_full_order_capacity_limited_count, 0,
+                "seed {}: a full-range position was capacity-limited",
+                config.seed
+            );
+            assert_eq!(v3.retail_capacity_shortfall_notional_y, 0.0);
+            assert_eq!(
+                v3.capacity_quote_reject_count, 0,
+                "seed {}: a full-range position refused a candidate quote",
+                config.seed
+            );
+        }
+    }
+
+    /// Pins the fill-or-kill artefact documented on
+    /// [`Univ3RunMetrics::active_liquidity_steps`]: the pool ends one-sided but
+    /// still reports active liquidity, because the order that would have crossed
+    /// the boundary was refused. If this ever stops holding, that doc comment and
+    /// the report's caveat are both wrong and must change with it.
+    #[test]
+    fn fill_or_kill_leaves_the_pool_one_sided_but_nominally_liquid() {
+        let batch = small_batch(500);
+        let configs = seed_configs(&batch);
+        let strategy = strategy_by_id("univ3-conc-c1000").unwrap();
+        let metrics = run_single(&strategy, Competitor::Normalizer, &configs[0]);
+        let v3 = metrics.univ3.unwrap();
+
+        assert!(
+            v3.fair_price_out_of_range_steps > v3.steps_sampled / 2,
+            "expected the narrow arm to spend most of the run out of range, got {}/{}",
+            v3.fair_price_out_of_range_steps,
+            v3.steps_sampled
+        );
+        assert_eq!(
+            v3.active_liquidity_steps, v3.steps_sampled,
+            "stored liquidity should never reach zero under fill-or-kill"
+        );
+        // One side is drained: the position converted almost entirely into X.
+        let one_sided = metrics.final_reserve_y < 1.0 || metrics.final_reserve_x < 1.0;
+        assert!(
+            one_sided,
+            "expected a one-sided pool, got x={} y={}",
+            metrics.final_reserve_x, metrics.final_reserve_y
+        );
     }
 
     #[test]

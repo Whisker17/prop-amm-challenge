@@ -392,6 +392,114 @@ impl U256 {
     }
 }
 
+// ---------------- 512-bit multiply-divide (Uniswap V3 `FullMath`) ----------------
+
+/// Verbatim Rust port of `FullMath.mulDiv`: `floor(a * b / denominator)`
+/// computed over the full 512-bit product, so an intermediate that overflows
+/// 256 bits does not lose precision.
+///
+/// Upstream: Uniswap/v3-core `contracts/libraries/FullMath.sol`
+/// Commit:   `e3589b192d0be27e100cd0daaf6c97204fdb1899` (tag v1.0.0), solc 0.7.6
+/// sha256:   `54087aee268a6938a85a408d7b14481b5c2c956c21508d5583f1bf48ec6d69ba`
+///
+/// `None` means "the Solidity call would have reverted". Upstream has exactly
+/// two revert conditions and both are reproduced branch for branch:
+///
+/// * `prod1 == 0` (the product fits in 256 bits) and `require(denominator > 0)`
+///   fails, i.e. `denominator == 0`;
+/// * `prod1 != 0` and `require(denominator > prod1)` fails. That require is the
+///   "result fits in a uint256" test — `prod1 * 2**256 <= a * b` means
+///   `denominator <= prod1` implies `floor(a * b / denominator) >= 2**256` —
+///   and it also rules out `denominator == 0` on this branch.
+///
+/// The **division itself** is not a transcription of Remco Bloemen's
+/// modular-inverse sequence (`twos` factoring + Newton-Raphson inverse). That
+/// sequence exists to make a 512-by-256 division cheap in EVM gas; it computes
+/// nothing that the exact quotient does not. Here the same quotient is obtained
+/// by a 512-bit Knuth algorithm D ([`div_rem_512`]), which is exact for every
+/// input, so the returned value and the revert conditions are bit-identical to
+/// the pinned Solidity. `tests/u256_reference.rs` checks that against 1 070
+/// vectors produced by executing that Solidity.
+pub fn mul_div(a: U256, b: U256, denominator: U256) -> Option<U256> {
+    // 512-bit multiply [prod1 prod0] = a * b
+    let product = a.full_mul(b);
+    let prod0 = U256::from_limbs([product[0], product[1], product[2], product[3]]);
+    let prod1 = U256::from_limbs([product[4], product[5], product[6], product[7]]);
+
+    // Handle non-overflow cases, 256 by 256 division
+    if prod1.is_zero() {
+        if denominator.is_zero() {
+            return None; // require(denominator > 0)
+        }
+        return prod0.checked_div(denominator);
+    }
+
+    // Make sure the result is less than 2**256. Also prevents denominator == 0.
+    if denominator <= prod1 {
+        return None; // require(denominator > prod1)
+    }
+
+    // 512 by 256 division.
+    let (quotient, _remainder) = div_rem_512(product, denominator);
+    debug_assert!(
+        quotient[4] == 0 && quotient[5] == 0 && quotient[6] == 0 && quotient[7] == 0,
+        "require(denominator > prod1) guarantees a 256-bit quotient"
+    );
+    Some(U256::from_limbs([
+        quotient[0],
+        quotient[1],
+        quotient[2],
+        quotient[3],
+    ]))
+}
+
+/// Verbatim Rust port of `FullMath.mulDivRoundingUp`:
+/// `ceil(a * b / denominator)`, same upstream file and commit as [`mul_div`].
+///
+/// ```text
+/// result = mulDiv(a, b, denominator);
+/// if (mulmod(a, b, denominator) > 0) {
+///     require(result < type(uint256).max);
+///     result++;
+/// }
+/// ```
+///
+/// So there are three revert conditions: the two inherited from [`mul_div`],
+/// plus `result == type(uint256).max` with a non-zero remainder (the increment
+/// would overflow). `mul_div` runs first and has already rejected
+/// `denominator == 0`, so the `mulmod` below always has a non-zero modulus.
+pub fn mul_div_rounding_up(a: U256, b: U256, denominator: U256) -> Option<U256> {
+    let result = mul_div(a, b, denominator)?;
+    // `mul_div` returned `Some`, so `denominator != 0` and `mul_mod` cannot be
+    // `None` here.
+    if !mul_mod(a, b, denominator)?.is_zero() {
+        if result == U256::MAX {
+            return None; // require(result < type(uint256).max)
+        }
+        return result.checked_add(U256::ONE);
+    }
+    Some(result)
+}
+
+/// The EVM `mulmod(a, b, m)` opcode for a non-zero modulus: the exact
+/// remainder of the 512-bit product `a * b` modulo `m`, with no intermediate
+/// truncation.
+///
+/// Returns `None` for `m == 0`. **This is deliberately not the opcode's own
+/// behaviour**: `MULMOD` with a zero modulus pushes `0` (and solc >= 0.8 adds a
+/// `Panic(0x12)` check on top, which solc 0.7.6 — the version v3-core is
+/// compiled with — does not). `FullMath.mulDivRoundingUp` only reaches `mulmod`
+/// after `mulDiv` has already reverted for `denominator == 0`, so the
+/// difference is unobservable there; `None` is used here so that a caller which
+/// is *not* FullMath cannot silently read a zero-modulus result as `0`.
+pub fn mul_mod(a: U256, b: U256, m: U256) -> Option<U256> {
+    if m.is_zero() {
+        return None;
+    }
+    let (_quotient, remainder) = div_rem_512(a.full_mul(b), m);
+    Some(remainder)
+}
+
 impl PartialOrd for U256 {
     #[inline]
     fn partial_cmp(&self, other: &U256) -> Option<Ordering> {
@@ -488,11 +596,41 @@ fn from_u32_limbs(limbs: &[u32]) -> U256 {
 /// non-zero divisor with at least three significant 32-bit limbs and
 /// `dividend >= divisor`.
 fn div_rem_knuth(dividend: U256, divisor: U256) -> (U256, U256) {
-    const BASE: u64 = 1 << 32;
-
     let (u_limbs, m) = to_u32_limbs(dividend);
     let (v_limbs, n) = to_u32_limbs(divisor);
-    debug_assert!(n >= 2 && m >= n);
+    let mut quotient = [0u32; 8];
+    let mut remainder = [0u32; 8];
+    knuth_div_u32(&u_limbs, m, &v_limbs, n, &mut quotient, &mut remainder);
+    (from_u32_limbs(&quotient), from_u32_limbs(&remainder))
+}
+
+/// Knuth algorithm D (TAOCP 4.3.1) on 32-bit limbs, shared by the
+/// 256-by-256 ([`div_rem_knuth`]) and 512-by-256 ([`div_rem_512`]) divisions.
+///
+/// `u_limbs` holds `m` significant limbs, `v_limbs` holds `n >= 2` significant
+/// limbs, and the caller guarantees `u >= v` (hence `m >= n`). The `m - n + 1`
+/// quotient limbs are written to `q_out` and the `n` remainder limbs to
+/// `r_out`; higher limbs of either output are left as the caller set them.
+///
+/// Bounds: `m <= 16` (a 512-bit dividend) and `n <= 8` (a 256-bit divisor).
+fn knuth_div_u32(
+    u_limbs: &[u32],
+    m: usize,
+    v_limbs: &[u32],
+    n: usize,
+    q_out: &mut [u32],
+    r_out: &mut [u32],
+) {
+    const BASE: u64 = 1 << 32;
+
+    debug_assert!(n >= 2 && m >= n && m <= 16 && n <= 8);
+    // `m - n + 1` is the quotient limb count Knuth D produces, not an off-by-one
+    // dressed up as a comparison; `> m - n` would say the same thing while hiding
+    // where the number comes from.
+    #[allow(clippy::int_plus_one)]
+    {
+        debug_assert!(q_out.len() >= m - n + 1 && r_out.len() >= n);
+    }
 
     let shift = v_limbs[n - 1].leading_zeros();
 
@@ -504,7 +642,7 @@ fn div_rem_knuth(dividend: U256, divisor: U256) -> (U256, U256) {
     vn[0] = v_limbs[0] << shift;
 
     // Normalised dividend with one extra high limb.
-    let mut un = [0u32; 9];
+    let mut un = [0u32; 17];
     un[m] = if shift == 0 {
         0
     } else {
@@ -515,7 +653,6 @@ fn div_rem_knuth(dividend: U256, divisor: U256) -> (U256, U256) {
     }
     un[0] = u_limbs[0] << shift;
 
-    let mut q = [0u32; 8];
     for j in (0..=(m - n)).rev() {
         let numerator = ((un[j + n] as u64) << 32) | (un[j + n - 1] as u64);
         let mut qhat = numerator / (vn[n - 1] as u64);
@@ -544,10 +681,10 @@ fn div_rem_knuth(dividend: U256, divisor: U256) -> (U256, U256) {
         diff = (un[j + n] as i64) - borrow;
         un[j + n] = diff as u32;
 
-        q[j] = qhat as u32;
+        q_out[j] = qhat as u32;
         if diff < 0 {
             // qhat was one too large: add the divisor back.
-            q[j] = q[j].wrapping_sub(1);
+            q_out[j] = q_out[j].wrapping_sub(1);
             let mut carry: u64 = 0;
             for i in 0..n {
                 let sum = (un[i + j] as u64) + (vn[i] as u64) + carry;
@@ -559,18 +696,85 @@ fn div_rem_knuth(dividend: U256, divisor: U256) -> (U256, U256) {
     }
 
     // Denormalise the remainder.
-    let mut r = [0u32; 8];
-    for i in 0..n {
-        r[i] = shr_out(un[i], un[i + 1], shift);
+    for (i, out) in r_out.iter_mut().enumerate().take(n) {
+        *out = shr_out(un[i], un[i + 1], shift);
     }
-
-    (from_u32_limbs(&q), from_u32_limbs(&r))
 }
 
 #[inline]
 fn v_limbs_shift_high(limb: u32, shift: u32) -> u32 {
     debug_assert!(shift > 0 && shift < 32);
     limb >> (32 - shift)
+}
+
+/// 512-by-256 truncating division, the dividend being the little-endian 8-limb
+/// product produced by [`U256::full_mul`]. Returns `(quotient, remainder)`,
+/// where the quotient is itself up to 512 bits wide (callers that require a
+/// 256-bit quotient must establish that themselves — [`mul_div`] does it with
+/// `require(denominator > prod1)`).
+///
+/// The caller guarantees `divisor != 0`.
+///
+/// Three paths, in the same spirit as [`U256::checked_div_rem`]:
+/// a single-`u64` divisor is handled by schoolbook long division over the eight
+/// limbs; a dividend that fits in 256 bits is delegated to the 256-bit divider;
+/// everything else goes through Knuth D with a 16-limb dividend.
+fn div_rem_512(dividend: [u64; 8], divisor: U256) -> ([u64; 8], U256) {
+    debug_assert!(!divisor.is_zero());
+
+    if let Some(small) = divisor.as_u64() {
+        let d = small as u128;
+        let mut remainder: u128 = 0;
+        let mut quotient = [0u64; 8];
+        for i in (0..8).rev() {
+            let current = (remainder << 64) | dividend[i] as u128;
+            quotient[i] = (current / d) as u64;
+            remainder = current % d;
+        }
+        return (quotient, U256::from_u128(remainder));
+    }
+
+    let low = U256::from_limbs([dividend[0], dividend[1], dividend[2], dividend[3]]);
+    let high = U256::from_limbs([dividend[4], dividend[5], dividend[6], dividend[7]]);
+    if high.is_zero() {
+        // The product fits in 256 bits: reuse the 256-bit divider.
+        let (quotient, remainder) = low
+            .checked_div_rem(divisor)
+            .expect("divisor is non-zero by contract");
+        let q = quotient.limbs();
+        return ([q[0], q[1], q[2], q[3], 0, 0, 0, 0], remainder);
+    }
+
+    // `high != 0` gives at least 9 significant 32-bit dividend limbs, and the
+    // divisor has at most 8 (at least 3, since the `as_u64` path is taken
+    // first), so `m > n >= 3` here and the dividend is strictly the larger.
+    let (u_limbs, m) = to_u32_limbs_512(dividend);
+    let (v_limbs, n) = to_u32_limbs(divisor);
+    let mut quotient = [0u32; 16];
+    let mut remainder = [0u32; 8];
+    knuth_div_u32(&u_limbs, m, &v_limbs, n, &mut quotient, &mut remainder);
+    (from_u32_limbs_512(&quotient), from_u32_limbs(&remainder))
+}
+
+fn to_u32_limbs_512(value: [u64; 8]) -> ([u32; 16], usize) {
+    let mut out = [0u32; 16];
+    for i in 0..8 {
+        out[2 * i] = value[i] as u32;
+        out[2 * i + 1] = (value[i] >> 32) as u32;
+    }
+    let mut len = 16;
+    while len > 1 && out[len - 1] == 0 {
+        len -= 1;
+    }
+    (out, len)
+}
+
+fn from_u32_limbs_512(limbs: &[u32]) -> [u64; 8] {
+    let mut out = [0u64; 8];
+    for (i, limb) in limbs.iter().enumerate().take(16) {
+        out[i / 2] |= (*limb as u64) << (32 * (i % 2));
+    }
+    out
 }
 
 #[cfg(test)]

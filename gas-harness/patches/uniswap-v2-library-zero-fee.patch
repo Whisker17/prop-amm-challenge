@@ -1,0 +1,32 @@
+--- lib/vendor/univ2periphery/UniswapV2Library.sol	2026-08-24 12:02:41
++++ src/patched/UniswapV2LibraryZeroFee.sol	2026-08-24 12:03:30
+@@ -2,9 +2,9 @@
+ 
+ import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol';
+ 
+-import "./SafeMath.sol";
++import "vendor/univ2periphery/SafeMath.sol";
+ 
+-library UniswapV2Library {
++library UniswapV2LibraryZeroFee {
+     using SafeMath for uint;
+ 
+     // returns sorted token addresses, used to handle return values from pairs sorted in this order
+@@ -43,7 +43,7 @@
+     function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
+         require(amountIn > 0, 'UniswapV2Library: INSUFFICIENT_INPUT_AMOUNT');
+         require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+-        uint amountInWithFee = amountIn.mul(997);
++        uint amountInWithFee = amountIn.mul(1000);
+         uint numerator = amountInWithFee.mul(reserveOut);
+         uint denominator = reserveIn.mul(1000).add(amountInWithFee);
+         amountOut = numerator / denominator;
+@@ -54,7 +54,7 @@
+         require(amountOut > 0, 'UniswapV2Library: INSUFFICIENT_OUTPUT_AMOUNT');
+         require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+         uint numerator = reserveIn.mul(amountOut).mul(1000);
+-        uint denominator = reserveOut.sub(amountOut).mul(997);
++        uint denominator = reserveOut.sub(amountOut).mul(1000);
+         amountIn = (numerator / denominator).add(1);
+     }
+ 

@@ -50,6 +50,134 @@ pub struct RunMetrics {
     /// inputs. A healthy run reports zero; anything else means the ledger and
     /// the curve state disagreed and the run must not be trusted.
     pub curve_revert_count: u64,
+
+    /// Uniswap V3 only. `None` for every other family, so a missing value is
+    /// never confused with a measured zero.
+    pub univ3: Option<Univ3RunMetrics>,
+}
+
+/// What a Uniswap V3 arm did that the other curves cannot do.
+///
+/// Three separate things are recorded and are **never** merged:
+///
+/// 1. **Quote-probe diagnostics** (`*_quote_reject_*`). The router and the
+///    arbitrageur search over candidate trade sizes, calling the curve many
+///    times per order. These fields count *refused candidate quotes*, so they
+///    scale with how hard the search looked, not with how much flow was turned
+///    away. They are **search diagnostics only and must not enter an economic
+///    conclusion**, and they must never be described as rejected orders.
+/// 2. **Order-level capacity** (`retail_*_capacity_*`). One canonical probe per
+///    retail order, taken on the pre-route pool state at the full order size.
+///    Deterministic and independent of the search, so this is the field that may
+///    carry an economic reading.
+/// 3. **Range occupancy**, sampled per step against the published fair price.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Univ3RunMetrics {
+    // ---------------- 1. quote-probe diagnostics ----------------
+    /// Candidate quotes the adapter refused for lack of room, over the run.
+    ///
+    /// **Not an order count.** A single retail order can produce many refusals
+    /// while the router bisects towards a size that does fit, and the order may
+    /// then be filled in full.
+    pub capacity_quote_reject_count: u64,
+    pub retail_quote_reject_count: u64,
+    pub arb_quote_reject_count: u64,
+    pub quote_reject_count_buy_x: u64,
+    pub quote_reject_count_sell_x: u64,
+
+    /// Requested input on refused candidate quotes, **kept in its own token**.
+    ///
+    /// The adapter cannot see the step's fair price, so these cannot be marked
+    /// to a common numeraire at the moment they are recorded. Marking them
+    /// afterwards would use the wrong price. They are therefore reported as two
+    /// raw sums that are never added together.
+    pub quote_rejected_requested_y: f64,
+    pub quote_rejected_requested_x: f64,
+    pub quote_fillable_y: f64,
+    pub quote_fillable_x: f64,
+    /// `requested - fillable`: what upstream Uniswap V3 would have left unspent
+    /// on those same candidate quotes.
+    pub quote_canonical_unfilled_y: f64,
+    pub quote_canonical_unfilled_x: f64,
+
+    // ---------------- 2. order-level capacity ----------------
+    /// Retail orders for which a canonical probe was taken.
+    pub retail_orders_probed: u64,
+    /// Retail orders the pool **alone** could not have taken in full, measured
+    /// once per order on the pre-route state at the full order size.
+    ///
+    /// This is a statement about the pool's capacity, **not** about where the
+    /// flow went: the router splits on price as well as capacity, so an order
+    /// counted here may still have been served in full by the pool plus the
+    /// competitor, and an order not counted here may still have gone to the
+    /// competitor because the competitor quoted better.
+    pub retail_full_order_capacity_limited_count: u64,
+    /// Summed shortfall of those orders — `requested - fillable` — converted to
+    /// Y at **the fair price of the step the order arrived in**, never at the
+    /// run's final price.
+    pub retail_capacity_shortfall_notional_y: f64,
+    /// Retail notional this V3 pool actually served, in Y at the step's fair
+    /// price. Mirrors `RunMetrics::retail_notional` so the V3 block can be read
+    /// on its own.
+    pub retail_notional_served: f64,
+
+    // ---------------- 3. range occupancy ----------------
+    /// Steps whose published fair price lay outside the position's range.
+    /// Replaces any pool-state-derived "out of range" count: what matters is
+    /// whether the pool could serve the *market* price, and the pool's own tick
+    /// only moves when somebody trades.
+    pub fair_price_out_of_range_steps: u64,
+    /// Steps sampled, so the rate above has a denominator even when a run ends
+    /// early. `fair_price_out_of_range_steps / steps_sampled` is the rate.
+    pub steps_sampled: u64,
+    /// First step at which the fair price left the range, or `None` if it never
+    /// did. A run that leaves at step 3 and one that leaves at step 9 000 have
+    /// the same rate only if they both stay out.
+    pub first_out_of_range_step: Option<u64>,
+
+    /// Steps at which the pool had non-zero active liquidity at its own current
+    /// tick, over `steps_sampled`.
+    ///
+    /// **Under fill-or-kill this is close to 100% by construction and says very
+    /// little.** Crossing a position boundary requires the order that consumes
+    /// the last of the liquidity inside it, and that order is exactly the one
+    /// the adapter refuses. The pool therefore parks *at* the boundary with its
+    /// stored liquidity still non-zero, while being empty on one side — a run
+    /// can finish holding 200 X and 0.03 Y and still report 100% here.
+    ///
+    /// It is reported because it is the standard definition of active liquidity
+    /// and because leaving it out would hide the artefact. For "could the pool
+    /// serve the market", read `fair_price_out_of_range_steps` instead.
+    pub active_liquidity_steps: u64,
+}
+
+impl Univ3RunMetrics {
+    /// Fraction of sampled steps whose fair price was outside the range.
+    pub fn fair_price_out_of_range_rate(&self) -> f64 {
+        if self.steps_sampled == 0 {
+            f64::NAN
+        } else {
+            self.fair_price_out_of_range_steps as f64 / self.steps_sampled as f64
+        }
+    }
+
+    /// Fraction of sampled steps with non-zero active liquidity.
+    pub fn active_liquidity_rate(&self) -> f64 {
+        if self.steps_sampled == 0 {
+            f64::NAN
+        } else {
+            self.active_liquidity_steps as f64 / self.steps_sampled as f64
+        }
+    }
+
+    /// Fraction of retail orders the pool alone could not have taken in full.
+    pub fn retail_capacity_limited_rate(&self) -> f64 {
+        if self.retail_orders_probed == 0 {
+            f64::NAN
+        } else {
+            self.retail_full_order_capacity_limited_count as f64 / self.retail_orders_probed as f64
+        }
+    }
 }
 
 /// Percentile summary of one metric across a paired batch.
@@ -127,6 +255,100 @@ pub struct StrategySummary {
     pub total_net_edge: f64,
     /// Total curve reverts across the batch. Must be zero for a valid result.
     pub total_curve_reverts: u64,
+
+    /// Present only when every run in the batch carried V3 metrics.
+    pub univ3: Option<Univ3Summary>,
+}
+
+/// Batch aggregate of the Uniswap V3 measures.
+///
+/// The `quote_*` fields are search diagnostics; the `retail_*_capacity_*` fields
+/// are the order-level, search-independent ones. See [`Univ3RunMetrics`].
+#[derive(Debug, Clone)]
+pub struct Univ3Summary {
+    // search diagnostics
+    pub total_capacity_quote_rejects: u64,
+    pub total_retail_quote_rejects: u64,
+    pub total_arb_quote_rejects: u64,
+    pub total_quote_rejects_buy_x: u64,
+    pub total_quote_rejects_sell_x: u64,
+    /// Per-seed sums, per token, never combined.
+    pub quote_rejected_requested_y: Distribution,
+    pub quote_rejected_requested_x: Distribution,
+    pub quote_canonical_unfilled_y: Distribution,
+    pub quote_canonical_unfilled_x: Distribution,
+
+    // order-level capacity
+    pub total_retail_orders_probed: u64,
+    pub total_retail_capacity_limited_orders: u64,
+    pub retail_capacity_limited_rate: Distribution,
+    pub retail_capacity_shortfall_notional_y: Distribution,
+    pub retail_notional_served: Distribution,
+
+    // range occupancy
+    pub fair_price_out_of_range_rate: Distribution,
+    pub active_liquidity_rate: Distribution,
+    /// Over the seeds that ever left the range. `seeds_that_left_range` is the
+    /// denominator, so a low mean is not read as "leaves early" when in fact
+    /// almost nothing left at all.
+    pub first_out_of_range_step: Distribution,
+    pub seeds_that_left_range: usize,
+}
+
+impl Univ3Summary {
+    fn from_runs(runs: &[RunMetrics]) -> Option<Univ3Summary> {
+        let v3: Vec<Univ3RunMetrics> = runs.iter().filter_map(|r| r.univ3).collect();
+        if v3.is_empty() || v3.len() != runs.len() {
+            return None;
+        }
+        let collect = |f: fn(&Univ3RunMetrics) -> f64| -> Vec<f64> { v3.iter().map(f).collect() };
+        let first_out: Vec<f64> = v3
+            .iter()
+            .filter_map(|m| m.first_out_of_range_step)
+            .map(|s| s as f64)
+            .collect();
+        Some(Univ3Summary {
+            total_capacity_quote_rejects: v3.iter().map(|m| m.capacity_quote_reject_count).sum(),
+            total_retail_quote_rejects: v3.iter().map(|m| m.retail_quote_reject_count).sum(),
+            total_arb_quote_rejects: v3.iter().map(|m| m.arb_quote_reject_count).sum(),
+            total_quote_rejects_buy_x: v3.iter().map(|m| m.quote_reject_count_buy_x).sum(),
+            total_quote_rejects_sell_x: v3.iter().map(|m| m.quote_reject_count_sell_x).sum(),
+            quote_rejected_requested_y: Distribution::from_samples(&collect(|m| {
+                m.quote_rejected_requested_y
+            })),
+            quote_rejected_requested_x: Distribution::from_samples(&collect(|m| {
+                m.quote_rejected_requested_x
+            })),
+            quote_canonical_unfilled_y: Distribution::from_samples(&collect(|m| {
+                m.quote_canonical_unfilled_y
+            })),
+            quote_canonical_unfilled_x: Distribution::from_samples(&collect(|m| {
+                m.quote_canonical_unfilled_x
+            })),
+            total_retail_orders_probed: v3.iter().map(|m| m.retail_orders_probed).sum(),
+            total_retail_capacity_limited_orders: v3
+                .iter()
+                .map(|m| m.retail_full_order_capacity_limited_count)
+                .sum(),
+            retail_capacity_limited_rate: Distribution::from_samples(&collect(|m| {
+                m.retail_capacity_limited_rate()
+            })),
+            retail_capacity_shortfall_notional_y: Distribution::from_samples(&collect(|m| {
+                m.retail_capacity_shortfall_notional_y
+            })),
+            retail_notional_served: Distribution::from_samples(&collect(|m| {
+                m.retail_notional_served
+            })),
+            fair_price_out_of_range_rate: Distribution::from_samples(&collect(|m| {
+                m.fair_price_out_of_range_rate()
+            })),
+            active_liquidity_rate: Distribution::from_samples(&collect(|m| {
+                m.active_liquidity_rate()
+            })),
+            first_out_of_range_step: Distribution::from_samples(&first_out),
+            seeds_that_left_range: first_out.len(),
+        })
+    }
 }
 
 impl StrategySummary {
@@ -166,6 +388,7 @@ impl StrategySummary {
             },
             total_net_edge: net.iter().sum(),
             total_curve_reverts: runs.iter().map(|r| r.curve_revert_count).sum(),
+            univ3: Univ3Summary::from_runs(runs),
         }
     }
 }
@@ -222,6 +445,7 @@ mod tests {
             final_reserve_y: 10_000.0,
             final_fair_price: 100.0,
             curve_revert_count: 0,
+            univ3: None,
         }
     }
 

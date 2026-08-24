@@ -17,7 +17,7 @@ use prop_amm_research::metrics::StrategySummary;
 use prop_amm_research::paired;
 use prop_amm_research::probe;
 use prop_amm_research::report::{self, RunMeta};
-use prop_amm_research::strategies::{self, Strategy};
+use prop_amm_research::strategies::{self, Strategy, StrategySet};
 use prop_amm_research::wad::price_to_wad;
 
 #[derive(Parser)]
@@ -41,6 +41,10 @@ enum Command {
         reserve_x: f64,
         #[arg(long, default_value = "10000")]
         reserve_y: f64,
+        /// `legacy` (DODO / Flashbots / UniV2) or `with-v3` (adds the two
+        /// Uniswap V3 arms).
+        #[arg(long, default_value = "legacy")]
+        strategy_set: String,
         /// Optional directory for `mid-price.json`.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -53,6 +57,9 @@ enum Command {
         reserve_x: f64,
         #[arg(long, default_value = "10000")]
         reserve_y: f64,
+        /// `legacy` or `with-v3`.
+        #[arg(long, default_value = "legacy")]
+        strategy_set: String,
         /// Optional directory for `quote-matrix.csv` / `.json`.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -73,7 +80,13 @@ enum Command {
         /// 0 = all available cores.
         #[arg(long, default_value = "0")]
         workers: usize,
-        /// Restrict to specific strategy ids (repeatable).
+        /// `legacy` (DODO / Flashbots / UniV2, the phase-1 and phase-2
+        /// catalogue) or `with-v3` (adds the full-range and concentrated
+        /// Uniswap V3 arms). Ignored when `--strategy` is given.
+        #[arg(long, default_value = "legacy")]
+        strategy_set: String,
+        /// Restrict to specific strategy ids (repeatable). Overrides
+        /// `--strategy-set`.
         #[arg(long)]
         strategy: Vec<String>,
         /// Output directory for JSON / CSV / Markdown.
@@ -82,9 +95,15 @@ enum Command {
     },
 }
 
-fn selected_strategies(filter: &[String]) -> anyhow::Result<Vec<Strategy>> {
+fn parse_strategy_set(text: &str) -> anyhow::Result<StrategySet> {
+    StrategySet::parse(text).ok_or_else(|| {
+        anyhow::anyhow!("unknown strategy set `{text}` (expected legacy or with-v3)")
+    })
+}
+
+fn selected_strategies(set: StrategySet, filter: &[String]) -> anyhow::Result<Vec<Strategy>> {
     if filter.is_empty() {
-        return Ok(strategies::all_strategies());
+        return Ok(strategies::strategies_for(set));
     }
     let mut selected = Vec::new();
     for id in filter {
@@ -102,14 +121,28 @@ fn main() -> anyhow::Result<()> {
             price,
             reserve_x,
             reserve_y,
+            strategy_set,
             out,
-        } => equilibrium(price, reserve_x, reserve_y, out),
+        } => equilibrium(
+            price,
+            reserve_x,
+            reserve_y,
+            parse_strategy_set(&strategy_set)?,
+            out,
+        ),
         Command::QuoteMatrix {
             price,
             reserve_x,
             reserve_y,
+            strategy_set,
             out,
-        } => quote_matrix(price, reserve_x, reserve_y, out),
+        } => quote_matrix(
+            price,
+            reserve_x,
+            reserve_y,
+            parse_strategy_set(&strategy_set)?,
+            out,
+        ),
         Command::Bench {
             simulations,
             steps,
@@ -117,6 +150,7 @@ fn main() -> anyhow::Result<()> {
             seed_stride,
             mode,
             workers,
+            strategy_set,
             strategy,
             out,
         } => bench(
@@ -126,6 +160,7 @@ fn main() -> anyhow::Result<()> {
             seed_stride,
             &mode,
             workers,
+            parse_strategy_set(&strategy_set)?,
             &strategy,
             out,
         ),
@@ -136,6 +171,7 @@ fn equilibrium(
     price: f64,
     reserve_x: f64,
     reserve_y: f64,
+    set: StrategySet,
     out: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let expected =
@@ -146,9 +182,15 @@ fn equilibrium(
 
     let mut rows = Vec::new();
     let mut all_equal = true;
-    for strategy in strategies::all_strategies() {
-        let mid = probe::mid_price_wad(&strategy, price, reserve_x, reserve_y)
-            .ok_or_else(|| anyhow::anyhow!("{}: mid price reverted", strategy.id))?;
+    for strategy in strategies::strategies_for(set) {
+        let mid =
+            probe::mid_price_wad(&strategy, price, reserve_x, reserve_y).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}: no mid price is defined at price {price} \
+                 (a Uniswap V3 arm is minted at the benchmark's opening price only)",
+                    strategy.id
+                )
+            })?;
         all_equal &= mid == expected;
         println!("{:<28} {:<12} {mid}", strategy.id, strategy.parameter);
         rows.push((strategy.id.clone(), mid));
@@ -174,9 +216,10 @@ fn quote_matrix(
     price: f64,
     reserve_x: f64,
     reserve_y: f64,
+    set: StrategySet,
     out: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let strategies = strategies::all_strategies();
+    let strategies = strategies::strategies_for(set);
     let buy_sizes = probe::default_buy_sizes_y();
     let sell_sizes = probe::default_sell_sizes_x();
     let rows = probe::quote_matrix(
@@ -247,12 +290,13 @@ fn bench(
     seed_stride: u64,
     mode: &str,
     workers: usize,
+    set: StrategySet,
     strategy_filter: &[String],
     out: PathBuf,
 ) -> anyhow::Result<()> {
     let competitor = Competitor::parse(mode)
         .ok_or_else(|| anyhow::anyhow!("unknown mode `{mode}` (expected `paired` or `solo`)"))?;
-    let strategies = selected_strategies(strategy_filter)?;
+    let strategies = selected_strategies(set, strategy_filter)?;
     let batch = BatchConfig {
         simulations,
         steps,
@@ -263,8 +307,13 @@ fn bench(
     };
 
     println!(
-        "running {} strategies x {} simulations x {} steps (mode {}, workers {})",
+        "running {} strategies ({}) x {} simulations x {} steps (mode {}, workers {})",
         strategies.len(),
+        if strategy_filter.is_empty() {
+            set.as_str()
+        } else {
+            "explicit --strategy list"
+        },
         simulations,
         steps,
         competitor.as_str(),
@@ -294,20 +343,43 @@ fn bench(
     let flashbots_minus_dodo = paired::flashbots_minus_dodo(&results);
     let versus_univ2 = paired::versus_univ2(&results);
     let attributions = paired::attribute_versus_univ2(&results);
+    let univ3_attributions = paired::attribute_univ3_concentration(&results);
+    let versus_univ3 = paired::versus_univ3_full_range(&results);
+    let univ3_minus_univ2 = paired::univ3_full_range_minus_univ2(&results);
+    let univ3_capacity_deltas = paired::univ3_capacity_deltas(&results);
+    let sanity = paired::univ3_full_range_sanity(&results);
 
-    let meta = RunMeta::from_batch(&batch, elapsed);
+    let meta = RunMeta::from_batch_with_set(&batch, elapsed, set);
+
+    // The static probes describe the curves the numbers came from, and the
+    // focused reports quote them, so they are built before `write_all`.
+    let quote_rows = probe::quote_matrix(
+        &strategies,
+        meta.initial_price,
+        meta.initial_x,
+        meta.initial_y,
+        &probe::default_buy_sizes_y(),
+        &probe::default_sell_sizes_x(),
+    );
+
     let mut written = report::write_all(
         &out,
         &meta,
-        &summaries,
-        &all_runs,
-        &flashbots_minus_dodo,
-        &versus_univ2,
-        &attributions,
+        &report::Artefacts {
+            summaries: &summaries,
+            runs: &all_runs,
+            flashbots_minus_dodo: &flashbots_minus_dodo,
+            versus_univ2: &versus_univ2,
+            attributions: &attributions,
+            univ3_attributions: &univ3_attributions,
+            versus_univ3: &versus_univ3,
+            univ3_minus_univ2: &univ3_minus_univ2,
+            univ3_capacity_deltas: &univ3_capacity_deltas,
+            quote_rows: &quote_rows,
+            univ3_sanity: sanity.as_ref(),
+        },
     )?;
 
-    // Keep each result directory self-contained: the static probes describe the
-    // curves the numbers came from.
     let mid_rows: Vec<(String, prop_amm_research::u256::U256)> = strategies
         .iter()
         .filter_map(|strategy| {
@@ -320,14 +392,6 @@ fn bench(
         std::fs::write(&path, report::mid_price_json(&mid_rows, expected))?;
         written.push(path);
     }
-    let quote_rows = probe::quote_matrix(
-        &strategies,
-        meta.initial_price,
-        meta.initial_x,
-        meta.initial_y,
-        &probe::default_buy_sizes_y(),
-        &probe::default_sell_sizes_x(),
-    );
     let path = out.join("quote-matrix.csv");
     std::fs::write(&path, report::quote_matrix_csv(&quote_rows))?;
     written.push(path);
@@ -342,6 +406,10 @@ fn bench(
         ),
     )?;
     written.push(path);
+
+    if let Some(sanity) = &sanity {
+        println!("\n{}", sanity.summary_line());
+    }
 
     println!(
         "\n{:<28} {:>14} {:>14} {:>14} {:>10}",

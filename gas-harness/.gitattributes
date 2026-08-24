@@ -1,0 +1,7 @@
+# A unified diff's context lines start with a space, so a context line for a
+# blank source line is a lone space. `git diff --check` reports that as trailing
+# whitespace; stripping it would make the patch fail to apply. These files are
+# the record of exactly what was changed in a pinned upstream source, so they
+# must stay byte-exact.
+*.patch -whitespace
+*.diff -whitespace

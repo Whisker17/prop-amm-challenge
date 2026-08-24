@@ -13,6 +13,7 @@ use crate::dodo::RState;
 use crate::flashbots::FlashbotsPool;
 use crate::strategies::{Family, Strategy};
 use crate::u256::U256;
+use crate::univ3;
 use crate::wad::{nano_to_wad, price_to_wad};
 
 /// Mid price at a given inventory, as a WAD integer.
@@ -22,6 +23,12 @@ use crate::wad::{nano_to_wad, price_to_wad};
 /// * Flashbots: the marginal price of the curve, `(K / base) / base`, expressed
 ///   in WAD. At `reserveX == targetX` this is exactly `multX / multY`.
 /// * Uniswap V2: `reserveY / reserveX` in WAD.
+/// * Uniswap V3: `sqrtPriceX96^2 / 2^192`, read from the position the strategy
+///   mints. A V3 pool's marginal price is a function of `sqrtPriceX96` **only**,
+///   so the inventory arguments do not enter — a position quotes the same price
+///   whatever it holds. Because the mint price is pinned to the benchmark's
+///   opening price, this returns `None` when asked about any other price rather
+///   than reporting the opening one as if it applied.
 pub fn mid_price_wad(
     strategy: &Strategy,
     price: f64,
@@ -55,7 +62,21 @@ pub fn mid_price_wad(
             decimal_math::div_floor(k.checked_div(base)?, base)
         }
         Family::UniV2 => decimal_math::div_floor(quote_wad, base_wad),
+        Family::UniV3FullRange | Family::UniV3Concentrated => {
+            let opening = univ3_mid_price_wad(univ3::OPENING_SQRT_PRICE_X96)?;
+            if price_wad != opening {
+                return None;
+            }
+            Some(opening)
+        }
     }
+}
+
+/// `sqrtPriceX96^2 / 2^192`, in WAD, without leaving the integers.
+fn univ3_mid_price_wad(sqrt_price_x96: U256) -> Option<U256> {
+    let q96 = U256::ONE.checked_shl(96)?;
+    let price_x96 = crate::u256::mul_div(sqrt_price_x96, sqrt_price_x96, q96)?;
+    crate::u256::mul_div(price_x96, crate::wad::WAD, q96)
 }
 
 /// One quote-matrix cell.

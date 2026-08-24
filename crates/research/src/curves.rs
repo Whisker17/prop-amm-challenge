@@ -53,7 +53,7 @@ pub fn revert_count() -> u64 {
     REVERT_COUNT.with(|count| count.get())
 }
 
-fn record_revert() {
+pub(crate) fn record_revert() {
     REVERT_COUNT.with(|count| count.set(count.get().saturating_add(1)));
 }
 

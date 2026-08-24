@@ -22,6 +22,11 @@ pub enum Metric {
     NetEdge,
     RetailEdge,
     ArbitrageEdge,
+    /// Uniswap V3 only: the order-level capacity shortfall, in Y at each
+    /// order's own step price. Absent from [`Metric::all`] because the other
+    /// families have no such quantity — comparing a V3 arm against UniV2 on it
+    /// would be comparing a number against nothing.
+    RetailCapacityShortfallY,
 }
 
 impl Metric {
@@ -30,17 +35,25 @@ impl Metric {
             Metric::NetEdge => "netEdge",
             Metric::RetailEdge => "retailEdge",
             Metric::ArbitrageEdge => "arbitrageEdge",
+            Metric::RetailCapacityShortfallY => "retailCapacityShortfallNotionalY",
         }
     }
 
+    /// `NaN` when the run carries no value for this metric, so a missing
+    /// measurement can never be averaged in as a zero.
     pub fn extract(self, run: &RunMetrics) -> f64 {
         match self {
             Metric::NetEdge => run.net_edge,
             Metric::RetailEdge => run.retail_edge,
             Metric::ArbitrageEdge => run.arbitrage_edge,
+            Metric::RetailCapacityShortfallY => run
+                .univ3
+                .map(|m| m.retail_capacity_shortfall_notional_y)
+                .unwrap_or(f64::NAN),
         }
     }
 
+    /// The three economic metrics every family reports.
     pub fn all() -> [Metric; 3] {
         [Metric::NetEdge, Metric::RetailEdge, Metric::ArbitrageEdge]
     }
@@ -94,6 +107,9 @@ fn paired_samples(treatment: &[RunMetrics], baseline: &[RunMetrics], metric: Met
                 .ok()
                 .map(|index| value - baseline_by_seed[index].1)
         })
+        // A metric that one side does not report yields NaN, which must drop out
+        // rather than poison the mean. Dropping is visible: `samples` shrinks.
+        .filter(|difference| difference.is_finite())
         .collect()
 }
 
@@ -257,7 +273,12 @@ pub fn attribute_versus_univ2(results: &[(Strategy, Vec<RunMetrics>)]) -> Vec<At
         let anchor_id = match strategy.family {
             Family::Dodo => DODO_ANCHOR_ID,
             Family::Flashbots => FLASHBOTS_ANCHOR_ID,
-            Family::UniV2 => continue,
+            // Uniswap V2 is the anchor itself, and the Uniswap V3 arms consume
+            // no oracle at all, so an "oracle system advantage" is not a
+            // quantity that exists for them. They are decomposed separately, by
+            // [`attribute_univ3_concentration`], rather than being pushed
+            // through a split whose first term would be misnamed.
+            Family::UniV2 | Family::UniV3FullRange | Family::UniV3Concentrated => continue,
         };
         let Some((anchor, anchor_runs)) = find(results, anchor_id) else {
             continue;
@@ -281,6 +302,340 @@ pub fn attribute_versus_univ2(results: &[(Strategy, Vec<RunMetrics>)]) -> Vec<At
                 metric: metric.as_str(),
                 oracle_system_advantage: system.mean,
                 curve_shape_effect: shape.mean,
+                total_vs_univ2: total.mean,
+            });
+        }
+    }
+    out
+}
+
+/// The Uniswap V3 full-range arm, which anchors the V3 decomposition.
+pub const UNIV3_FULL_RANGE_ID: &str = "univ3-full-range-zero-fee";
+
+/// Every strategy against the zero-fee **full-range Uniswap V3** baseline.
+///
+/// Empty when the run did not include the V3 arms. The V3 full-range arm itself
+/// is skipped, as is any metric a strategy does not report.
+pub fn versus_univ3_full_range(results: &[(Strategy, Vec<RunMetrics>)]) -> Vec<PairedDelta> {
+    let Some((univ3, univ3_runs)) = find(results, UNIV3_FULL_RANGE_ID) else {
+        return Vec::new();
+    };
+    let mut deltas = Vec::new();
+    for (strategy, runs) in results {
+        if strategy.id == univ3.id {
+            continue;
+        }
+        for metric in Metric::all() {
+            if let Some(delta) = paired_delta(strategy, runs, univ3, univ3_runs, metric) {
+                deltas.push(delta);
+            }
+        }
+    }
+    deltas
+}
+
+/// `full-range V3 − UniV2`, per metric: the sanity gate.
+///
+/// Both are passive, zero-fee and hold the same opening capital, so the expected
+/// difference is zero. It is **not** exactly zero and must not be asserted to be:
+/// the V3 port is a different integer implementation on a finite tick domain,
+/// and both sides are quantised to nano at the adapter boundary. What this
+/// returns is the residual, for reporting against a stated tolerance.
+pub fn univ3_full_range_minus_univ2(results: &[(Strategy, Vec<RunMetrics>)]) -> Vec<PairedDelta> {
+    let (Some((univ3, univ3_runs)), Some((univ2, univ2_runs))) =
+        (find(results, UNIV3_FULL_RANGE_ID), find(results, UNIV2_ID))
+    else {
+        return Vec::new();
+    };
+    Metric::all()
+        .into_iter()
+        .filter_map(|metric| paired_delta(univ3, univ3_runs, univ2, univ2_runs, metric))
+        .collect()
+}
+
+/// The full-range V3 sanity gate: residuals against UniV2, with a derived bound.
+///
+/// Both arms are passive, zero-fee, and hold the same opening capital, so their
+/// per-seed edges should agree — but **not exactly**, and this deliberately does
+/// not assert that they do. Two real sources of residual are already measured:
+///
+/// * from the *same* state, the two formulas differ by up to **1 693 wei** on a
+///   single quote (`univ3_vs_univ2_continuous`), because V3 derives the output
+///   through `sqrtPriceX96` while V2 uses the reserve ratio directly;
+/// * once the two are allowed to run independently, their states drift by up to
+///   **484 wei** over 400 swaps in the same test.
+///
+/// Both are far below the adapter's own quantisation, which is the term that
+/// actually dominates: every quote leaves the integer domain through a floor to
+/// nano (`1e-9`), so a single fill can differ by up to one nano of the received
+/// token. Marked at the fair price that is `1e-9 · max(1, price)` per trade, and
+/// a run does `retail_trade_count + arb_count` trades. [`derived_tolerance`]
+/// is exactly that product — no fitted constant.
+#[derive(Debug, Clone)]
+pub struct Univ3SanityGate {
+    /// Per-seed `V3 − V2` net-edge residuals, aligned by seed.
+    pub residuals: Distribution,
+    pub samples: usize,
+    /// Largest `|residual|` seen.
+    pub max_abs_residual: f64,
+    /// Largest tolerance derived across the seeds.
+    pub tolerance: f64,
+    /// That tolerance broken into its terms, for the seed that produced it.
+    pub tolerance_terms: ToleranceTerms,
+    /// Seeds whose `|residual|` exceeded their own derived tolerance.
+    pub seeds_over_tolerance: usize,
+    /// Capacity rejections recorded by the full-range arm. Must be zero: a
+    /// full-range position spans the whole tick domain, so nothing can be
+    /// refused for want of room, and a non-zero value means the range or the
+    /// adapter is wrong rather than that the market moved.
+    pub full_range_capacity_limited_orders: u64,
+}
+
+impl Univ3SanityGate {
+    /// Whether every seed stayed inside its derived tolerance and the
+    /// full-range arm refused nothing.
+    pub fn passed(&self) -> bool {
+        self.seeds_over_tolerance == 0 && self.full_range_capacity_limited_orders == 0
+    }
+
+    pub fn summary_line(&self) -> String {
+        format!(
+            "full-range V3 sanity gate: {} — max |netEdge residual vs UniV2| {:.3e} over {} seeds, \
+             derived tolerance {:.3e}, {} seed(s) over tolerance, {} capacity-limited order(s)",
+            if self.passed() { "PASS" } else { "FAIL" },
+            self.max_abs_residual,
+            self.samples,
+            self.tolerance,
+            self.seeds_over_tolerance,
+            self.full_range_capacity_limited_orders
+        )
+    }
+}
+
+/// Golden-section stopping tolerance on the router's split fraction.
+///
+/// Mirrors `GOLDEN_ALPHA_TOL` in `prop_amm_sim::router`, which is private. If
+/// that constant changes, this bound is wrong — `the_sanity_tolerance_terms_are_ordered`
+/// is the tripwire.
+pub const ROUTER_ALPHA_TOL: f64 = 1e-3;
+
+/// Golden-section stopping tolerance on the arbitrageur's input size, relative.
+/// Mirrors `GOLDEN_INPUT_REL_TOL` in `prop_amm_sim::arbitrageur`.
+pub const ARB_INPUT_REL_TOL: f64 = 1e-2;
+
+/// One nano, the adapter's quantisation step.
+pub const NANO: f64 = 1e-9;
+
+/// The three terms of the sanity tolerance, kept apart so the report can say
+/// which one dominates instead of quoting one opaque number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToleranceTerms {
+    /// Floor-to-nano on every fill, marked at the fair price.
+    pub quantisation: f64,
+    /// The arbitrageur's size search, which stops at a relative tolerance.
+    pub arb_search: f64,
+    /// The router's split search, which stops at an absolute tolerance on the
+    /// split fraction.
+    pub router_search: f64,
+}
+
+impl ToleranceTerms {
+    pub fn total(&self) -> f64 {
+        self.quantisation + self.arb_search + self.router_search
+    }
+}
+
+/// Tolerance for the full-range V3 vs UniV2 residual, derived term by term.
+///
+/// **Quantisation.** Every quote leaves the integer domain through a floor to
+/// nano, so one fill can differ by up to one nano of the received token. Marked
+/// at the fair price that is `1e-9 · max(1, price)` per trade, over
+/// `retail_trade_count + arb_count` trades.
+///
+/// **Search.** This is the term that actually dominates, and it is not a
+/// property of either curve: the simulation's arbitrageur resolves its trade
+/// size only to [`ARB_INPUT_REL_TOL`] (1% relative) and the router resolves its
+/// split only to [`ROUTER_ALPHA_TOL`] (1e-3 absolute). A one-wei difference in a
+/// quote can therefore land the golden-section search on a different point
+/// inside its own stopping window. Both searches maximise a smooth objective, so
+/// at the optimum the gradient vanishes and a displacement `δ` costs `O(δ²)` of
+/// the objective — whose scale is the flow's notional. Hence
+/// `arb_notional · ARB_INPUT_REL_TOL²` and `retail_notional · ROUTER_ALPHA_TOL²`.
+///
+/// Measured at the time of writing over 8 seeds, the quantisation term is two to
+/// three orders of magnitude below the observed residual while the arb-search
+/// term is one to two orders above it:
+///
+/// | steps | observed max residual | quantisation | arb search |
+/// | --- | --- | --- | --- |
+/// | 300 | 5.3e-3 | 4.4e-5 | 7.1e-1 |
+/// | 1 000 | 9.0e-2 | 1.6e-4 | 2.7e0 |
+/// | 3 000 | 7.8e-2 | 4.6e-4 | 7.2e0 |
+///
+/// The bound is therefore conservative by roughly 30x-130x. It is kept anyway
+/// because it is derived rather than fitted and it scales with the run: a
+/// formula regression large enough to matter is far larger than this.
+pub fn tolerance_terms(run: &RunMetrics) -> ToleranceTerms {
+    let trades = (run.retail_trade_count + run.arb_count) as f64;
+    ToleranceTerms {
+        quantisation: trades * NANO * run.final_fair_price.max(1.0),
+        arb_search: run.arb_notional * ARB_INPUT_REL_TOL * ARB_INPUT_REL_TOL,
+        router_search: run.retail_notional * ROUTER_ALPHA_TOL * ROUTER_ALPHA_TOL,
+    }
+}
+
+/// [`tolerance_terms`] summed.
+pub fn derived_tolerance(run: &RunMetrics) -> f64 {
+    tolerance_terms(run).total()
+}
+
+/// Build the sanity gate. `None` when the run had no V3 full-range arm.
+pub fn univ3_full_range_sanity(results: &[(Strategy, Vec<RunMetrics>)]) -> Option<Univ3SanityGate> {
+    let (univ3, univ3_runs) = find(results, UNIV3_FULL_RANGE_ID)?;
+    let (_, univ2_runs) = find(results, UNIV2_ID)?;
+    let _ = univ3;
+
+    let mut by_seed: Vec<(u64, f64)> = univ2_runs
+        .iter()
+        .map(|run| (run.seed, run.net_edge))
+        .collect();
+    by_seed.sort_by_key(|(seed, _)| *seed);
+
+    let mut residuals = Vec::new();
+    let mut max_abs = 0.0_f64;
+    let mut tolerance = 0.0_f64;
+    let mut terms = ToleranceTerms {
+        quantisation: 0.0,
+        arb_search: 0.0,
+        router_search: 0.0,
+    };
+    let mut over = 0usize;
+    for run in univ3_runs {
+        let Ok(index) = by_seed.binary_search_by_key(&run.seed, |(seed, _)| *seed) else {
+            continue;
+        };
+        let residual = run.net_edge - by_seed[index].1;
+        if !residual.is_finite() {
+            continue;
+        }
+        let seed_terms = tolerance_terms(run);
+        let seed_tolerance = seed_terms.total();
+        if residual.abs() > seed_tolerance {
+            over += 1;
+        }
+        max_abs = max_abs.max(residual.abs());
+        if seed_tolerance > tolerance {
+            tolerance = seed_tolerance;
+            terms = seed_terms;
+        }
+        residuals.push(residual);
+    }
+    if residuals.is_empty() {
+        return None;
+    }
+
+    Some(Univ3SanityGate {
+        samples: residuals.len(),
+        residuals: Distribution::from_samples(&residuals),
+        max_abs_residual: max_abs,
+        tolerance,
+        tolerance_terms: terms,
+        seeds_over_tolerance: over,
+        full_range_capacity_limited_orders: univ3_runs
+            .iter()
+            .filter_map(|run| run.univ3)
+            .map(|m| m.retail_full_order_capacity_limited_count)
+            .sum(),
+    })
+}
+
+/// `concentrated V3 − full-range V3` on the order-level capacity shortfall.
+///
+/// Both sides report the metric, which is why this comparison is legitimate and
+/// the same comparison against UniV2 is not.
+pub fn univ3_capacity_deltas(results: &[(Strategy, Vec<RunMetrics>)]) -> Vec<PairedDelta> {
+    let Some((full_range, full_range_runs)) = find(results, UNIV3_FULL_RANGE_ID) else {
+        return Vec::new();
+    };
+    results
+        .iter()
+        .filter(|(s, _)| s.family == Family::UniV3Concentrated)
+        .filter_map(|(strategy, runs)| {
+            paired_delta(
+                strategy,
+                runs,
+                full_range,
+                full_range_runs,
+                Metric::RetailCapacityShortfallY,
+            )
+        })
+        .collect()
+}
+
+/// The Uniswap V3 split, which deliberately has different terms from
+/// [`Attribution`] because V3 consumes no oracle.
+///
+/// * `full_range_vs_univ2 = mean(univ3-full-range − univ2)` — two passive
+///   zero-fee constant-product curves on the same capital. This is an
+///   **implementation and adapter term**, not an economic effect: it carries the
+///   V3 integer path, the fill-or-kill policy and the nano quantisation. It is
+///   reported so that the concentration term below is not credited with it.
+/// * `concentration_effect = mean(strategy − univ3-full-range)` — same curve
+///   family, same oracle situation (none), so what remains is the effect of
+///   concentrating the same capital into a finite, never-rebalanced range.
+/// * `total_vs_univ2 = mean(strategy − univ2)`, exactly the sum.
+#[derive(Debug, Clone)]
+pub struct Univ3Attribution {
+    pub strategy: String,
+    pub family: String,
+    pub parameter: String,
+    pub anchor: String,
+    pub metric: &'static str,
+    pub full_range_vs_univ2: f64,
+    pub concentration_effect: f64,
+    pub total_vs_univ2: f64,
+}
+
+/// Split each concentrated V3 arm's difference from Uniswap V2 into the
+/// full-range baseline term and the concentration term.
+///
+/// Returns empty when the run did not include the V3 arms.
+pub fn attribute_univ3_concentration(
+    results: &[(Strategy, Vec<RunMetrics>)],
+) -> Vec<Univ3Attribution> {
+    let (Some((univ2, univ2_runs)), Some((full_range, full_range_runs))) =
+        (find(results, UNIV2_ID), find(results, UNIV3_FULL_RANGE_ID))
+    else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (strategy, runs) in results {
+        if strategy.family != Family::UniV3Concentrated {
+            continue;
+        }
+        for metric in Metric::all() {
+            let Some(baseline) =
+                paired_delta(full_range, full_range_runs, univ2, univ2_runs, metric)
+            else {
+                continue;
+            };
+            let Some(concentration) =
+                paired_delta(strategy, runs, full_range, full_range_runs, metric)
+            else {
+                continue;
+            };
+            let Some(total) = paired_delta(strategy, runs, univ2, univ2_runs, metric) else {
+                continue;
+            };
+            out.push(Univ3Attribution {
+                strategy: strategy.id.clone(),
+                family: strategy.family.as_str().to_string(),
+                parameter: strategy.parameter.clone(),
+                anchor: full_range.id.clone(),
+                metric: metric.as_str(),
+                full_range_vs_univ2: baseline.mean,
+                concentration_effect: concentration.mean,
                 total_vs_univ2: total.mean,
             });
         }
@@ -314,6 +669,7 @@ mod tests {
             final_reserve_y: 10_000.0,
             final_fair_price: 100.0,
             curve_revert_count: 0,
+            univ3: None,
         }
     }
 

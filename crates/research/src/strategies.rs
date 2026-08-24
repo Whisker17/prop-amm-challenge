@@ -31,6 +31,8 @@ use prop_amm_shared::nano::f64_to_nano;
 use crate::curves;
 use crate::dodo::decimal_math::ONE;
 use crate::u256::U256;
+use crate::univ3;
+use crate::univ3_curve;
 use crate::wad::{nano_to_wad, price_to_wad};
 
 /// Which ported curve a strategy uses.
@@ -42,6 +44,13 @@ pub enum Family {
     Flashbots,
     /// Uniswap V2 with zero fee (no oracle input by construction).
     UniV2,
+    /// Uniswap V3, zero fee, one full-range position. The correctness and sanity
+    /// baseline: at zero fee this is constant product on the same capital.
+    UniV3FullRange,
+    /// Uniswap V3, zero fee, one static concentrated position. A separate
+    /// sensitivity arm, never the main baseline: the position is minted once and
+    /// **never rebalanced**, so the price can and does leave its range.
+    UniV3Concentrated,
 }
 
 impl Family {
@@ -50,6 +59,8 @@ impl Family {
             Family::Dodo => "dodo",
             Family::Flashbots => "flashbots",
             Family::UniV2 => "univ2",
+            Family::UniV3FullRange => "univ3-full-range",
+            Family::UniV3Concentrated => "univ3-concentrated",
         }
     }
 
@@ -57,7 +68,42 @@ impl Family {
     pub fn is_oracle_aware(self) -> bool {
         match self {
             Family::Dodo | Family::Flashbots => true,
-            Family::UniV2 => false,
+            Family::UniV2 | Family::UniV3FullRange | Family::UniV3Concentrated => false,
+        }
+    }
+
+    /// Whether the curve is one of the Uniswap V3 arms, which alone can refuse
+    /// an order for lack of room (see [`crate::univ3_curve`]).
+    pub fn is_univ3(self) -> bool {
+        matches!(self, Family::UniV3FullRange | Family::UniV3Concentrated)
+    }
+}
+
+/// Which catalogue to run.
+///
+/// The V3 arms are opt-in so that a run can be compared against the phase-1 and
+/// phase-2 results without the strategy list silently changing underneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategySet {
+    /// DODO, Flashbots and the zero-fee Uniswap V2 anchor.
+    Legacy,
+    /// Everything in [`StrategySet::Legacy`], plus the two Uniswap V3 arms.
+    WithV3,
+}
+
+impl StrategySet {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StrategySet::Legacy => "legacy",
+            StrategySet::WithV3 => "with-v3",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<StrategySet> {
+        match text {
+            "legacy" => Some(StrategySet::Legacy),
+            "with-v3" | "with_v3" | "withv3" => Some(StrategySet::WithV3),
+            _ => None,
         }
     }
 }
@@ -75,6 +121,34 @@ pub struct Strategy {
     pub dodo_k: U256,
     /// Flashbots `concentration` (zero for other families).
     pub concentration: U256,
+    /// Uniswap V3 position, for the V3 families only.
+    pub univ3: Option<UniV3Position>,
+}
+
+/// The V3 position a strategy mints once, at the opening price, and never
+/// rebalances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UniV3Position {
+    /// `None` for the full-range arm.
+    pub half_width_ticks: Option<i32>,
+    pub liquidity: u128,
+    /// Achieved marginal-impact factor relative to full range, as an exact
+    /// ratio. `1/1` for the full-range arm.
+    pub factor_num: U256,
+    pub factor_den: U256,
+}
+
+impl UniV3Position {
+    /// Achieved factor rendered to six places, for reports and ids.
+    pub fn factor_string(&self) -> String {
+        univ3::ConcentratedChoice {
+            half_width_ticks: self.half_width_ticks.unwrap_or(0),
+            liquidity: self.liquidity,
+            factor_num: self.factor_num,
+            factor_den: self.factor_den,
+        }
+        .factor_string(6)
+    }
 }
 
 impl Strategy {
@@ -83,13 +157,19 @@ impl Strategy {
             Family::Dodo => curves::dodo_compute_swap,
             Family::Flashbots => curves::flashbots_compute_swap,
             Family::UniV2 => curves::univ2_compute_swap,
+            Family::UniV3FullRange | Family::UniV3Concentrated => univ3_curve::univ3_compute_swap,
         }
     }
 
     pub fn after_swap_fn(&self) -> Option<AfterSwapFn> {
         match self.family {
-            // Only DODO carries persistent state (target / RState).
+            // DODO carries persistent state (target / RState); V3's pool state
+            // (sqrtPrice, tick, liquidity) is authoritative for pricing and is
+            // committed the same way.
             Family::Dodo => Some(curves::dodo_after_swap),
+            Family::UniV3FullRange | Family::UniV3Concentrated => {
+                Some(univ3_curve::univ3_after_swap)
+            }
             Family::Flashbots | Family::UniV2 => None,
         }
     }
@@ -118,6 +198,21 @@ impl Strategy {
                 base_wad, // targetX == the deposited X
             ),
             Family::UniV2 => vec![0u8; prop_amm_shared::instruction::STORAGE_SIZE],
+            // The V3 pool is built from its own integer state, not from the
+            // ledger's floats: `sqrtPriceX96` is exact at the opening price and
+            // the liquidity was chosen to hold exactly this capital. The two
+            // agree by construction, and `univ3::tests` checks that against the
+            // pinned `getAmount*Delta` rather than against the choice itself.
+            Family::UniV3FullRange | Family::UniV3Concentrated => {
+                let position = self
+                    .univ3
+                    .expect("a Uniswap V3 strategy must carry its position");
+                let (config, state) = match position.half_width_ticks {
+                    None => univ3::full_range_pool(position.liquidity),
+                    Some(half_width) => univ3::concentrated_pool(half_width, position.liquidity),
+                };
+                univ3_curve::initial_storage(&config, &state)
+            }
         }
     }
 }
@@ -145,6 +240,21 @@ fn k_label(k: U256) -> String {
 /// Every strategy in the comparison: one DODO and one Flashbots entry per
 /// pairing row, plus the parameter-free zero-fee Uniswap V2 baseline.
 pub fn all_strategies() -> Vec<Strategy> {
+    strategies_for(StrategySet::Legacy)
+}
+
+/// The catalogue for a given set.
+///
+/// [`StrategySet::WithV3`] appends, in this order:
+///
+/// * `univ3-full-range-zero-fee` — one full-range position, the sanity baseline;
+/// * `univ3-conc-c{n}` — one static concentrated position per pairing row, whose
+///   range was chosen so that its **marginal** price impact at the opening point
+///   matches the paired Flashbots `concentration`, holding deposited capital
+///   fixed (see [`univ3::concentrated_for_impact_factor`]). The achieved factor
+///   is not exactly `n`, because a tick is 1 bp wide; the residual is carried in
+///   the strategy's `parameter` string rather than rounded away.
+pub fn strategies_for(set: StrategySet) -> Vec<Strategy> {
     let mut strategies = Vec::new();
     for (index, (k, concentration)) in pairing_table().into_iter().enumerate() {
         strategies.push(Strategy {
@@ -154,6 +264,7 @@ pub fn all_strategies() -> Vec<Strategy> {
             pairing_index: Some(index),
             dodo_k: k,
             concentration: U256::ZERO,
+            univ3: None,
         });
         strategies.push(Strategy {
             id: format!("flashbots-c{concentration}"),
@@ -162,6 +273,7 @@ pub fn all_strategies() -> Vec<Strategy> {
             pairing_index: Some(index),
             dodo_k: U256::ZERO,
             concentration: U256::from_u64(concentration),
+            univ3: None,
         });
     }
     strategies.push(Strategy {
@@ -171,13 +283,76 @@ pub fn all_strategies() -> Vec<Strategy> {
         pairing_index: None,
         dodo_k: U256::ZERO,
         concentration: U256::ZERO,
+        univ3: None,
     });
+
+    if set == StrategySet::WithV3 {
+        let full_range_coefficient = univ3::full_range_coefficient();
+        strategies.push(Strategy {
+            id: "univ3-full-range-zero-fee".to_string(),
+            family: Family::UniV3FullRange,
+            parameter: "fee=0, range=full, marginalImpactFactor=1".to_string(),
+            // Row 0 of the pairing table is `concentration = 1`, i.e. no
+            // concentration at all, which is precisely what a full range is.
+            // This arm therefore *is* that row; a separate `univ3-conc-c1` would
+            // be the same pool measured twice under two names.
+            pairing_index: Some(0),
+            dodo_k: U256::ZERO,
+            concentration: U256::ONE,
+            univ3: Some(UniV3Position {
+                half_width_ticks: None,
+                liquidity: univ3::FULL_RANGE_LIQUIDITY,
+                factor_num: full_range_coefficient,
+                factor_den: full_range_coefficient,
+            }),
+        });
+
+        for (index, (_, concentration)) in pairing_table().into_iter().enumerate() {
+            if concentration <= 1 {
+                // Served by the full-range arm above.
+                continue;
+            }
+            let Some(choice) =
+                univ3::concentrated_for_impact_factor(concentration, univ3::FULL_RANGE_LIQUIDITY)
+            else {
+                // No representable range reaches this factor. Skipping is a
+                // silent gap, so it is announced instead.
+                eprintln!(
+                    "warning: no Uniswap V3 range matches marginal impact x{concentration}; \
+                     that arm is absent from this run"
+                );
+                continue;
+            };
+            let position = UniV3Position {
+                half_width_ticks: Some(choice.half_width_ticks),
+                liquidity: choice.liquidity,
+                factor_num: choice.factor_num,
+                factor_den: choice.factor_den,
+            };
+            strategies.push(Strategy {
+                id: format!("univ3-conc-c{concentration}"),
+                family: Family::UniV3Concentrated,
+                parameter: format!(
+                    "fee=0, halfWidth={} ticks, marginalImpactFactor={}",
+                    choice.half_width_ticks,
+                    position.factor_string()
+                ),
+                pairing_index: Some(index),
+                dodo_k: U256::ZERO,
+                concentration: U256::from_u64(concentration),
+                univ3: Some(position),
+            });
+        }
+    }
+
     strategies
 }
 
-/// Look up a strategy by id.
+/// Look up a strategy by id, across every set.
 pub fn strategy_by_id(id: &str) -> Option<Strategy> {
-    all_strategies().into_iter().find(|s| s.id == id)
+    strategies_for(StrategySet::WithV3)
+        .into_iter()
+        .find(|s| s.id == id)
 }
 
 #[cfg(test)]

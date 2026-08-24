@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 
 use crate::experiment::{BatchConfig, Competitor};
 use crate::json::{escape, num};
-use crate::metrics::{Distribution, RunMetrics, StrategySummary};
-use crate::paired::{self, Attribution, PairedDelta};
+use crate::metrics::{Distribution, RunMetrics, StrategySummary, Univ3Summary};
+use crate::paired::Univ3SanityGate;
+use crate::paired::{self, Attribution, PairedDelta, Univ3Attribution};
 use crate::probe::QuoteRow;
+use crate::report_focus;
+use crate::strategies::StrategySet;
 use crate::u256::U256;
 
 /// Provenance and configuration recorded alongside every result set.
@@ -28,14 +31,26 @@ pub struct RunMeta {
     pub benchmark_commit: String,
     /// Whether the working tree had uncommitted changes at run time.
     pub benchmark_dirty: bool,
+    /// Which catalogue was run. Recorded because two result sets are only
+    /// comparable when they contain the same strategies.
+    pub strategy_set: String,
 }
 
 impl RunMeta {
     pub fn from_batch(batch: &BatchConfig, elapsed_seconds: f64) -> RunMeta {
+        RunMeta::from_batch_with_set(batch, elapsed_seconds, StrategySet::Legacy)
+    }
+
+    pub fn from_batch_with_set(
+        batch: &BatchConfig,
+        elapsed_seconds: f64,
+        set: StrategySet,
+    ) -> RunMeta {
         let (benchmark_commit, benchmark_dirty) = git_metadata();
         RunMeta {
             benchmark_commit,
             benchmark_dirty,
+            strategy_set: set.as_str().to_string(),
             simulations: batch.simulations,
             steps: batch.steps,
             seed_start: batch.seed_start,
@@ -87,6 +102,12 @@ pub const PAIRING_CAVEAT_ZH: &str = "K ≈ 1 / concentration 仅用于匹配平�
 pub const SCOPE_NOTE_ZH: &str = "本 benchmark 只对比曲线报价本身（curve-only）。池级别的风控与准入不在范围内，也未被实现：Flashbots 的 targetY emergency lock（`_isTargetYLocked`，仅作用于 swap 路径，upstream 的 quoteXtoY / quoteYtoX 本身也不经过它）、Mantle 的 notional / reserve / inventory deviation 上限、以及余额与授权检查，全部不参与。";
 
 pub const CURVE_REVERTS_NOTE_ZH: &str = "`curve_reverts` 只统计被移植的**报价函数**在非退化输入下走到 revert 分支（溢出 / 下溢 / 除零）的次数。它为 0 表示定价数学在整个运行中没有触发 revert，**不等于**一笔完整的链上 swap 会成功——池级别的风控、余额与授权检查不在本 benchmark 范围内。";
+
+pub const UNIV3_QUOTE_PROBE_NOTE_ZH: &str = "这些是**候选报价级**诊断，不是订单计数。router 与 arbitrageur 会对同一笔订单搜索多个候选成交量，每个候选都会调用一次曲线；某个候选因区间容量不足被 fill-or-kill 拒绝，完全可以与「该订单最终被全额成交」同时成立。因此这些计数随搜索强度变化，**只能作为搜索相关的诊断项，不得进入任何经济结论，也不得被称为『整单拒绝』**。金额按提供的代币分列（X 与 Y 各自求和），不相加、也不折算：adapter 在记录时看不到当步公允价，事后用收盘价回标是错的。";
+
+pub const UNIV3_ORDER_CAPACITY_NOTE_ZH: &str = "这些是**订单级**指标：对每一笔零售订单，在**路由前的池状态**上、按**订单全额**做一次 canonical probe，只做一次，且不写入任何计数器。因此它与搜索次数无关，是确定性的。`retailCapacityShortfallNotionalY` 在**订单到达那一步的公允价**下折算成 Y，绝不使用收盘价回标。注意：**池自身的容量缺口与实际路由给 competitor 的流量不是同一件事**——router 同时按价格和容量拆单，被计入缺口的订单仍可能由「池 + competitor」合起来全额成交，而未计入缺口的订单也可能因为 competitor 报价更好而流走。";
+
+pub const UNIV3_RANGE_NOTE_ZH: &str = "`fairPriceOutOfRangeRate` 按**发布的公允价**逐步采样，衡量池能否在市场价上报价；`activeLiquidityRate` 按池自身 tick 采样，在 fill-or-kill 下几乎恒为 100%，信息量很低（越过边界需要恰好吃掉区间内最后一份流动性的那一单，而那一单正是会被整单拒绝的）。两者是不同的问题，不可互相替代。V3 仓位一次性铸造后**从不再平衡**。";
 
 /// `(commit, dirty)` of the benchmark repository, so a result set can be traced
 /// to the code that produced it. Falls back to `"unknown"` outside a checkout.
@@ -155,7 +176,186 @@ fn summary_json(summary: &StrategySummary) -> String {
         .map(|(name, d)| distribution_json(name, d))
         .collect();
     out.push_str(&rendered.join(", "));
+    if let Some(v3) = &summary.univ3 {
+        out.push_str(", \"univ3\": ");
+        out.push_str(&univ3_summary_json(v3));
+    }
     out.push('}');
+    out
+}
+
+/// The Uniswap V3 block. Absent entirely for non-V3 strategies, so a reader
+/// never sees a zeroed capacity count where no capacity path exists.
+///
+/// The two groups are namespaced apart on purpose: `quoteProbeDiagnostics` are
+/// per-candidate-quote counts produced by the router's and arbitrageur's search
+/// and carry no economic reading, while `orderLevelCapacity` is one canonical
+/// probe per retail order and does.
+fn univ3_summary_json(summary: &Univ3Summary) -> String {
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "{{\"quoteProbeDiagnostics\": {{\"capacityQuoteRejectCount\": {}, \
+         \"retailQuoteRejectCount\": {}, \"arbQuoteRejectCount\": {}, \
+         \"quoteRejectCountBuyX\": {}, \"quoteRejectCountSellX\": {}, ",
+        summary.total_capacity_quote_rejects,
+        summary.total_retail_quote_rejects,
+        summary.total_arb_quote_rejects,
+        summary.total_quote_rejects_buy_x,
+        summary.total_quote_rejects_sell_x
+    );
+    let diagnostics = [
+        (
+            "quoteRejectedRequestedY",
+            &summary.quote_rejected_requested_y,
+        ),
+        (
+            "quoteRejectedRequestedX",
+            &summary.quote_rejected_requested_x,
+        ),
+        (
+            "quoteCanonicalUnfilledY",
+            &summary.quote_canonical_unfilled_y,
+        ),
+        (
+            "quoteCanonicalUnfilledX",
+            &summary.quote_canonical_unfilled_x,
+        ),
+    ];
+    let rendered: Vec<String> = diagnostics
+        .iter()
+        .map(|(name, d)| distribution_json(name, d))
+        .collect();
+    out.push_str(&rendered.join(", "));
+    let _ = write!(
+        out,
+        ", \"note\": \"{}\"}}, ",
+        escape(UNIV3_QUOTE_PROBE_NOTE_ZH)
+    );
+
+    let _ = write!(
+        out,
+        "\"orderLevelCapacity\": {{\"retailOrdersProbed\": {}, \
+         \"retailFullOrderCapacityLimitedCount\": {}, ",
+        summary.total_retail_orders_probed, summary.total_retail_capacity_limited_orders
+    );
+    let capacity = [
+        (
+            "retailCapacityLimitedRate",
+            &summary.retail_capacity_limited_rate,
+        ),
+        (
+            "retailCapacityShortfallNotionalY",
+            &summary.retail_capacity_shortfall_notional_y,
+        ),
+        ("retailNotionalServed", &summary.retail_notional_served),
+    ];
+    let rendered: Vec<String> = capacity
+        .iter()
+        .map(|(name, d)| distribution_json(name, d))
+        .collect();
+    out.push_str(&rendered.join(", "));
+    let _ = write!(
+        out,
+        ", \"note\": \"{}\"}}, ",
+        escape(UNIV3_ORDER_CAPACITY_NOTE_ZH)
+    );
+
+    let _ = write!(
+        out,
+        "\"rangeOccupancy\": {{\"seedsThatLeftRange\": {}, ",
+        summary.seeds_that_left_range
+    );
+    let occupancy = [
+        (
+            "fairPriceOutOfRangeRate",
+            &summary.fair_price_out_of_range_rate,
+        ),
+        ("activeLiquidityRate", &summary.active_liquidity_rate),
+        ("firstOutOfRangeStep", &summary.first_out_of_range_step),
+    ];
+    let rendered: Vec<String> = occupancy
+        .iter()
+        .map(|(name, d)| distribution_json(name, d))
+        .collect();
+    out.push_str(&rendered.join(", "));
+    let _ = write!(out, ", \"note\": \"{}\"}}", escape(UNIV3_RANGE_NOTE_ZH));
+    out.push('}');
+    out
+}
+
+/// One row per V3 strategy. Quote-probe columns are prefixed `quote_` so that a
+/// spreadsheet reader cannot mistake them for order counts.
+pub fn univ3_capacity_csv(summaries: &[StrategySummary]) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "strategy,family,parameter,simulations,steps,\
+retail_orders_probed,retail_full_order_capacity_limited_count,\
+retail_capacity_limited_rate_mean,retail_capacity_shortfall_notional_y_mean,\
+retail_capacity_shortfall_notional_y_p95,retail_notional_served_mean,\
+quote_capacity_reject_count,quote_retail_reject_count,quote_arb_reject_count,\
+quote_reject_count_buy_x,quote_reject_count_sell_x,\
+quote_rejected_requested_y_mean,quote_rejected_requested_x_mean,\
+quote_canonical_unfilled_y_mean,quote_canonical_unfilled_x_mean,\
+fair_price_out_of_range_rate_mean,fair_price_out_of_range_rate_p95,\
+active_liquidity_rate_mean,first_out_of_range_step_mean,seeds_that_left_range\n",
+    );
+    for s in summaries {
+        let Some(v3) = &s.univ3 else { continue };
+        let _ = writeln!(
+            out,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            s.strategy_id,
+            csv_field(&s.family),
+            csv_field(&s.parameter),
+            s.simulations,
+            s.steps,
+            v3.total_retail_orders_probed,
+            v3.total_retail_capacity_limited_orders,
+            v3.retail_capacity_limited_rate.mean,
+            v3.retail_capacity_shortfall_notional_y.mean,
+            v3.retail_capacity_shortfall_notional_y.p95,
+            v3.retail_notional_served.mean,
+            v3.total_capacity_quote_rejects,
+            v3.total_retail_quote_rejects,
+            v3.total_arb_quote_rejects,
+            v3.total_quote_rejects_buy_x,
+            v3.total_quote_rejects_sell_x,
+            v3.quote_rejected_requested_y.mean,
+            v3.quote_rejected_requested_x.mean,
+            v3.quote_canonical_unfilled_y.mean,
+            v3.quote_canonical_unfilled_x.mean,
+            v3.fair_price_out_of_range_rate.mean,
+            v3.fair_price_out_of_range_rate.p95,
+            v3.active_liquidity_rate.mean,
+            v3.first_out_of_range_step.mean,
+            v3.seeds_that_left_range
+        );
+    }
+    out
+}
+
+/// The V3 concentration decomposition, one row per strategy and metric.
+pub fn univ3_attribution_csv(attributions: &[Univ3Attribution]) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "strategy,family,parameter,anchor,metric,\
+full_range_vs_univ2,concentration_effect,total_vs_univ2\n",
+    );
+    for a in attributions {
+        let _ = writeln!(
+            out,
+            "{},{},{},{},{},{},{},{}",
+            a.strategy,
+            csv_field(&a.family),
+            csv_field(&a.parameter),
+            a.anchor,
+            a.metric,
+            a.full_range_vs_univ2,
+            a.concentration_effect,
+            a.total_vs_univ2
+        );
+    }
     out
 }
 
@@ -174,12 +374,13 @@ pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> S
     );
     let _ = writeln!(
         out,
-        "  \"config\": {{\"simulations\": {}, \"steps\": {}, \"seedStart\": {}, \"seedStride\": {}, \"competitor\": \"{}\", \"workers\": {}, \"initialPrice\": {}, \"initialX\": {}, \"initialY\": {}, \"lpFeeRate\": 0, \"elapsedSeconds\": {}}},",
+        "  \"config\": {{\"simulations\": {}, \"steps\": {}, \"seedStart\": {}, \"seedStride\": {}, \"competitor\": \"{}\", \"strategySet\": \"{}\", \"workers\": {}, \"initialPrice\": {}, \"initialX\": {}, \"initialY\": {}, \"lpFeeRate\": 0, \"elapsedSeconds\": {}}},",
         meta.simulations,
         meta.steps,
         meta.seed_start,
         meta.seed_stride,
         meta.competitor.as_str(),
+        escape(&meta.strategy_set),
         meta.workers,
         num(meta.initial_price),
         num(meta.initial_x),
@@ -196,6 +397,20 @@ pub fn summary_json_document(meta: &RunMeta, summaries: &[StrategySummary]) -> S
     out
 }
 
+/// One CSV field, quoted per RFC 4180 only when it needs to be.
+///
+/// The V3 arms carry a `parameter` string containing commas
+/// (`fee=0, halfWidth=201 ticks, ...`), which would otherwise split into extra
+/// columns. Values without a comma, quote or newline are returned unchanged, so
+/// every pre-existing file stays byte-identical.
+fn csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 pub fn summary_csv(summaries: &[StrategySummary]) -> String {
     let mut out = String::new();
     out.push_str(
@@ -210,8 +425,8 @@ final_inventory_deviation_mean,max_inventory_deviation_mean,max_inventory_deviat
             out,
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             s.strategy_id,
-            s.family,
-            s.parameter,
+            csv_field(&s.family),
+            csv_field(&s.parameter),
             s.simulations,
             s.steps,
             s.positive_net_rate,
@@ -315,8 +530,8 @@ oracle_system_advantage,curve_shape_effect,total_vs_univ2\n",
             out,
             "{},{},{},{},{},{},{},{}",
             a.strategy,
-            a.family,
-            a.parameter,
+            csv_field(&a.family),
+            csv_field(&a.parameter),
             a.anchor,
             a.metric,
             a.oracle_system_advantage,
@@ -427,8 +642,8 @@ pub fn quote_matrix_csv(rows: &[QuoteRow]) -> String {
             out,
             "{},{},{},{},{},{},{},{}",
             row.strategy_id,
-            row.family,
-            row.parameter,
+            csv_field(&row.family),
+            csv_field(&row.parameter),
             row.side,
             row.input,
             row.output,
@@ -636,6 +851,7 @@ pub fn markdown_zh(
     flashbots_minus_dodo: &[PairedDelta],
     versus_univ2: &[PairedDelta],
     attributions: &[Attribution],
+    univ3_capacity_deltas: &[PairedDelta],
 ) -> String {
     let mut out = String::new();
     out.push_str("# Oracle-aware AMM 曲线对比 benchmark 结果\n\n");
@@ -820,6 +1036,7 @@ pub fn markdown_zh(
     }
 
     paired_section_zh(&mut out, flashbots_minus_dodo, versus_univ2, attributions);
+    univ3_section_zh(&mut out, summaries, univ3_capacity_deltas);
 
     out.push_str("\n## 说明\n\n");
     out.push_str("- edge 一律从 AMM 角度、按外部 fair price 计价：正值表示 AMM 获利。\n");
@@ -834,21 +1051,175 @@ pub fn markdown_zh(
     out
 }
 
+/// Everything one benchmark run produced, ready to be written out.
+pub struct Artefacts<'a> {
+    pub summaries: &'a [StrategySummary],
+    pub runs: &'a [RunMetrics],
+    pub flashbots_minus_dodo: &'a [PairedDelta],
+    pub versus_univ2: &'a [PairedDelta],
+    pub attributions: &'a [Attribution],
+    /// Empty unless the run included the Uniswap V3 arms.
+    pub univ3_attributions: &'a [Univ3Attribution],
+    /// Every strategy against the full-range V3 baseline. Empty without V3.
+    pub versus_univ3: &'a [PairedDelta],
+    /// `full-range V3 − UniV2`, the sanity residual. Empty without V3.
+    pub univ3_minus_univ2: &'a [PairedDelta],
+    /// `concentrated − full-range` on the order-level capacity shortfall.
+    pub univ3_capacity_deltas: &'a [PairedDelta],
+    /// Static quote matrix at the opening state, quoted by the focused reports.
+    pub quote_rows: &'a [QuoteRow],
+    /// The full-range V3 sanity gate. `None` without the V3 arms.
+    pub univ3_sanity: Option<&'a Univ3SanityGate>,
+}
+
+/// The Uniswap V3 section. Emitted only when the run contained V3 arms.
+fn univ3_section_zh(
+    out: &mut String,
+    summaries: &[StrategySummary],
+    capacity_deltas: &[PairedDelta],
+) {
+    let v3: Vec<&StrategySummary> = summaries.iter().filter(|s| s.univ3.is_some()).collect();
+    if v3.is_empty() {
+        return;
+    }
+
+    out.push_str("\n## Uniswap V3：容量与区间占用\n\n");
+    out.push_str(
+        "V3 是本 benchmark 中**唯一**可能只吃掉部分输入的曲线。模拟接口无法表达部分成交，\
+         因此 adapter 采用 fill-or-kill：该笔报价不接，返回 0。**这不是 revert**，\
+         `curve_reverts` 不计入。\n\n",
+    );
+
+    out.push_str("### 订单级容量（确定性，可用于结论）\n\n");
+    out.push_str(
+        "对每笔零售订单，在**路由前**的池状态上、按**订单全额**做一次 canonical probe，\
+         每单一次，与搜索次数无关。缺口按**订单当步的公允价**折算成 Y。\n\n",
+    );
+    out.push_str("| 策略 | 参数 | 探测订单数 | 容量不足订单数 | 占比 | 缺口 Y 均值 | 缺口 Y P95 | V3 实际服务的零售 Y |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    for s in &v3 {
+        let Some(m) = &s.univ3 else { continue };
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} |",
+            s.strategy_id,
+            s.parameter,
+            m.total_retail_orders_probed,
+            m.total_retail_capacity_limited_orders,
+            pct(m.retail_capacity_limited_rate.mean),
+            fixed(m.retail_capacity_shortfall_notional_y.mean),
+            fixed(m.retail_capacity_shortfall_notional_y.p95),
+            fixed(m.retail_notional_served.mean)
+        );
+    }
+    let _ = writeln!(out, "\n{UNIV3_ORDER_CAPACITY_NOTE_ZH}");
+
+    if !capacity_deltas.is_empty() {
+        out.push_str("\n#### 逐 seed 配对差：concentrated − full-range（容量缺口 Y）\n\n");
+        out.push_str("| 策略 | 基准 | 均值差 | 95% CI | t | paired win rate |\n");
+        out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+        for delta in capacity_deltas {
+            let _ = writeln!(
+                out,
+                "| `{}` | `{}` | {} | [{}, {}] | {:.2} | {} |",
+                delta.treatment,
+                delta.baseline,
+                fixed(delta.mean),
+                fixed(delta.ci95_low),
+                fixed(delta.ci95_high),
+                delta.t_stat,
+                pct(delta.paired_win_rate)
+            );
+        }
+        out.push_str(
+            "\n差为正表示该 concentrated 仓位的容量缺口大于 full-range。\
+             full-range 的缺口期望为 0，因此这一列基本就是 concentrated 自身的缺口。\n",
+        );
+    }
+
+    out.push_str("\n### 候选报价诊断（**不得用于经济结论**）\n\n");
+    out.push_str(
+        "以下是**候选报价级**计数：router 与 arbitrageur 对同一笔订单会搜索多个候选成交量，\
+         每个候选都调用一次曲线。某个候选被拒与该订单最终全额成交**可以同时成立**，\
+         因此这些数字随搜索强度变化，只能用于诊断搜索行为。金额按代币分列，不相加、不折算。\n\n",
+    );
+    out.push_str("| 策略 | 候选拒绝数 | 零售 / 套利 | 买X / 卖X | 被拒请求 Y 均值 | 被拒请求 X 均值 | upstream 会剩 Y | upstream 会剩 X |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    for s in &v3 {
+        let Some(m) = &s.univ3 else { continue };
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} / {} | {} / {} | {} | {} | {} | {} |",
+            s.strategy_id,
+            m.total_capacity_quote_rejects,
+            m.total_retail_quote_rejects,
+            m.total_arb_quote_rejects,
+            m.total_quote_rejects_buy_x,
+            m.total_quote_rejects_sell_x,
+            fixed(m.quote_rejected_requested_y.mean),
+            fixed(m.quote_rejected_requested_x.mean),
+            fixed(m.quote_canonical_unfilled_y.mean),
+            fixed(m.quote_canonical_unfilled_x.mean)
+        );
+    }
+    let _ = writeln!(out, "\n{UNIV3_QUOTE_PROBE_NOTE_ZH}");
+
+    out.push_str("\n### 公允价区间占用\n\n");
+    out.push_str("| 策略 | 出界步数占比 均值 | P95 | 有效流动性步数占比 均值 | 首次出界步 均值 | 曾出界的 seed 数 |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    for s in &v3 {
+        let Some(m) = &s.univ3 else { continue };
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} | {} | {} | {} / {} |",
+            s.strategy_id,
+            pct(m.fair_price_out_of_range_rate.mean),
+            pct(m.fair_price_out_of_range_rate.p95),
+            pct(m.active_liquidity_rate.mean),
+            fixed(m.first_out_of_range_step.mean),
+            m.seeds_that_left_range,
+            s.simulations
+        );
+    }
+    let _ = writeln!(out, "\n{UNIV3_RANGE_NOTE_ZH}");
+    out.push_str(
+        "\n仓位一次铸造后**从不再平衡**，这是该敏感性实验的前提，不是遗漏。\
+         区间宽度按**边际价格冲击**匹配对照组的 `concentration`（同等投入资本），\
+         逐条策略的实际达成倍数写在 `参数` 列里，未四舍五入抹掉。\n",
+    );
+}
+
 /// Write every artefact into `dir`.
 pub fn write_all(
     dir: &Path,
     meta: &RunMeta,
-    summaries: &[StrategySummary],
-    runs: &[RunMetrics],
-    flashbots_minus_dodo: &[PairedDelta],
-    versus_univ2: &[PairedDelta],
-    attributions: &[Attribution],
+    artefacts: &Artefacts<'_>,
 ) -> std::io::Result<Vec<PathBuf>> {
+    let Artefacts {
+        summaries,
+        runs,
+        flashbots_minus_dodo,
+        versus_univ2,
+        attributions,
+        univ3_attributions,
+        versus_univ3,
+        univ3_minus_univ2,
+        univ3_capacity_deltas,
+        quote_rows,
+        univ3_sanity,
+    } = *artefacts;
     fs::create_dir_all(dir)?;
     let mut written = Vec::new();
 
     let mut all_deltas: Vec<PairedDelta> = flashbots_minus_dodo.to_vec();
     all_deltas.extend_from_slice(versus_univ2);
+    all_deltas.extend_from_slice(versus_univ3);
+    all_deltas.extend_from_slice(univ3_capacity_deltas);
+
+    // The baseline report carries both baselines and the sanity residual.
+    let mut baseline_deltas: Vec<PairedDelta> = versus_univ2.to_vec();
+    baseline_deltas.extend_from_slice(versus_univ3);
+    baseline_deltas.extend_from_slice(univ3_minus_univ2);
 
     let files: Vec<(&str, String)> = vec![
         ("summary.json", summary_json_document(meta, summaries)),
@@ -861,6 +1232,38 @@ pub fn write_all(
         ("paired-deltas.csv", paired_deltas_csv(&all_deltas)),
         ("attribution.csv", attribution_csv(attributions)),
         (
+            "REPORT-dodo-vs-flashbots.zh-CN.md",
+            report_focus::dodo_vs_flashbots(meta, summaries, flashbots_minus_dodo, quote_rows),
+        ),
+        (
+            "dodo-vs-flashbots.csv",
+            report_focus::dodo_vs_flashbots_csv(flashbots_minus_dodo),
+        ),
+        (
+            "dodo-vs-flashbots.json",
+            report_focus::dodo_vs_flashbots_json(meta, flashbots_minus_dodo),
+        ),
+        (
+            "REPORT-vs-baselines.zh-CN.md",
+            report_focus::vs_baselines(
+                meta,
+                summaries,
+                versus_univ2,
+                versus_univ3,
+                univ3_minus_univ2,
+                univ3_sanity,
+                attributions,
+            ),
+        ),
+        (
+            "versus-baselines.csv",
+            report_focus::vs_baselines_csv(&baseline_deltas),
+        ),
+        (
+            "versus-baselines.json",
+            report_focus::vs_baselines_json(meta, &baseline_deltas, attributions),
+        ),
+        (
             "REPORT.zh-CN.md",
             markdown_zh(
                 meta,
@@ -868,12 +1271,26 @@ pub fn write_all(
                 flashbots_minus_dodo,
                 versus_univ2,
                 attributions,
+                univ3_capacity_deltas,
             ),
         ),
     ];
     for (name, body) in files {
         let path = dir.join(name);
         fs::write(&path, body)?;
+        written.push(path);
+    }
+
+    // Written only when the run actually contained V3 arms, so an empty file is
+    // never mistaken for "measured, and there was nothing".
+    if summaries.iter().any(|s| s.univ3.is_some()) {
+        let path = dir.join("univ3-capacity.csv");
+        fs::write(&path, univ3_capacity_csv(summaries))?;
+        written.push(path);
+    }
+    if !univ3_attributions.is_empty() {
+        let path = dir.join("univ3-attribution.csv");
+        fs::write(&path, univ3_attribution_csv(univ3_attributions))?;
         written.push(path);
     }
     Ok(written)
@@ -907,6 +1324,7 @@ mod tests {
                 final_reserve_y: 9_900.0,
                 final_fair_price: 100.5,
                 curve_revert_count: 0,
+                univ3: None,
             })
             .collect()
     }
@@ -925,6 +1343,7 @@ mod tests {
             elapsed_seconds: 1.25,
             benchmark_commit: "0123456789abcdef".to_string(),
             benchmark_dirty: false,
+            strategy_set: "legacy".to_string(),
         }
     }
 
@@ -983,7 +1402,7 @@ mod tests {
         let summaries = vec![StrategySummary::from_runs(
             "dodo-k1", "dodo", "K=1e18", &runs,
         )];
-        let markdown = markdown_zh(&meta(), &summaries, &[], &[], &[]);
+        let markdown = markdown_zh(&meta(), &summaries, &[], &[], &[], &[]);
         assert!(markdown.contains("Oracle-aware AMM 曲线对比 benchmark 结果"));
         assert!(markdown.contains(PAIRING_CAVEAT_ZH));
         assert!(markdown.contains("统一初始状态"));
@@ -997,7 +1416,7 @@ mod tests {
         let summaries = vec![StrategySummary::from_runs(
             "dodo-k1", "dodo", "K=1e18", &runs,
         )];
-        let markdown = markdown_zh(&meta(), &summaries, &[], &[], &[]);
+        let markdown = markdown_zh(&meta(), &summaries, &[], &[], &[], &[]);
 
         // Out-of-scope guards must be named explicitly.
         assert!(markdown.contains("targetY emergency lock"));
@@ -1044,6 +1463,7 @@ mod tests {
             &summaries,
             std::slice::from_ref(&delta),
             std::slice::from_ref(&delta),
+            &[],
             &[],
         );
 
