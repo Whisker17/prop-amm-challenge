@@ -389,12 +389,17 @@ directly demonstrated below to produce a fully readable message on a real, repro
 panic — not the earlier session's opaque `"panicked with a non-string payload"` placeholder.
 
 **What does not work: the exact-match reconstruction itself, once floor-clamping is in
-play.** A live `--fit` run measured a ~50%+ per-seed hardening-check trip rate on
-`validation` — roughly nine orders of magnitude above this design's own derived
-expectation (~1e-10 per comparison, treating a match as a random continuous-value
-collision). That gap was traced to a specific mechanism, reproduced deterministically on
-seed `2_000_011` (`validation` segment, `concentration=94.33, spread_bps=102.0`, variant
-(a), full `n_steps=10_000`):
+play.** A live `--fit` run measured a per-seed hardening-check trip rate of **0.564**
+(564 of the 1000 seeds on `validation` tripped) — a per-**seed** rate, not directly
+comparable to this design's own per-**comparison** expectation (~1e-10, treating a match
+as a random continuous-value collision) without converting it to matched units first. An earlier draft of this note
+(WHI-1248) compared the two figures directly and reported "roughly nine orders of
+magnitude" — wrong, because it never converted the per-seed rate down to a
+per-comparison one before comparing (WHI-1249 fixes this). At matched units, the
+implied per-comparison rate is **~1.4e-6**, roughly **four** orders of magnitude above the
+~1e-10 design expectation (1.4e-6 / 1e-10 ≈ 1.4e4). That gap was traced to a specific
+mechanism, reproduced deterministically on seed `2_000_011` (`validation` segment,
+`concentration=94.33, spread_bps=102.0`, variant (a), full `n_steps=10_000`):
 
 1. The cursor advances correctly for 3201 consecutive steps.
 2. At `oracle.rs`-call-index 121973 — 26 calls into step 3201's *own* sell-side search — a
@@ -440,12 +445,26 @@ paired between the candidate and the `001-cpmm-fee` reference (`run_fingerprint_
 own `reorder_oks_to_configs_order`/`filter_batch_to_seeds` machinery does that part
 correctly — pairing integrity was checked and is not the problem). This is not a
 miscalibrated hardening-check threshold: the checks are working exactly as intended,
-correctly catching a real, structural defect in the underlying reconstruction method. Nor
-is it fixable by a "cheap" tweak in this issue's scope — the false-matching probe and a
-step's own genuine probe are, at the interface this replay observes, the same value
-arriving through the same call, with no additional signal available at match-time to tell
-them apart; a real fix would need a materially different (and more expensive)
-reconstruction strategy, which is out of scope for "three cheap hardening checks."
+correctly catching a real, structural defect in the underlying reconstruction method.
+
+**WHI-1249 correction: this is not "a materially different and more expensive
+reconstruction strategy" — a cheap, bounded fix exists, tracked as WHI-1250.** On the
+**sell** side the false-matching probe and a step's own genuine probe are, at the
+interface this replay observes, the same value arriving through the same call, with no
+additional signal available at match-time to tell them apart — the sell floor
+(`FP_MIN_INPUT = 0.001` X) clamps whenever `fair_price > MIN_ARB_NOTIONAL_Y / MIN_INPUT ==
+10` (true for essentially this entire run, P ≈ 1e-4/step, consistent with the direct
+per-seed count above of 2 floor-clamped `sell_target`s out of 10,000 steps). The **buy**
+side is different in kind, not just degree: its floor (`start_y = draw.max(0.01)`, i.e.
+`min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y == 0.01`) clamps far more rarely (P ≈
+1e-8/step), and the very first `compute_swap` call of *every* step is always the buy-side
+probe (`arbitrageur.rs::plan_arb_buy_x` runs before the sell-side search ever starts). A
+cursor-advance rule restricted to buy-side matches only would therefore remove the
+dominant ambiguity class by construction — at the cost of losing the buy side's own
+(much rarer) corroboration signal, which is a real trade-off but a cheap one to implement
+and measure, not a different reconstruction strategy. That change (and the re-measurement
+it would enable) is out of scope for this issue and is tracked as the follow-up
+WHI-1250.
 
 **Decision: `L=1` (variant (a), the headline rung) and `L=0` (variant (a), the diagnostic
 rung) are closed as a documented negative/method-level result — no mean-edge-diff number,
@@ -455,11 +474,48 @@ own prior-established precedent (005b's ablation closing with no committable poi
 honest negative result, not a gap to paper over. A previously generated report from this
 investigation
 (`results/2026-08-23-ceiling-anchored-fingerprint-l1-validation-orbic-oracle-vs-001-cpmm-fee.md`,
-written to a detached scratch worktree, never committed to this repo) reported `mean edge
-diff = 225.124282, 95% CI [204.396653, 245.851912], n=436, 564 tripped seeds` — that number
-is exactly the selection-biased quantity described above and is **not** a valid ceiling
-measurement; it is recorded here only so the number is not silently reproduced later
-without this context.
+written to a detached scratch worktree, never committed to this repo — see Out of scope in
+WHI-1249, which deliberately does not commit it either) reported `mean edge diff =
+225.124282, 95% CI [204.396653, 245.851912], n=436, 564 tripped seeds`. Its own headline
+was a **survivors-only mean over n=436 of the segment's 1000 seeds** — a fact the rejected
+report itself disclosed only in a table cell (`n | 436`), never stating in its own prose
+that 564 seeds (56.4%) were excluded from the number it reported as the fitted point's
+edge.
+
+**WHI-1249: why 436-of-1000 is not "a smaller-n version of the same estimate," in the
+rejected report's own numbers.** Its per-sigma-tier table (§ above's slicing machinery,
+applied to the biased survivor set) was:
+
+| sigma tier | survivors / ~333 per tier | mean edge diff | 95% CI |
+|---|---|---|---|
+| Low | 212 | +278.630199 | [259.750725, 297.509673] |
+| Mid | 197 | +244.485003 | [219.961700, 269.008307] |
+| High | 27 | **−336.257804** | [−441.136730, −231.378878] |
+
+The survivor set deletes 92% of the High-sigma tier (27 of ~333 survive) — precisely the
+one regime tier where this fitted point *loses* to the 0-line — while Low and Mid survive
+at their full rate. A crude equal-weight post-stratification (weighting each tier's own
+mean by 1/3, undoing the survivor-count imbalance rather than the report's own n-weighted
+pooling) gives `(278.630199 + 244.485003 − 336.257804) / 3 ≈ +62.29` — **below** the kept
+trade-triggered result's +87.234885, not above it. The 225.124282 headline is therefore not
+merely noisier for having a smaller n; it is a different (and larger) number than any
+credible correction of the same estimate, in the direction that would have overstated this
+lane's ceiling had it been reported as-is.
+
+**The rejected report's own "Converge/fan-out verdict: HELD" must not be cited.** That
+verdict — Low tier's CI width (37.758948) narrower than High's (209.757852), read as
+consistent with "converge at low sigma / fan out at high sigma" — was computed entirely on
+this same biased survivor set. A verdict computed on a selection-biased sample is not
+evidence for or against the underlying converge/fan-out prediction either way; it is simply
+inadmissible, for the same reason the headline mean is.
+
+**The pairing arithmetic itself was correct — the flaw is the non-random subset, not
+broken pairing.** The reference (`001-cpmm-fee`) side of this comparison was filtered to
+the identical set of surviving seeds via `filter_batch_to_seeds`, and `stats::paired_stat`
+asserts seed alignment between its two inputs before computing anything — so candidate and
+reference were correctly index-paired throughout. A future reader re-deriving this number
+should not go looking for a pairing bug; there isn't one. The defect is entirely that the
+436 surviving seeds are not a random subset of the original 1000 (WHI-1249).
 
 **`L in {5, 25}`**: out of scope per the issue regardless of this outcome (the `L=1` vs.
 trade-triggered gap was never established as "surprising" enough to justify going beyond
@@ -481,7 +537,31 @@ point, and the only fit pipeline available for `CursorMode::Fingerprint`
 (`evaluate_fingerprint_point`) suffers the identical selection-bias problem — it may steer
 the search itself toward parameter regions that happen to produce fewer floor collisions
 rather than the true optimum, so even the *fitted point* (not just the final number) is
-untrustworthy here. There is therefore no simulated `L=0` number to check against the
+untrustworthy here.
+
+**WHI-1249: naming this as a distinct finding — search-time contamination, not just
+reporting-time bias.** `evaluate_fingerprint_point` scores each candidate parameter point
+by averaging over whichever seeds happen to survive the fingerprint hardening checks for
+*that* point — the same survivors-only averaging that biased the headline mean above, but
+here it runs inside the search loop itself, on every point the optimizer evaluates, not
+just on the final reported one. A point that trips more seeds into floor collisions
+(disproportionately the adverse ones, since the collision-prone paths correlate with the
+regime that would otherwise pull the mean down — see the High-sigma tier's near-total
+attrition above) has those adverse seeds silently dropped from its own score, making it
+look *better* than a point that survives on the same seeds honestly. The search therefore
+has a standing incentive to drift toward fragile points — ones that produce more floor
+collisions, not fewer — rather than toward the true optimum. The visible symptom in this
+investigation: the fingerprint-mode fit converged at `concentration = 94.33` (within 6%
+of the declared upper bound of 100.00), while the kept trade-triggered fit — evaluated
+through a scoring path with no comparable survivors-only averaging — converged at
+`concentration = 2.33`, deep in the interior of the same search space. A fit pinned
+against its own boundary is itself a warning sign independent of this mechanism; here it
+has a concrete causal candidate. The fix (restricting cursor-advance to buy-side matches,
+named above) reduces the false-match rate driving this, but the search-time averaging
+itself is not restructured by that fix and is not addressed in this issue; the code
+change belongs to WHI-1250. This paragraph is the record of the finding, not a fix.
+
+There is therefore no simulated `L=0` number to check against the
 envelope, and none is reported; the formula's own boundary behavior is unit-tested, and it
 is a candidate for reuse once (if ever) a non-selection-biased fingerprint-mode measurement
 pipeline exists — but "unit-tested for its own boundary behavior" is the extent of what has

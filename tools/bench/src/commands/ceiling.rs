@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use clap::{Args, ValueEnum};
-use prop_amm_shared::config::SimulationConfig;
+use prop_amm_shared::config::{HyperparameterVariance, SimulationConfig};
 use prop_amm_shared::result::{BatchResult, SimResult};
 
 use crate::commands::resolve_strategy_lib_path;
@@ -1304,8 +1304,7 @@ fn filter_batch_to_seeds(batch: &BatchResult, seeds: &HashSet<u64>) -> BatchResu
 
 /// WHI-1248: per-sigma-tier slices of the same paired comparison the headline table
 /// reports — reuses `regime.rs`'s own tier reconstruction (`Tier::{Low,Mid,High}`, equal-
-/// width thirds of `HyperparameterVariance`'s own sampling range, which by construction
-/// track `config/bench.toml`'s three `[grid] gbm_sigma_levels`, docs/DESIGN.md §2.3),
+/// width thirds of `HyperparameterVariance`'s own sampling range, docs/DESIGN.md §2.3),
 /// grouped purely by `Regime.sigma` — deliberately narrower than `regime::slice_paired_stats`'s
 /// own full 3-axis (fee x liquidity x sigma) grouping, since this issue's own scope is
 /// specifically a claim about the sigma axis alone ("converge at low sigma / fan out at
@@ -1344,16 +1343,25 @@ fn slice_by_sigma_tier(
 }
 
 /// Renders [`slice_by_sigma_tier`]'s output as a report section, plus the explicit
-/// converge-at-low/fan-out-at-high verdict WHI-1248 requires. `grid_levels`, when available
-/// (`config/bench.toml`'s existing `[grid] gbm_sigma_levels`, read-only — no new `[grid]`
-/// axis is added), labels each tier with the representative level it roughly corresponds to;
-/// purely cosmetic; slicing itself never depends on it. The verdict is operationalized as
-/// 95% CI *width* (a real statistic [`stats::PairedStat`] already exposes per bin) rather
-/// than a raw per-sim variance, which is not available per bin from the existing stats
-/// machinery — stated explicitly here so the operationalization is never mistaken for the
-/// only possible one.
+/// converge-at-low/fan-out-at-high verdict WHI-1248 requires. `sigma_range` (the default
+/// `HyperparameterVariance`'s own `(gbm_sigma_min, gbm_sigma_max)`) labels each tier with
+/// its own true `[lo, hi)` bounds (`regime::tier_bounds`), purely cosmetic — slicing itself
+/// never depends on it.
+///
+/// WHI-1249: this column previously printed the nearest `config/bench.toml`
+/// `[grid] gbm_sigma_levels` entry under the false assumption that the grid's three levels
+/// land one-per-tier. They do not — at the default sigma range `[0.0001, 0.007)`, the grid
+/// level `0.0010` falls in `Low` (bounds ≈`[0.0001, 0.0024)`), not `Mid` (bounds ≈`[0.0024,
+/// 0.0047)`), so the old column printed `Mid`'s row labelled `0.0010`, a value that tier
+/// never actually contains. Printing the tier's own bounds instead is correct by
+/// construction and carries no dependency on where the grid's levels happen to fall.
+///
+/// The verdict is operationalized as 95% CI *width* (a real statistic [`stats::PairedStat`]
+/// already exposes per bin) rather than a raw per-sim variance, which is not available per
+/// bin from the existing stats machinery — stated explicitly here so the operationalization
+/// is never mistaken for the only possible one.
 fn format_sigma_slices(
-    grid_levels: Option<&[f64]>,
+    sigma_range: (f64, f64),
     slices: &[(regime::Tier, stats::PairedStat)],
     slicing_error: Option<&str>,
 ) -> String {
@@ -1373,29 +1381,20 @@ fn format_sigma_slices(
         return out;
     }
     out.push_str(
-        "Slices purely by `regime.rs`'s own `sigma` tier (Low/Mid/High thirds of \
-         `HyperparameterVariance`'s sampling range, which by construction track \
-         `config/bench.toml`'s three `[grid] gbm_sigma_levels`), ignoring the fee/liquidity \
+        "Slices purely by `regime.rs`'s own `sigma` tier (Low/Mid/High equal-width linear \
+         thirds of `HyperparameterVariance`'s sampling range), ignoring the fee/liquidity \
          axes `regime::slice_paired_stats` also splits on — a claim specifically about the \
-         sigma axis, not the full regime.\n\n",
+         sigma axis, not the full regime. The \"tier range\" column is each tier's own true \
+         `[lo, hi)` sigma bounds (`regime::tier_bounds`), not a `config/bench.toml` \
+         `[grid] gbm_sigma_levels` entry — the three grid levels do not land one-per-tier \
+         (WHI-1249).\n\n",
     );
-    out.push_str("| sigma tier | approx level | n | mean diff | 95% CI |\n|---|---|---|---|---|\n");
-    let sorted_levels: Option<Vec<f64>> = grid_levels.map(|l| {
-        let mut v = l.to_vec();
-        v.sort_by(|a, b| a.partial_cmp(b).expect("gbm_sigma_levels are finite"));
-        v
-    });
+    out.push_str("| sigma tier | tier range | n | mean diff | 95% CI |\n|---|---|---|---|---|\n");
+    let (sigma_min, sigma_max) = sigma_range;
     for (tier, stat) in slices {
-        let level_str = match (&sorted_levels, tier) {
-            (Some(levels), regime::Tier::Low) if levels.len() == 3 => format!("{:.4}", levels[0]),
-            (Some(levels), regime::Tier::Mid) if levels.len() == 3 => format!("{:.4}", levels[1]),
-            (Some(levels), regime::Tier::High) if levels.len() == 3 => {
-                format!("{:.4}", levels[2])
-            }
-            _ => "n/a".to_string(),
-        };
+        let (lo, hi) = regime::tier_bounds(*tier, sigma_min, sigma_max);
         out.push_str(&format!(
-            "| {:?} | {level_str} | {} | {:.6} | [{:.6}, {:.6}] |\n",
+            "| {:?} | [{lo:.4}, {hi:.4}) | {} | {:.6} | [{:.6}, {:.6}] |\n",
             tier, stat.n, stat.mean_diff, stat.ci_low, stat.ci_high
         ));
     }
@@ -1621,7 +1620,14 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         cursor_slug: &cursor_slug_str,
     };
 
-    let grid_levels = bench_config.grid().ok().map(|g| g.gbm_sigma_levels.clone());
+    // WHI-1249: the sigma-tier report's "tier range" column uses the same sigma
+    // sampling range `regime::classify_seed` itself samples against (the default
+    // `HyperparameterVariance`), not a `config/bench.toml` `[grid]` axis — the two are
+    // unrelated (see `format_sigma_slices`'s doc comment).
+    let sigma_range = {
+        let variance = HyperparameterVariance::default();
+        (variance.gbm_sigma_min, variance.gbm_sigma_max)
+    };
 
     match cursor_mode {
         CursorMode::TradeTriggered => {
@@ -1664,7 +1670,7 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
                     if !args.no_report {
                         let extra = format_sigma_slices(
-                            grid_levels.as_deref(),
+                            sigma_range,
                             &sigma_slices,
                             sigma_slicing_error.as_deref(),
                         );
@@ -1773,7 +1779,7 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
             let mut extra = tripped_section;
             extra.push_str(&format_sigma_slices(
-                grid_levels.as_deref(),
+                sigma_range,
                 &sigma_slices,
                 sigma_slicing_error.as_deref(),
             ));

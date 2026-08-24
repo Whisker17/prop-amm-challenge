@@ -358,6 +358,28 @@ soon — anything touching a declared high-risk path defaults to at least High),
   commit, which is a harness change orthogonal to the ceiling lane's own scope; would need
   its own ticket if a future issue wants the exact current-commit message rather than the
   attributed-earlier-commit citation this PR settles for.
+- **`evaluate_fingerprint_point` scores candidate parameter points by averaging only over
+  seeds that survive that point's own fingerprint hardening checks, contaminating the
+  search itself rather than just the final reported number** (Medium, WHI-1249).
+  `tools/bench/src/commands/ceiling.rs::evaluate_fingerprint_point` drops seeds that trip a
+  fingerprint hardening check from that point's own score, the same survivors-only
+  averaging that produced the selection-biased `L=1` headline documented in
+  `ceilings/C-orbic-oracle/NOTES.md` — except here it runs on every point the search
+  evaluates, not just the final one. A point that trips more (disproportionately adverse)
+  seeds into floor collisions has those seeds silently excluded from its own score, so it
+  can look better than a point that survives the same seeds honestly; the search therefore
+  has a standing incentive to drift toward fragile points instead of the true optimum.
+  Symptom observed in this investigation: the fingerprint-mode fit converged at
+  `concentration = 94.33` (within 6% of its declared upper bound of 100.00) against the
+  kept trade-triggered fit's `concentration = 2.33` (deep interior of the same space).
+  Fix: not made in this issue (WHI-1249 is a labels-and-documentation correction only, no
+  `crates/`/`strategies/`/`results/` changes). WHI-1250 (buy-probe-only cursor-advance) is
+  the tracked follow-up that most directly attacks the false-match rate feeding this
+  mechanism, but restricting cursor-advance does not by itself restructure
+  `evaluate_fingerprint_point`'s survivors-only scoring — a real fix needs the search's own
+  scoring path to stop silently dropping tripped seeds (e.g. penalize instead of exclude,
+  or score over the full seed set with a fixed penalty for tripped ones) rather than only
+  reducing how often seeds trip in the first place.
 
 ---
 

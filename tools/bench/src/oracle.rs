@@ -277,11 +277,21 @@ thread_local! {
 ///    named this exact residual case ("within a step's own sell-side search evaluating a
 ///    value that happens to equal the next step's own sell probe") as unprotected — measurement
 ///    shows it is the *dominant* failure mode, not a residual one: a ~50%+ per-seed
-///    hardening-check trip rate was measured on `validation`, roughly nine orders of
-///    magnitude above this design's own derived expectation (~1e-10 per comparison from
-///    treating a match as a random continuous-value collision). The buy side has the exact
-///    same structural exposure (`min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y == 0.01`,
-///    unconditionally, at every step, for the identical reason). Because a floor-degenerate
+///    hardening-check trip rate (0.564 measured on `validation`) implies a per-comparison
+///    rate of roughly 1.4e-6 — about four orders of magnitude above this design's own
+///    derived expectation (~1e-10 per comparison from treating a match as a random
+///    continuous-value collision), not the nine orders an earlier draft of this comment
+///    claimed by comparing the two rates in mismatched units (WHI-1249 corrects this;
+///    matching detail in `ceilings/C-orbic-oracle/NOTES.md`). The buy side is *not* the
+///    same exposure: the sell floor (`FP_MIN_INPUT == 0.001`) clamps at roughly P~1e-4 per
+///    step, while the buy floor (`min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y == 0.01`) is
+///    in force unconditionally at every step but binds at only roughly P~1e-8 per step —
+///    four orders of magnitude rarer — and the real arbitrageur's first `compute_swap`
+///    every step is always the buy probe (`plan_arb_buy_x` runs first). Restricting the
+///    fingerprint cursor's advance rule to buy-side matches therefore removes the
+///    dominant ambiguity class by construction, rather than requiring a materially
+///    different reconstruction strategy — WHI-1250 tracks that fix; this comment only
+///    documents the mechanism it will act on. Because a floor-degenerate
 ///    probe is deterministic given the RNG stream (not a flaky, re-runnable artifact), and
 ///    because which seeds trip is correlated with the RNG's own low-draw episodes rather
 ///    than independent of the outcome being measured, averaging any paired statistic over
