@@ -3,3 +3,8 @@
 .DS_Store
 .build/
 /research-out
+
+# Claude Code's scratch worktrees. Not part of the project, and leaving them
+# untracked would make the tree permanently dirty -- which now blocks the
+# provenance gate on every benchmark run.
+/.claude/
