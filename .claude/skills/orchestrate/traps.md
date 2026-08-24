@@ -6,15 +6,16 @@ nobody. Carry every entry into each launch prompt. Cost is why they are here. Ea
 is cited against the repo so it stays checkable; an entry that stops being true belongs in
 `docs/DEFERRED_ISSUES.md`'s own resolved section, not silently deleted here.
 
-**Trimming is self-declaring.** Removing or merging an entry is allowed, but the PR that does
-it must say which entry number was dropped or merged and why. WHI-1251 trimmed a reviewed
-9-entry draft to the 7 below it without disclosing the 3 that didn't survive, and the
-implementer's own final report ("all 7 survived scrutiny") was accurate about the seven
-present and silent about the ones absent — exactly the failure this rule exists to make
-impossible to repeat quietly (WHI-1252, which restored entries 5 and 9 below and the ordering
-half of entry 6, verified against the actual reviewed draft preserved at
-`scratch/orchestrate-skill-draft/SKILL.md:146-164`). A trim with no such statement in its PR
-body is presumed accidental, not reviewed.
+**A trim is self-declaring.** The only way an entry is meant to leave this file is the
+graduation the paragraph above already describes, and even that departure — a removal or a
+merge into another entry — must say, in the PR that does it, which entry number left and why.
+WHI-1251 trimmed a reviewed 9-entry draft to the 7 that first landed here without disclosing
+the 3 that didn't survive, and the implementer's own final report ("all 7 survived scrutiny")
+was accurate about the seven present and silent about the ones absent — exactly the failure
+this rule exists to make impossible to repeat quietly. WHI-1252 is where those 3 were restored
+(entries 8 and 9 below, plus the ordering half of entry 5); its PR body carries the provenance
+for how they were recovered. A trim with no such disclosure in its PR body is presumed
+accidental, not reviewed.
 
 1. **`gh pr create` needs `--repo <owner/repo>`.** This clone (`git remote -v`) is a fork of
    `benedictbrady/prop-amm-challenge`, with `upstream` set to `no_push` — `gh` otherwise
@@ -33,32 +34,21 @@ body is presumed accidental, not reviewed.
    (`tools/bench/src/compile.rs::build_and_load`) writes a nested `Cargo.toml` that cargo
    refuses there (`docs/DEFERRED_ISSUES.md`, WHI-1247). Run from a detached checkout outside
    the repo tree, synced to the reported commit, and copy artifacts back.
-5. **Release profile only — liveness and CPU do not prove it.** Echo the binary path
-   immediately before every measurement and confirm it reads `target/release/`, not
-   `target/debug/`; a bare `cargo run`/`cargo build` without `--release` is one to two orders
-   of magnitude slower, and `ps` cannot tell the difference — a healthy-looking, high-CPU
-   process is exactly what a debug build in the middle of a multi-minute run also looks like.
-   WHI-1247's own ceiling-lane measurement is the recorded cost of trusting liveness alone:
-   the run that was actually reading `target/debug/` took roughly 25 minutes of wall clock
-   for work `target/release/` does in about 7, and `ps` showed it pegged at 746% CPU the
-   entire time — indistinguishable from correct-and-busy until the binary path itself was
-   checked. The single mechanical fix (echo the path, assert `release`) is what closes this,
-   not a CPU or liveness threshold of any kind.
-6. **Generate committed artifacts only from a clean, committed sha — and only once, after the
+5. **Generate committed artifacts only from a clean, committed sha — and only once, after the
    review loop closes.** Two distinct failure modes on the same object, both required:
    - *Provenance:* `tools/bench/src/report.rs` appends `+dirty` to the commit-sha field
      whenever the working tree has uncommitted changes at generation time — regenerating a
      report before committing the change it measures silently stamps the wrong provenance
      onto a committed number.
    - *Ordering:* `/code-review` dispatches reviewers against `git diff <fixed-point>...HEAD`
-     (`code-review/SKILL.md:21`) — code and the spec, never a generated report file — so a
-     measurement report has no reason to exist before the review loop is done with it.
-     Regenerating it after every round anyway turns each purely prose-level review finding
-     into a full re-measurement, which is exactly what happened rerunning WHI-1247's
-     multi-hour `ceiling --fit` after each round instead of once at the end. Generate the
-     committed artifact exactly once, from the final clean commit, after round 3 (or the
-     escalation pass) closes — never per round.
-7. **Commit before dispatching a reviewer, then hand it a three-dot diff, and verify it is
+     (`.claude/skills/code-review/SKILL.md:21`) — a review round reads that diff, nothing
+     else, so it needs no measurement report to exist at all before it runs. Regenerating one
+     before every round anyway turns each purely prose-level review finding into a full
+     re-measurement — exactly what happened rerunning WHI-1247's multi-hour `ceiling --fit`
+     after each of three review rounds instead of once at the end. Generate the committed
+     artifact exactly once, from the final clean commit, after round 3 (or the escalation
+     pass) closes — never per round.
+6. **Commit before dispatching a reviewer, then hand it a three-dot diff, and verify it is
    non-empty before dispatching.** `/code-review`'s own canonical command is `git diff
    <fixed-point>...HEAD` (three-dot, against the merge-base) plus an explicit non-empty
    check before the parallel reviewers ever run — use the same form here. Two-dot
@@ -68,15 +58,25 @@ body is presumed accidental, not reviewed.
    change under review — a non-empty, plausible, and much harder to catch failure than the
    empty diff it was meant to fix. Commit first (so three-dot is never comparing against an
    empty commit range) and use three-dot.
-8. **Report slots are per-stage-per-day and stage names may omit the segment.** Same-day runs
+7. **Report slots are per-stage-per-day and stage names may omit the segment.** Same-day runs
    of one target on two segments can collide on one filename (`docs/DEFERRED_ISSUES.md`,
    WHI-1195). WHI-1215 resolved this for `grid`/`l1`/`compare` only (per-target stage naming) —
    `anchor.rs::STAGE` is still a constant and still collides (`docs/DEFERRED_ISSUES.md`'s
    WHI-1215 follow-on note); check the current stage-naming code before assuming a given
    command is fixed.
+8. **Release profile only — liveness and CPU do not prove it.** Echo the binary path
+   immediately before every measurement and confirm it reads `target/release/`, not
+   `target/debug/`; a bare `cargo run`/`cargo build` without `--release` is one to two orders
+   of magnitude slower, and `ps` cannot tell the difference — a healthy-looking, high-CPU
+   process is exactly what a debug build in the middle of a multi-minute run also looks like
+   too. WHI-1247's own account (the source WHI-1252 cites for restoring this entry) puts one
+   such run at roughly 25 minutes of wall clock against the ~7 a `target/release/` build takes
+   for the same work, with `ps` pegged at 746% CPU the entire time — no committed report in
+   this repo independently reproduces those two numbers, so treat them as the reported cost,
+   not a re-derived one. Either way, the mechanical fix (echo the path, assert `release`) is
+   what actually closes the trap, not any CPU or liveness threshold.
 9. **`pgrep -fl` dumps this machine's entire shell-snapshot environment** (hundreds of lines
-   of `export` noise) instead of the one process you meant to find — it wastes output budget
-   every time it's used, and the project's own long-running-work convention
-   (`implementer-prompt.md`'s "Long-running work" section) already uses the working
-   alternative: `pgrep -f <pattern> | head -1` to get the pid, then
-   `ps -o pid,etime,command -p <pid>` to check it's alive and is the right binary.
+   of `export` noise) instead of the one process you meant to find. Use
+   `pgrep -f <pattern> | head -1` to get the pid, then `ps -o pid,etime,command -p <pid>` to
+   check it's alive and is the right binary — `implementer-prompt.md`'s "Long-running work"
+   section states this same two-step form directly.

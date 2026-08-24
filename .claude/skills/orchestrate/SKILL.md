@@ -186,7 +186,7 @@ Observed, not hypothetical:
   a literal-minded implementer will.
 - **Checking liveness instead of correctness.** "Is it running?" is the easy question and
   rarely the useful one.
-- **Prescribing a fix for one failure mode that quietly reintroduces a worse one.** Trap 7
+- **Prescribing a fix for one failure mode that quietly reintroduces a worse one.** Trap 6
   in `traps.md` (two-dot vs. three-dot diffs) is a case actually made this way: the first fix proposed
   for "empty diff looks like a clean pass" was itself wrong, and worse than the problem it
   replaced. Checking a proposed correction against this project's own canonical answer (here,
