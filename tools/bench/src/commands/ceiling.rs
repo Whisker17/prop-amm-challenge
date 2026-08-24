@@ -628,35 +628,15 @@ struct FittedPoint {
     search_outcome: Option<search::SearchOutcome>,
 }
 
-/// The `screening`-segment fit loop is kept generically usable under either cursor mode
-/// (`cursor_mode`/`fingerprint_lag` are threaded straight into every point's own
-/// [`OracleParams`]). For `CursorMode::TradeTriggered` it keeps the pre-existing single
-/// batch-level-panic [`run_catching_panics`]/`oracle::run_batch` pattern unchanged from
-/// WHI-1247: a search point that panics on even one of `screening`'s own seeds is simply
-/// `Invalid` for that point.
-///
-/// For `CursorMode::Fingerprint` that all-or-nothing rule is unusable in practice, not just
-/// theoretically stricter: a live measurement (docs/... `ceilings/C-orbic-oracle/NOTES.md`)
-/// found the per-seed hardening-check trip rate on `screening` running ~50% under the L=1
-/// rung, and 200 IID screening seeds each with *any* positive trip probability are, with
-/// near certainty, never simultaneously panic-free — confirmed directly: before this fix,
-/// `--fit --max-points 30` reported "every evaluated grid point (9) was invalid (a caught
-/// shape-check panic)" and could never produce a fitted point at all. So every candidate
-/// point evaluated under fingerprint mode instead goes through
-/// [`evaluate_fingerprint_point`], which mirrors [`run_fingerprint_final_eval`]'s own
-/// semantics (mean edge over the *surviving* seeds only, `Invalid` only if literally none
-/// survive) rather than this function's own now-inapplicable all-or-nothing rule.
-/// WHI-1248's "never silently dropped" per-seed architecture (full message recovery, not
-/// just a valid/invalid split) still applies only to the *final* evaluation
-/// ([`run_fingerprint_final_eval`]) — this search loop only needs a number per point, so it
-/// skips that function's serial per-tripped-seed re-run to avoid multiplying wall-clock
-/// cost across a budget of up to 300 points for messages nothing here reads.
-/// Evaluates one candidate `(concentration, spread_bps)` point during the `--fit` search
+/// Evaluates one candidate `(concentration, spread_bps)` point during [`run_fit`]'s search
 /// loop, dispatching on `cursor_mode` — the one piece of logic that used to be duplicated
 /// verbatim between `run_fit`'s `VariantArg::Anchored` and `VariantArg::Floating` arms
-/// (round-1 standards review of this issue, finding #4). The two arms differ only in which
-/// `ParamSpec`s they search over and how `concentration`/`spread_bps` are derived from
-/// `values`; this function is everything downstream of that.
+/// (round-1 standards review of this issue, finding #4; the doc comment that used to sit
+/// here — on `run_fit` itself, describing the fit loop's own design — was misattributed to
+/// this function by that extraction and has been moved back; round-2 review of this issue,
+/// standards finding A / spec finding (c)). The two arms differ only in which `ParamSpec`s
+/// they search over and how `concentration`/`spread_bps` are derived from `values`; this
+/// function is everything downstream of that.
 fn eval_fit_point(
     params: OracleParams,
     configs: &[SimulationConfig],
@@ -671,6 +651,32 @@ fn eval_fit_point(
     }
 }
 
+/// The `screening`-segment fit loop is kept generically usable under either cursor mode
+/// (`cursor_mode`/`fingerprint_lag` are threaded straight into every point's own
+/// [`OracleParams`]). For `CursorMode::TradeTriggered` it keeps the pre-existing single
+/// batch-level-panic [`run_catching_panics`]/`oracle::run_batch` pattern unchanged from
+/// WHI-1247: a search point that panics on even one of `screening`'s own seeds is simply
+/// `Invalid` for that point.
+///
+/// For `CursorMode::Fingerprint` that all-or-nothing rule is unusable in practice, not just
+/// theoretically stricter — on two independent segments: `ceilings/C-orbic-oracle/NOTES.md`
+/// measured a ~50%+ per-seed hardening-check trip rate on `validation` under the L=1 rung
+/// (564 of 1000 seeds, round-2 review of this issue, spec finding (c) — corrected here from
+/// an earlier version of this comment that misattributed that figure to `screening`), and
+/// `screening`'s own 200 IID seeds hit the same failure mode directly and unambiguously:
+/// before this fix, `--fit --max-points 30` reported "every evaluated grid point (9) was
+/// invalid (a caught shape-check panic)" and could never produce a fitted point at all —
+/// with any positive per-seed trip probability, 200 IID seeds are, with near certainty,
+/// never simultaneously panic-free. So every candidate point evaluated under fingerprint
+/// mode instead goes through [`eval_fit_point`] -> [`evaluate_fingerprint_point`], which
+/// mirrors [`run_fingerprint_final_eval`]'s own semantics (mean edge over the *surviving*
+/// seeds only, `Invalid` only if literally none survive) rather than this function's own
+/// now-inapplicable all-or-nothing rule.
+/// WHI-1248's "never silently dropped" per-seed architecture (full message recovery, not
+/// just a valid/invalid split) still applies only to the *final* evaluation
+/// ([`run_fingerprint_final_eval`]) — this search loop only needs a number per point, so it
+/// skips that function's serial per-tripped-seed re-run to avoid multiplying wall-clock
+/// cost across a budget of up to 300 points for messages nothing here reads.
 fn run_fit(
     variant: VariantArg,
     fixed_concentration: Option<f64>,
@@ -1349,9 +1355,23 @@ fn slice_by_sigma_tier(
 fn format_sigma_slices(
     grid_levels: Option<&[f64]>,
     slices: &[(regime::Tier, stats::PairedStat)],
+    slicing_error: Option<&str>,
 ) -> String {
     let mut out = String::new();
     out.push_str("## Per-sigma-tier slices (WHI-1248)\n\n");
+    // Round-2 standards review of this issue, finding B: an empty `slices` has two
+    // genuinely different causes — the bins were legitimately empty, or slicing itself
+    // failed and this call site degraded gracefully instead of aborting the whole report
+    // (round-1 standards finding #5). Render the real cause rather than letting the
+    // generic "bin was empty" verdict below assert something that didn't happen.
+    if let Some(err) = slicing_error {
+        out.push_str(&format!(
+            "**Not computed — sigma-tier slicing itself failed** for this run's own \
+             results (the paired statistic above is unaffected and was computed \
+             separately): {err}\n\n",
+        ));
+        return out;
+    }
     out.push_str(
         "Slices purely by `regime.rs`'s own `sigma` tier (Low/Mid/High thirds of \
          `HyperparameterVariance`'s sampling range, which by construction track \
@@ -1614,10 +1634,12 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                     // Degrade gracefully rather than `?`-propagating: a slicing failure
                     // here (e.g. an unpaired batch) must not discard an already-finished,
                     // already-valid 1000-sim measurement and abort with no report written
-                    // at all (round-1 standards review of this issue, finding #5) —
-                    // `format_sigma_slices` already renders an explicit "not computable"
-                    // verdict for an empty/incomplete slice vector, so an empty fallback
-                    // here degrades to that existing, honest path.
+                    // at all (round-1 standards review of this issue, finding #5). The
+                    // error, when there is one, is threaded into `format_sigma_slices`
+                    // itself (round-2 standards finding B) rather than silently becoming
+                    // an empty slice vector indistinguishable from a legitimately empty
+                    // tier bin.
+                    let mut sigma_slicing_error = None;
                     let sigma_slices = match slice_by_sigma_tier(
                         &base_config,
                         &batch.results,
@@ -1629,6 +1651,7 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                                 "warning: sigma-tier slicing failed for `{stage}` \
                                  (report still written without it): {e}"
                             );
+                            sigma_slicing_error = Some(e.to_string());
                             Vec::new()
                         }
                     };
@@ -1640,7 +1663,11 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                     );
 
                     if !args.no_report {
-                        let extra = format_sigma_slices(grid_levels.as_deref(), &sigma_slices);
+                        let extra = format_sigma_slices(
+                            grid_levels.as_deref(),
+                            &sigma_slices,
+                            sigma_slicing_error.as_deref(),
+                        );
                         let path = write_ceiling_report(
                             run_meta,
                             &fitted,
@@ -1728,7 +1755,9 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
             // Same graceful-degradation rationale as the trade-triggered branch above
             // (round-1 standards review of this issue, finding #5): don't let a slicing
             // failure discard the already-computed paired statistic and abort with no
-            // report at all.
+            // report at all. Same round-2 finding-B fix as that branch: thread the error
+            // through rather than collapsing it into an indistinguishable empty Vec.
+            let mut sigma_slicing_error = None;
             let sigma_slices =
                 match slice_by_sigma_tier(&base_config, &results, &filtered_reference.results) {
                     Ok(slices) => slices,
@@ -1737,12 +1766,17 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                             "warning: sigma-tier slicing failed for `{stage}` (report still \
                              written without it): {e}"
                         );
+                        sigma_slicing_error = Some(e.to_string());
                         Vec::new()
                     }
                 };
 
             let mut extra = tripped_section;
-            extra.push_str(&format_sigma_slices(grid_levels.as_deref(), &sigma_slices));
+            extra.push_str(&format_sigma_slices(
+                grid_levels.as_deref(),
+                &sigma_slices,
+                sigma_slicing_error.as_deref(),
+            ));
             if lag == 0 {
                 let envelope = analytic_envelope_l0_upper_bound(&configs, fitted.spread_bps);
                 let l0_avg_edge =
