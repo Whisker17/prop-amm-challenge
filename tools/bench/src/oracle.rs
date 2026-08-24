@@ -456,6 +456,18 @@ pub(crate) fn fingerprint_panic_diagnostics() -> Option<u64> {
 /// stacked on top of whichever advance this very call just produced.
 fn maybe_advance_fingerprint_cursor(side: u8, input_amount: u64) {
     CALLS_SINCE_FP_ADVANCE.with(|c| c.set(c.get().saturating_add(1)));
+    // Note (round-1 spec review of this issue, finding #5): the gate below is set to
+    // `true` here *before* it is read a few lines down, so a `side == 1` candidate itself
+    // always satisfies its own gate — the check only ever excludes a `side == 0` candidate
+    // that arrives with no `side == 1` call in between. This is deliberate, not a bug: per
+    // [`SEEN_SIDE1_SINCE_ADVANCE`]'s own doc comment, hardening check (c) exists
+    // specifically to block the buy-before-sell asymmetry (a same-step buy-side probe
+    // colliding with the *next* step's own buy-side probe, before that step's sell-side
+    // search has run) — a sell-side match was never the case it was written to exclude, so
+    // it never needing to exclude itself is exactly the narrower, disclaimed scope that doc
+    // comment already states, not new information. It does not affect the seed 2_000_011 /
+    // step 3201→3202 trace this issue closes on (that match's own gate had already been
+    // opened by an earlier, genuine `side == 1` call, not by this self-satisfying path).
     if side == 1 {
         SEEN_SIDE1_SINCE_ADVANCE.with(|s| s.set(true));
     }

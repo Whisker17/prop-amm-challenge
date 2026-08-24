@@ -482,8 +482,17 @@ point, and the only fit pipeline available for `CursorMode::Fingerprint`
 the search itself toward parameter regions that happen to produce fewer floor collisions
 rather than the true optimum, so even the *fitted point* (not just the final number) is
 untrustworthy here. There is therefore no simulated `L=0` number to check against the
-envelope, and none is reported; the formula itself is verified and ready to use once (if
-ever) a non-selection-biased fingerprint-mode measurement pipeline exists.
+envelope, and none is reported; the formula's own boundary behavior is unit-tested, and it
+is a candidate for reuse once (if ever) a non-selection-biased fingerprint-mode measurement
+pipeline exists — but "unit-tested for its own boundary behavior" is the extent of what has
+been verified. One caveat applies regardless of the selection-bias problem above and
+survives any future fix to it: the envelope is deliberately a **retail-flow-only**
+quantity (`sum(retail volume_y)`, matching the issue's own literal wording), while a real
+simulated `l0_avg_edge` is built from `submission_edge`, which also includes whatever the
+arbitrageur itself contributes. The two are therefore never a strictly apples-to-apples
+comparison — a future `PASS` against this envelope would be consistent with the bound
+holding, not proof the two quantities were computed over identical volume. See
+`analytic_envelope_l0_upper_bound`'s own doc comment in `commands/ceiling.rs`.
 
 **Per-sigma slices: not performed.** `commands/ceiling.rs::slice_by_sigma_tier`/
 `format_sigma_slices` are implemented and reuse `regime.rs`'s existing tier reconstruction
@@ -508,7 +517,9 @@ under this method.
   met, deliberately** — see Decision above; any such number is selection-biased.
 - `L=0` variant (a) diagnostic sits below the analytic envelope: **not evaluable** — no
   valid simulated `L=0` number exists to compare; the envelope formula itself is
-  implemented, re-derived for variant (a), and unit-tested.
+  implemented, re-derived for variant (a), and unit-tested (boundary cases only — see the
+  scope caveat above: it is a retail-flow-only bound, not a like-for-like quantity against
+  `submission_edge`).
 - Per-sigma slices for every rung with an explicit converge/fan-out statement: **not
   met** — no valid rung exists to slice; the slicing/formatting code is implemented and
   ready.

@@ -475,7 +475,8 @@ fn evaluate_fingerprint_point(
     let (oks, tripped) = oracle::run_batch_fingerprint_checked(params, configs)?;
     if oks.is_empty() {
         return Ok(PointOutcome::Invalid(format!(
-            "all {} seed(s) tripped a WHI-1248 fingerprint hardening check on this point              (nothing survived to average)",
+            "all {} seed(s) tripped a WHI-1248 fingerprint hardening check on this point \
+             (nothing survived to average)",
             tripped.len()
         )));
     }
@@ -650,6 +651,26 @@ struct FittedPoint {
 /// ([`run_fingerprint_final_eval`]) — this search loop only needs a number per point, so it
 /// skips that function's serial per-tripped-seed re-run to avoid multiplying wall-clock
 /// cost across a budget of up to 300 points for messages nothing here reads.
+/// Evaluates one candidate `(concentration, spread_bps)` point during the `--fit` search
+/// loop, dispatching on `cursor_mode` — the one piece of logic that used to be duplicated
+/// verbatim between `run_fit`'s `VariantArg::Anchored` and `VariantArg::Floating` arms
+/// (round-1 standards review of this issue, finding #4). The two arms differ only in which
+/// `ParamSpec`s they search over and how `concentration`/`spread_bps` are derived from
+/// `values`; this function is everything downstream of that.
+fn eval_fit_point(
+    params: OracleParams,
+    configs: &[SimulationConfig],
+) -> anyhow::Result<PointOutcome> {
+    if params.cursor_mode == CursorMode::Fingerprint {
+        evaluate_fingerprint_point(params, configs)
+    } else {
+        let configs = configs.to_vec();
+        run_catching_panics(move || {
+            oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
+        })
+    }
+}
+
 fn run_fit(
     variant: VariantArg,
     fixed_concentration: Option<f64>,
@@ -674,14 +695,7 @@ fn run_fit(
                     cursor_mode,
                     fingerprint_lag,
                 };
-                let configs = screening_configs.to_vec();
-                if cursor_mode == CursorMode::Fingerprint {
-                    evaluate_fingerprint_point(params, &configs)
-                } else {
-                    run_catching_panics(move || {
-                        oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
-                    })
-                }
+                eval_fit_point(params, screening_configs)
             })?;
             let concentration = outcome.best[0] as f64 / 100.0;
             let spread_bps = outcome.best[1] as f64;
@@ -708,14 +722,7 @@ fn run_fit(
                     cursor_mode,
                     fingerprint_lag,
                 };
-                let configs = screening_configs.to_vec();
-                if cursor_mode == CursorMode::Fingerprint {
-                    evaluate_fingerprint_point(params, &configs)
-                } else {
-                    run_catching_panics(move || {
-                        oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
-                    })
-                }
+                eval_fit_point(params, screening_configs)
             })?;
             let spread_bps = outcome.best[0] as f64;
             Ok(FittedPoint {
@@ -1123,6 +1130,13 @@ type FingerprintFinalEvalOutcome = (Vec<(SimResult, StalenessSummary)>, Vec<Trip
 /// violation to begin with). This is a diagnostic heuristic, not a hard guarantee — every
 /// tripped seed's own message is still reported verbatim regardless of which bucket it
 /// lands in, so a wrong guess here costs a misleading label, never a lost seed.
+///
+/// The value itself is not arbitrary: `crates/sim/src/arbitrageur.rs`'s own search bounds
+/// its work with `BRACKET_MAX_STEPS` (24) bracketing steps followed by `GOLDEN_MAX_ITERS`
+/// (12) golden-section refinement iterations, plus 8 calls of headroom for the handful of
+/// direct `compute_swap` probes the search issues outside that loop (the same
+/// `BRACKET_MAX_STEPS + GOLDEN_MAX_ITERS + 8` shape already used, for the same reason, in
+/// that file's own `Vec::with_capacity` call) — `24 + 12 + 8 = 44`.
 const FP_EARLY_ADVANCE_CALL_THRESHOLD: u64 = 44;
 
 /// Classifies a fingerprint-mode panic into one of three buckets, purely from the recovered
@@ -1199,19 +1213,36 @@ fn run_fingerprint_final_eval(
         let seed = tripped.seed;
         match catch_panicking(move || oracle::run_batch(params, &single))? {
             Ok((batch, staleness)) => {
-                tripped_outcomes.push(TrippedSeedOutcome {
-                    seed,
-                    label: "RecoveredOnSerialRerun",
-                    message: "did not reproduce when re-run serially and alone; its result \
-                              from that re-run is included in the paired statistic below"
-                        .to_string(),
-                });
-                if let (Some(result), Some(stale)) = (
+                // Only claim inclusion once it has actually happened — pushing the
+                // "included in the paired statistic below" message unconditionally, before
+                // checking whether the re-run batch was non-empty, would assert something
+                // the run didn't establish for an empty-batch edge case (the exact class of
+                // bug this "never silently dropped" architecture exists to prevent; round-1
+                // review of this issue, standards finding #2).
+                let included = if let (Some(result), Some(stale)) = (
                     batch.results.into_iter().next(),
                     staleness.into_iter().next(),
                 ) {
                     oks.push((result, stale));
-                }
+                    true
+                } else {
+                    false
+                };
+                let message = if included {
+                    "did not reproduce when re-run serially and alone; its result from that \
+                     re-run is included in the paired statistic below"
+                        .to_string()
+                } else {
+                    "did not reproduce when re-run serially and alone, but the re-run batch \
+                     unexpectedly returned no result for this seed; it is NOT included in the \
+                     paired statistic below"
+                        .to_string()
+                };
+                tripped_outcomes.push(TrippedSeedOutcome {
+                    seed,
+                    label: "RecoveredOnSerialRerun",
+                    message,
+                });
             }
             Err(outcome) => {
                 let label = classify_fingerprint_panic(&outcome);
@@ -1400,6 +1431,16 @@ fn format_sigma_slices(
 /// The envelope therefore remains a valid upper bound for variant (a) too, just a looser one
 /// than variant (b)'s (where `target_x` tracks `reserve_x` exactly, so there is no drift
 /// term to begin with).
+///
+/// **Scope caveat (round-1 spec review of this issue, finding #6):** this is deliberately a
+/// retail-flow-only quantity — `sum(retail volume_y)`, exactly the issue's own literal
+/// wording — and does not add an arbitrageur-volume term. A real simulated `l0_avg_edge`
+/// (built from [`SimResult::submission_edge`], which *does* include whatever the
+/// arbitrageur itself contributes) is therefore not a strictly apples-to-apples quantity
+/// against this envelope: the two can differ for a reason that has nothing to do with
+/// whether this bound holds, not only because it does or doesn't. Treat a `PASS` from
+/// [`format_envelope_check`] as consistent with the bound, not as proof the two quantities
+/// were computed over identical volume — the derivation above bounds only the retail term.
 fn analytic_envelope_l0_upper_bound(configs: &[SimulationConfig], spread_bps: f64) -> f64 {
     if configs.is_empty() {
         return 0.0;
@@ -1423,7 +1464,11 @@ fn format_envelope_check(l0_avg_edge: f64, envelope: f64) -> String {
     out.push_str("## L=0 analytic envelope check (WHI-1248)\n\n");
     out.push_str(&format!(
         "- Simulated `L=0` avg edge: {l0_avg_edge:.6}\n- Closed-form upper envelope: \
-         {envelope:.6}\n"
+         {envelope:.6}\n- Scope caveat: the envelope is a retail-flow-only quantity \
+         (`sum(retail volume_y)`, per the issue's own wording); the simulated avg edge \
+         also includes whatever the arbitrageur itself contributes, so the two are not a \
+         strictly apples-to-apples comparison — see `analytic_envelope_l0_upper_bound`'s \
+         doc comment.\n"
     ));
     if l0_avg_edge <= envelope {
         out.push_str(&format!(
@@ -1566,11 +1611,27 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                 OracleBatchOutcome::Valid { batch, staleness } => {
                     let paired = stats::paired_stat(&batch.results, &reference_batch.results)?;
                     let staleness_agg = aggregate_staleness(&staleness);
-                    let sigma_slices = slice_by_sigma_tier(
+                    // Degrade gracefully rather than `?`-propagating: a slicing failure
+                    // here (e.g. an unpaired batch) must not discard an already-finished,
+                    // already-valid 1000-sim measurement and abort with no report written
+                    // at all (round-1 standards review of this issue, finding #5) —
+                    // `format_sigma_slices` already renders an explicit "not computable"
+                    // verdict for an empty/incomplete slice vector, so an empty fallback
+                    // here degrades to that existing, honest path.
+                    let sigma_slices = match slice_by_sigma_tier(
                         &base_config,
                         &batch.results,
                         &reference_batch.results,
-                    )?;
+                    ) {
+                        Ok(slices) => slices,
+                        Err(e) => {
+                            eprintln!(
+                                "warning: sigma-tier slicing failed for `{stage}` \
+                                 (report still written without it): {e}"
+                            );
+                            Vec::new()
+                        }
+                    };
 
                     println!(
                         "ceiling `{stage}`: mean edge diff (oracle - {reference_slug}) = \
@@ -1664,8 +1725,21 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
             let filtered_reference = filter_batch_to_seeds(&reference_batch, &surviving);
             let paired = stats::paired_stat(&results, &filtered_reference.results)?;
             let staleness_agg = aggregate_staleness(&staleness);
+            // Same graceful-degradation rationale as the trade-triggered branch above
+            // (round-1 standards review of this issue, finding #5): don't let a slicing
+            // failure discard the already-computed paired statistic and abort with no
+            // report at all.
             let sigma_slices =
-                slice_by_sigma_tier(&base_config, &results, &filtered_reference.results)?;
+                match slice_by_sigma_tier(&base_config, &results, &filtered_reference.results) {
+                    Ok(slices) => slices,
+                    Err(e) => {
+                        eprintln!(
+                            "warning: sigma-tier slicing failed for `{stage}` (report still \
+                             written without it): {e}"
+                        );
+                        Vec::new()
+                    }
+                };
 
             let mut extra = tripped_section;
             extra.push_str(&format_sigma_slices(grid_levels.as_deref(), &sigma_slices));
