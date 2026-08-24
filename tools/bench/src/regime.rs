@@ -16,15 +16,53 @@ pub enum Tier {
     High,
 }
 
+// WHI-1249: named once so `tier_of`'s classification and `tier_bounds`'s displayed
+// numeric ranges cannot silently drift apart into two different partitions of the same
+// `[min, max]` — both read these same two cutoff fractions instead of each hand-writing
+// its own `1.0 / 3.0`/`2.0 / 3.0` literal.
+const LOW_MID_CUTOFF_FRAC: f64 = 1.0 / 3.0;
+const MID_HIGH_CUTOFF_FRAC: f64 = 2.0 / 3.0;
+
 fn tier_of(value: f64, min: f64, max: f64) -> Tier {
     let frac = (value - min) / (max - min);
-    if frac < 1.0 / 3.0 {
+    if frac < LOW_MID_CUTOFF_FRAC {
         Tier::Low
-    } else if frac < 2.0 / 3.0 {
+    } else if frac < MID_HIGH_CUTOFF_FRAC {
         Tier::Mid
     } else {
         Tier::High
     }
+}
+
+/// WHI-1249: the `[lo, hi)` bounds `tier` actually covers, computed the same way `tier_of`
+/// computes its fractional cutoffs — equal linear thirds of `[min, max]`. Display-only: it
+/// does not feed back into `tier_of`/`classify_seed`, which remain the sole classification
+/// logic. Exists because a caller (`tools/bench/src/commands/ceiling.rs`'s sigma-slice
+/// report) previously labelled each tier with the nearest `config/bench.toml`
+/// `[grid] gbm_sigma_levels` entry under the false assumption that the three grid levels
+/// land one-per-tier; they do not (e.g. the sigma grid's `0.0010` falls in `Low`, not `Mid`,
+/// for the default `gbm_sigma` range) — this reports the tier's own true numeric range
+/// instead, which is correct by construction for any `[min, max]`.
+pub fn tier_bounds(tier: Tier, min: f64, max: f64) -> (f64, f64) {
+    let range = max - min;
+    let low_mid = min + LOW_MID_CUTOFF_FRAC * range;
+    let mid_high = min + MID_HIGH_CUTOFF_FRAC * range;
+    match tier {
+        Tier::Low => (min, low_mid),
+        Tier::Mid => (low_mid, mid_high),
+        Tier::High => (mid_high, max),
+    }
+}
+
+/// WHI-1249: the single source of the sigma axis's default sampling range. `classify_seed`
+/// (below) needs the *whole* `HyperparameterVariance` to reconstruct a sampled config, so it
+/// cannot call this directly — but any caller that only wants the sigma bounds `tier_bounds`
+/// partitions (e.g. `tools/bench/src/commands/ceiling.rs`'s sigma-slice report) should read
+/// them from here rather than constructing its own `HyperparameterVariance::default()`, so the
+/// range a label is computed over can't drift from the range `classify_seed` actually samples.
+pub fn default_sigma_range() -> (f64, f64) {
+    let variance = HyperparameterVariance::default();
+    (variance.gbm_sigma_min, variance.gbm_sigma_max)
 }
 
 /// A simulation's regime, reconstructed from its sampled config (docs/DESIGN.md §2.3's three
@@ -134,6 +172,43 @@ mod tests {
         assert_eq!(tier_of(59.0, 0.0, 90.0), Tier::Mid);
         assert_eq!(tier_of(60.0, 0.0, 90.0), Tier::High);
         assert_eq!(tier_of(89.999, 0.0, 90.0), Tier::High);
+    }
+
+    #[test]
+    fn tier_bounds_matches_tier_of_at_the_default_sigma_range() {
+        // WHI-1249: the regression this guards is exactly the one the audit found — a
+        // caller assuming the three `config/bench.toml` `[grid] gbm_sigma_levels`
+        // (0.0001, 0.0010, 0.0070) land one-per-tier against the default
+        // `HyperparameterVariance` sigma range. `0.0010` must classify as `Low`, not
+        // `Mid`, and `tier_bounds(Mid, ..)` must not contain it.
+        let min = 0.0001_f64;
+        let max = 0.007_f64;
+        assert_eq!(tier_of(0.0010, min, max), Tier::Low);
+
+        let (low_lo, low_hi) = tier_bounds(Tier::Low, min, max);
+        let (mid_lo, mid_hi) = tier_bounds(Tier::Mid, min, max);
+        let (high_lo, high_hi) = tier_bounds(Tier::High, min, max);
+
+        assert!((low_lo - 0.0001).abs() < 1e-12);
+        assert!((low_hi - 0.0024).abs() < 1e-9);
+        assert!((mid_lo - 0.0024).abs() < 1e-9);
+        assert!((mid_hi - 0.0047).abs() < 1e-9);
+        assert!((high_lo - 0.0047).abs() < 1e-9);
+        assert!((high_hi - 0.007).abs() < 1e-12);
+
+        // The grid level 0.0010 falls inside tier_bounds(Low, ..), not tier_bounds(Mid, ..).
+        assert!(low_lo <= 0.0010 && 0.0010 < low_hi);
+        assert!(!(mid_lo <= 0.0010 && 0.0010 < mid_hi));
+
+        // tier_of and tier_bounds must agree for every boundary-adjacent sample.
+        for value in [0.0001, 0.0023, 0.0024, 0.0035, 0.0046, 0.0047, 0.006999] {
+            let tier = tier_of(value, min, max);
+            let (lo, hi) = tier_bounds(tier, min, max);
+            assert!(
+                lo <= value && value < hi,
+                "value {value} classified as {tier:?} but its own bounds are [{lo}, {hi})"
+            );
+        }
     }
 
     #[test]
