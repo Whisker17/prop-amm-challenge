@@ -634,3 +634,80 @@ the reason given above. WHI-1247's own trade-triggered `anchored` measurement
 (87.234885 edge/sim above the 0-line, `observation`, n=1000) is unaffected by any of this
 — it uses a different cursor mode entirely and is not implicated by the fingerprint-mode
 finding.
+
+## WHI-1250 — buy-probe-only cursor advance, and the pre-registered kill rule
+
+**What changed.** `tools/bench/src/oracle.rs::maybe_advance_fingerprint_cursor` now
+advances the fingerprint cursor only on a `side == 0` (buy) probe match against the next
+step's own buy target. A `side == 1` (sell) call still sets the `SEEN_SIDE1_SINCE_ADVANCE`
+gate (kept as the backstop it was written for — a buy-before-sell collision within the
+same step), but can never itself advance the cursor any more. This directly attacks the
+mechanism WHI-1248/WHI-1249 traced: the sell-side floor clamp (`min_sell_input_x`, binds at
+roughly P ≈ 1e-4/step once `fair_price > 10`, true for essentially this entire run) was
+being routinely re-probed as `bracket_maximum`/`golden_section_max`'s own early-return `lo`
+value and false-matched against the next step's target; the buy-side floor
+(`min_buy_input_y`, the constant `FP_MIN_ARB_NOTIONAL_Y`) binds roughly four orders of
+magnitude more rarely, and the real arbitrageur's own first `compute_swap` call every step
+is always the buy probe (`Arbitrageur::execute_arb`'s `Self::best_candidate(self.
+plan_arb_buy_x(..), self.plan_arb_sell_x(..))` evaluates its first argument — the whole
+buy-side search — before its second, by Rust's left-to-right argument evaluation), so a
+buy-only advance rule removes the dominant ambiguity class by construction. Proven by a new
+unit test, `oracle::tests::side1_probe_never_advances_the_cursor_even_on_an_exact_sell_
+target_match`, which drives a `side == 1` call against an exact match of the *next*
+target's own sell component with the gate already open — pre-WHI-1250 code would have
+advanced here; post-WHI-1250 code does not, and only a subsequent `side == 0` match against
+the next target's buy component does.
+
+**The search-time contamination WHI-1249 flagged is fixed separately, in the same
+change.** `commands/ceiling.rs::evaluate_fingerprint_point` previously scored every
+candidate point by averaging over whichever seeds survived that point's own fingerprint
+hardening checks, with no upper bound on how many seeds could be silently excluded from the
+average — exactly the mechanism suspected of pulling the pre-fix fit to
+`concentration = 94.33`, near its own declared upper bound (docs/DEFERRED_ISSUES.md's
+WHI-1249 entry). The fix factors the decision into a new pure function,
+`score_fingerprint_survivors(oks, tripped_count, total_seeds)`, applied identically by
+`evaluate_fingerprint_point` (the `screening`-segment search loop) and by `run`'s
+`CursorMode::Fingerprint` branch (the real final-evaluation headline decision) — see the
+kill rule below for what it does. `commands/ceiling.rs`'s new unit tests exercise both
+`Invalid` branches directly against synthetic survivor/trip counts (not a real
+simulation's own trip rate, which this fix is specifically trying to lower) —
+`score_fingerprint_survivors_is_invalid_when_trip_rate_exceeds_the_kill_threshold_even_
+with_survivors` is the acceptance-criterion test: 9 survivors, 91 tripped (91%, well past
+the threshold below) must score `Invalid`, not a mean over the 9 that happened to survive.
+
+**The pre-registered kill rule (recorded here before any measurement was taken under this
+fix — this section was written, and this repo's own commit history for this issue shows
+it, before the first `--fit`/final-eval command below was run):**
+
+> If the per-seed fingerprint hardening-check trip rate on the segment being measured
+> exceeds **1% (strictly more than 10 of 1000 seeds on `validation`, or more than 2 of 200
+> on `screening`** — the rule is a rate, not a hardcoded count, so it applies unmodified to
+> either segment size), that point/run is scored `Invalid` and the rung is closed as a
+> documented negative/method-level result: no mean-edge-diff number, no CI, and no
+> per-sigma slice is reported. Trip data (every tripped seed's own seed number,
+> classification, and message, via `format_tripped_seeds`) is reported as the evidence for
+> the negative result instead. This threshold is not raised after seeing a measured trip
+> rate, under any circumstance — the entire purpose of writing it down first is to remove
+> that judgment call once a number is in hand. A **survivors-only mean is never reported**
+> regardless of how small the excluded fraction is claimed to be, even below this
+> threshold's own trip-rate bound — WHI-1249's own finding above is that a tripped seed is
+> a deterministic, RNG-stream-correlated event, not an independent draw, so even a "small"
+> excluded fraction is a biased one, not merely a noisier one. The threshold bounds how
+> large a reported number's own bias is *allowed* to be, not whether it is zero.
+
+Implemented as `commands/ceiling.rs::FINGERPRINT_TRIP_RATE_KILL_THRESHOLD = 0.01` and
+`fingerprint_trip_rate_exceeds_kill_threshold`, checked in both
+`score_fingerprint_survivors` (search loop) and directly in `run`'s `CursorMode::
+Fingerprint` branch (final evaluation), using strict `>` — exactly 10-of-1000 (1.0%) does
+not trip the rule, matching the rule's own "exceeds 1%" wording; 11-of-1000 (1.1%) does.
+Unit-tested at the boundary on both segment sizes
+(`fingerprint_trip_rate_exceeds_kill_threshold_is_false_at_exactly_the_boundary`,
+`_is_true_just_past_the_boundary`, `_applies_the_same_rate_to_a_smaller_segment`).
+
+**Measurement outcome — recorded here once, immediately after it was taken, under the
+rule above:**
+
+<!-- WHI-1250-MEASUREMENT-PLACEHOLDER: filled in below once the re-fit and final
+     evaluation have actually been run; this comment marker exists only so a reader can
+     see this rule was written and committed before any measurement, per the ordering
+     constraint this section opens with. -->

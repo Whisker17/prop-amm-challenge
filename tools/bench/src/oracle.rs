@@ -24,6 +24,23 @@
 //! (`arbitrageur.rs:47-60`). This is the deployment-faithful analogue of a fixed re-anchor
 //! lag (`L` steps stale), not a diagnostic replacement for the trade-triggered rung — both
 //! rungs coexist, selected per batch via [`OracleParams::cursor_mode`].
+//!
+//! WHI-1250 restricts the fingerprint cursor's advance rule
+//! ([`maybe_advance_fingerprint_cursor`]) to buy-side (`side == 0`) probe matches only,
+//! after WHI-1248/WHI-1249 traced the dominant false-match trap to the sell side's floor
+//! clamp (`min_sell_input_x`, price-dependent, binds at roughly P~1e-4/step once
+//! `fair_price > 10`) being routinely re-probed as `bracket_maximum`'s early-return `lo`
+//! value — see [`build_fingerprint_targets`]'s doc comment, limitation 3, for the full
+//! trace. The buy-side floor (`min_buy_input_y`, the unconditional constant
+//! `FP_MIN_ARB_NOTIONAL_Y`) binds roughly four orders of magnitude more rarely, and the
+//! real arbitrageur's own first `compute_swap` every step is always the buy probe
+//! (`Arbitrageur::execute_arb`'s `Self::best_candidate(self.plan_arb_buy_x(..),
+//! self.plan_arb_sell_x(..))` evaluates its first argument, the whole buy-side search,
+//! before its second) — so a buy-only advance rule removes the dominant ambiguity class
+//! by construction. The sell-side probe is still replayed into `FP_TARGETS` and still
+//! sets the [`SEEN_SIDE1_SINCE_ADVANCE`] gate (kept as a backstop against the
+//! buy-before-sell collision that gate was written for), but a `side == 1` call can never
+//! itself advance the cursor any more.
 
 use std::cell::{Cell, RefCell};
 use std::panic::AssertUnwindSafe;
@@ -287,24 +304,33 @@ thread_local! {
 ///    step, while the buy floor (`min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y == 0.01`) is
 ///    in force unconditionally at every step but binds at only roughly P~1e-8 per step —
 ///    four orders of magnitude rarer — and the real arbitrageur's first `compute_swap`
-///    every step is always the buy probe (`plan_arb_buy_x` runs first). Restricting the
-///    fingerprint cursor's advance rule to buy-side matches therefore removes the
-///    dominant ambiguity class by construction, rather than requiring a materially
-///    different reconstruction strategy — WHI-1250 tracks that fix; this comment only
-///    documents the mechanism it will act on. Because a floor-degenerate
-///    probe is deterministic given the RNG stream (not a flaky, re-runnable artifact), and
-///    because which seeds trip is correlated with the RNG's own low-draw episodes rather
-///    than independent of the outcome being measured, averaging any paired statistic over
-///    only the seeds that happened not to trip is a selection-biased estimate, not a smaller-
-///    n version of the same estimate — this repo's decision (`ceilings/C-orbic-oracle/NOTES.md`
-///    § WHI-1248) is therefore to close the `L=1`/`L=0` fingerprint rungs as a documented
-///    negative/method-level result rather than report such a number. The mechanism this
-///    replay reconstructs is bit-exact and independently verified against
-///    `arbitrageur.rs:53-58`'s clamps; what is unsound is the *matching design itself*
-///    ("a probe hitting `FP_TARGETS[next]` uniquely identifies arrival at step `next`") once
-///    floor-clamping is in play, because the search algorithm's own routine boundary
-///    evaluation and a step's own genuine draw are, at the interface this replay observes,
-///    indistinguishable events carrying the identical value.
+///    every step is always the buy probe (`plan_arb_buy_x` runs first). **WHI-1250 acts on
+///    this**: [`maybe_advance_fingerprint_cursor`] now restricts its advance rule to
+///    buy-side (`side == 0`) matches only — a `side == 1` (sell) call still sets the
+///    [`SEEN_SIDE1_SINCE_ADVANCE`] gate (kept as a backstop against the narrower
+///    buy-before-sell collision that gate already protected against) but can never itself
+///    advance `FP_CURSOR` any more. This removes the dominant ambiguity class traced above
+///    by construction — the sell-side probe is a strictly rarer exposure once it can no
+///    longer drive the cursor — at the cost of losing the sell side's own (much rarer)
+///    corroboration signal, a real but cheap trade-off (`ceilings/C-orbic-oracle/NOTES.md`
+///    § WHI-1249). Before this fix, because a floor-degenerate probe is deterministic given
+///    the RNG stream (not a flaky, re-runnable artifact), and because which seeds tripped
+///    was correlated with the RNG's own low-draw episodes rather than independent of the
+///    outcome being measured, averaging any paired statistic over only the seeds that
+///    happened not to trip was a selection-biased estimate, not a smaller-n version of the
+///    same estimate — the prior decision (`ceilings/C-orbic-oracle/NOTES.md` § WHI-1248)
+///    was to close the `L=1`/`L=0` fingerprint rungs as a documented negative/method-level
+///    result rather than report such a number. Whether the buy-probe-only rule above
+///    reduces the trip rate enough to report a real number instead, or the rungs remain
+///    closed as a negative result under a pre-registered kill rule, is recorded in
+///    `ceilings/C-orbic-oracle/NOTES.md` § WHI-1250, not here. The mechanism this replay
+///    reconstructs is bit-exact and independently verified against `arbitrageur.rs:53-58`'s
+///    clamps; what was unsound is the *matching design itself* ("a probe hitting
+///    `FP_TARGETS[next]` uniquely identifies arrival at step `next`") once floor-clamping
+///    is in play, because the search algorithm's own routine boundary evaluation and a
+///    step's own genuine draw are, at the interface this replay observes, indistinguishable
+///    events carrying the identical value — restricting to the rarer-exposure side is what
+///    this fix does about that, not a claim the ambiguity is fully eliminated.
 fn build_fingerprint_targets(cfg: &SimulationConfig, path: &[f64]) -> Vec<(u64, u64)> {
     let sigma = cfg.retail_size_sigma.max(0.01);
     let mu_ln = cfg.retail_mean_size.max(0.01).ln() - 0.5 * sigma * sigma;
@@ -464,6 +490,17 @@ pub(crate) fn fingerprint_panic_diagnostics() -> Option<u64> {
 /// same call — reading the lagged price only after a possible advance is what makes `L=0`
 /// mean "this step's own price" and `L=1` mean "one step stale", not one extra step of lag
 /// stacked on top of whichever advance this very call just produced.
+///
+/// **WHI-1250: only a buy-side (`side == 0`) match can ever advance the cursor.**
+/// [`build_fingerprint_targets`]'s doc comment (limitation 3) traces the dominant
+/// false-match trap to the sell side's price-dependent floor clamp being routinely
+/// re-probed as `bracket_maximum`'s early-return `lo` value, at roughly P~1e-4/step, versus
+/// the buy side's unconditional-but-far-rarer floor (~P~1e-8/step) — and the real
+/// arbitrageur's own first `compute_swap` every step is always the buy probe. A `side == 1`
+/// call is still replayed into `FP_TARGETS` and still sets the [`SEEN_SIDE1_SINCE_ADVANCE`]
+/// gate below (kept as a backstop against the narrower buy-before-sell collision that gate
+/// was written for), but it is never itself matched against `FP_CURSOR + 1`'s own target
+/// any more — only a `side == 0` probe against that target's buy component can advance.
 fn maybe_advance_fingerprint_cursor(side: u8, input_amount: u64) {
     CALLS_SINCE_FP_ADVANCE.with(|c| c.set(c.get().saturating_add(1)));
     // Note (round-1 spec review of this issue, finding #5): the gate below is set to
@@ -481,7 +518,10 @@ fn maybe_advance_fingerprint_cursor(side: u8, input_amount: u64) {
     if side == 1 {
         SEEN_SIDE1_SINCE_ADVANCE.with(|s| s.set(true));
     }
-    if side != 0 && side != 1 {
+    // WHI-1250: only a buy-side probe can ever match and advance the cursor now — see this
+    // fn's own doc comment above for why. A `side == 1` call has already done its only
+    // remaining job (setting the gate above) by this point.
+    if side != 0 {
         return;
     }
     if !SEEN_SIDE1_SINCE_ADVANCE.with(|s| s.get()) {
@@ -495,13 +535,8 @@ fn maybe_advance_fingerprint_cursor(side: u8, input_amount: u64) {
         return; // Already at (or past) the final step — no further target to match against.
     }
 
-    let (buy_target, sell_target) = FP_TARGETS.with(|t| t.borrow()[next as usize]);
-    let matched = match side {
-        0 => input_amount == buy_target,
-        1 => input_amount == sell_target,
-        _ => unreachable!("side is 0 or 1 here — checked above"),
-    };
-    if matched {
+    let buy_target = FP_TARGETS.with(|t| t.borrow()[next as usize].0);
+    if input_amount == buy_target {
         FP_CURSOR.with(|c| *c.borrow_mut() = next);
         SEEN_SIDE1_SINCE_ADVANCE.with(|s| s.set(false));
         CALLS_SINCE_FP_ADVANCE.with(|c| c.set(0));
@@ -1168,6 +1203,46 @@ mod tests {
         // Now a side-1 call (this step's own sell probe) is seen — the gate opens.
         maybe_advance_fingerprint_cursor(1, 222);
         // The very next side-0 call carrying the next step's buy probe now correctly advances.
+        maybe_advance_fingerprint_cursor(0, 333);
+        assert_eq!(FP_CURSOR.with(|c| *c.borrow()), 1);
+    }
+
+    /// WHI-1250: a `side == 1` (sell) probe must never advance the cursor on its own, even
+    /// when it exactly matches the next target's own sell component and the side-1 gate is
+    /// already open — only a `side == 0` match against the next target's buy component may
+    /// advance. This is the mechanism fix itself: before WHI-1250, `maybe_advance_
+    /// fingerprint_cursor` matched a `side == 1` call against `sell_target` and would have
+    /// advanced here.
+    #[test]
+    fn side1_probe_never_advances_the_cursor_even_on_an_exact_sell_target_match() {
+        let _guard = PARAMS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        install_params(OracleParams {
+            variant: OracleVariant::Anchored,
+            concentration: 10.0,
+            spread_bps: 20.0,
+            cursor_mode: CursorMode::Fingerprint,
+            fingerprint_lag: 0,
+        });
+        FP_TARGETS.with(|t| *t.borrow_mut() = vec![(111, 222), (333, 444), (555, 666)]);
+        FP_CURSOR.with(|c| *c.borrow_mut() = 0);
+        SEEN_SIDE1_SINCE_ADVANCE.with(|s| s.set(false));
+        CALLS_SINCE_FP_ADVANCE.with(|c| c.set(0));
+
+        // Open the gate with a genuine side-1 call for this step, then present a second
+        // side-1 call that exactly matches the *next* target's own sell component (444).
+        maybe_advance_fingerprint_cursor(1, 222);
+        maybe_advance_fingerprint_cursor(1, 444);
+        assert_eq!(
+            FP_CURSOR.with(|c| *c.borrow()),
+            0,
+            "a side-1 match against the next target's sell component must never advance \
+             the cursor under the WHI-1250 buy-probe-only rule"
+        );
+
+        // A side-0 call against the next target's own buy component (333) still advances —
+        // the fix narrows which side can match, it does not disable advancement entirely.
         maybe_advance_fingerprint_cursor(0, 333);
         assert_eq!(FP_CURSOR.with(|c| *c.borrow()), 1);
     }

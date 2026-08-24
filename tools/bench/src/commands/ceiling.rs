@@ -445,44 +445,107 @@ fn run_catching_panics(
     }
 }
 
+/// WHI-1250's pre-registered kill-rule threshold (recorded in
+/// `ceilings/C-orbic-oracle/NOTES.md` § WHI-1250 *before* any measurement was taken under
+/// the buy-probe-only cursor fix — see that file for the full rationale). Stated there on
+/// `validation` as "exceeds 1% (>10 of 1000 seeds)"; expressed here as a bare rate so the
+/// identical rule applies unmodified to any segment size, `screening`'s 200 IID seeds
+/// included. Not raised after seeing a number — that is the entire point of pre-
+/// registering it.
+const FINGERPRINT_TRIP_RATE_KILL_THRESHOLD: f64 = 0.01;
+
+/// True once more than [`FINGERPRINT_TRIP_RATE_KILL_THRESHOLD`] of `total_seeds` seeds have
+/// tripped a WHI-1248 fingerprint hardening check — the one decision shared by
+/// [`evaluate_fingerprint_point`] (the `screening`-segment search loop, via
+/// [`score_fingerprint_survivors`]) and `run`'s `CursorMode::Fingerprint` branch (the real
+/// final-evaluation headline decision), so a candidate point is never preferred by a search
+/// that is scoring a different rule than the one the final report enforces. Strict `>`, not
+/// `>=`: exactly 10 of 1000 (1.0%) does not trip the rule, matching the issue's own "exceeds
+/// 1%" wording. `total_seeds == 0` never trips it (nothing to rate) — that shape is already
+/// unreachable in practice (an empty segment), guarded here only so the arithmetic below
+/// never divides by zero.
+fn fingerprint_trip_rate_exceeds_kill_threshold(tripped_count: usize, total_seeds: usize) -> bool {
+    if total_seeds == 0 {
+        return false;
+    }
+    (tripped_count as f64 / total_seeds as f64) > FINGERPRINT_TRIP_RATE_KILL_THRESHOLD
+}
+
+/// WHI-1250: the survivor-scoring decision itself, factored out of
+/// [`evaluate_fingerprint_point`] so it can be unit-tested against synthetic
+/// survivor/trip counts rather than depending on a real simulation's own trip rate — which,
+/// post-WHI-1250, the buy-probe-only fix is specifically trying to *lower*, so a test that
+/// needed a naturally high real trip rate to exercise this branch would be fighting the very
+/// change it exists to verify.
+///
+/// Two `Invalid` cases, checked in order: nothing survived at all (nothing to average,
+/// unconditionally invalid regardless of any threshold), then — the WHI-1250 addition —
+/// something survived but the trip rate still exceeds the pre-registered kill-rule
+/// threshold. In neither case is a mean ever computed over the surviving seeds only; see
+/// `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248 for why that mean would be selection-biased
+/// (a tripped seed is a deterministic function of that seed's own RNG stream, not an
+/// independent draw).
+fn score_fingerprint_survivors(
+    oks: Vec<(SimResult, StalenessSummary)>,
+    tripped_count: usize,
+    total_seeds: usize,
+) -> PointOutcome {
+    if oks.is_empty() {
+        return PointOutcome::Invalid(format!(
+            "all {tripped_count} seed(s) tripped a WHI-1248 fingerprint hardening check on \
+             this point (nothing survived to average)"
+        ));
+    }
+    if fingerprint_trip_rate_exceeds_kill_threshold(tripped_count, total_seeds) {
+        return PointOutcome::Invalid(format!(
+            "{tripped_count} of {total_seeds} seed(s) ({:.1}%) tripped a WHI-1248 fingerprint \
+             hardening check on this point, exceeding the WHI-1250 pre-registered kill-rule \
+             threshold of {:.0}% (ceilings/C-orbic-oracle/NOTES.md § WHI-1250) — scored \
+             Invalid rather than averaged over the surviving seeds only",
+            100.0 * tripped_count as f64 / total_seeds as f64,
+            100.0 * FINGERPRINT_TRIP_RATE_KILL_THRESHOLD,
+        ));
+    }
+    let results: Vec<_> = oks.into_iter().map(|(result, _staleness)| result).collect();
+    let batch = BatchResult::from_results(results);
+    PointOutcome::Valid(batch.avg_edge())
+}
+
 /// WHI-1248: the fingerprint-mode counterpart to [`run_catching_panics`] used by
 /// [`run_fit`]'s search loop once a candidate point's `OracleParams::cursor_mode ==
 /// CursorMode::Fingerprint`. Runs the same per-seed-isolated Phase 1 pipeline
 /// ([`oracle::run_batch_fingerprint_checked`]) the final evaluation uses, but — unlike
 /// [`run_fingerprint_final_eval`] — never serially re-runs a tripped seed to recover its
 /// message: the search loop only ever consumes the returned `f64`, so paying that cost on
-/// every one of up to 300 candidate points would be pure waste. `Invalid` only when not a
-/// single seed survived (nothing to average); otherwise `Valid` over whatever did survive,
-/// exactly mirroring how the final report's own number is computed so a search that
-/// prefers one point over another is optimizing the same quantity that gets reported.
+/// every one of up to 300 candidate points would be pure waste. Scoring itself is
+/// [`score_fingerprint_survivors`] — exactly mirroring how the final report's own number is
+/// computed (same `Invalid`-on-empty rule, same WHI-1250 kill-rule threshold) so a search
+/// that prefers one point over another is optimizing the same quantity, under the same
+/// rule, that gets reported.
 ///
 /// **Post-measurement caveat (WHI-1248, see `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248
-/// for the full write-up):** the mean this function computes over "whatever survived" is a
-/// selection-biased estimate, not merely a smaller-`n` one — `tools/bench/src/oracle.rs`'s
+/// for the full write-up):** before WHI-1250's kill rule existed, the mean this function
+/// could compute over "whatever survived" was a selection-biased estimate whenever *any*
+/// seed tripped, not merely a smaller-`n` one — `tools/bench/src/oracle.rs`'s
 /// `build_fingerprint_targets` doc comment (limitation 3) traces the mechanism: a tripped
 /// seed is a deterministic function of that seed's own RNG stream (not a flaky artifact),
 /// and which seeds trip is correlated with the RNG's own floor-clamp-prone draws, not
-/// independent of anything this function measures. This function still exists — `--fit`
-/// needs *some* scalar per candidate point to do coordinate descent at all, and the
-/// alternative (treating every point as `Invalid`) makes the search a no-op — but no number
-/// this function (or its caller) produces is committed as a headline `L=1`/`L=0` result;
-/// this repo's decision is to close both fingerprint rungs as a documented negative/
-/// method-level result instead (`ceilings/C-orbic-oracle/NOTES.md` § WHI-1248).
+/// independent of anything this function measures. WHI-1250's kill rule bounds how much of
+/// that bias a *reported* number can carry (a point scored `Invalid` is never averaged at
+/// all), but does not claim the bias is zero below the threshold — whether the buy-probe-
+/// only fix's real, measured trip rate lands under the threshold at all (and what the
+/// resulting number is, if so) is recorded in `ceilings/C-orbic-oracle/NOTES.md` § WHI-1250,
+/// not here.
 fn evaluate_fingerprint_point(
     params: OracleParams,
     configs: &[SimulationConfig],
 ) -> anyhow::Result<PointOutcome> {
     let (oks, tripped) = oracle::run_batch_fingerprint_checked(params, configs)?;
-    if oks.is_empty() {
-        return Ok(PointOutcome::Invalid(format!(
-            "all {} seed(s) tripped a WHI-1248 fingerprint hardening check on this point \
-             (nothing survived to average)",
-            tripped.len()
-        )));
-    }
-    let results: Vec<_> = oks.into_iter().map(|(result, _staleness)| result).collect();
-    let batch = BatchResult::from_results(results);
-    Ok(PointOutcome::Valid(batch.avg_edge()))
+    Ok(score_fingerprint_survivors(
+        oks,
+        tripped.len(),
+        configs.len(),
+    ))
 }
 
 /// Originally byte-identical to `commands/fit.rs::panic_message` (which has the same job
@@ -668,10 +731,17 @@ fn eval_fit_point(
 /// invalid (a caught shape-check panic)" and could never produce a fitted point at all —
 /// with any positive per-seed trip probability, 200 IID seeds are, with near certainty,
 /// never simultaneously panic-free. So every candidate point evaluated under fingerprint
-/// mode instead goes through [`eval_fit_point`] -> [`evaluate_fingerprint_point`], which
-/// mirrors [`run_fingerprint_final_eval`]'s own semantics (mean edge over the *surviving*
-/// seeds only, `Invalid` only if literally none survive) rather than this function's own
-/// now-inapplicable all-or-nothing rule.
+/// mode instead goes through [`eval_fit_point`] -> [`evaluate_fingerprint_point`] ->
+/// [`score_fingerprint_survivors`], which mirrors [`run_fingerprint_final_eval`]'s own
+/// semantics rather than this function's own now-inapplicable all-or-nothing rule —
+/// **as of WHI-1250, that shared semantics is "mean edge over the surviving seeds only if
+/// the trip rate is at or below the pre-registered kill-rule threshold, `Invalid` if either
+/// nothing survived at all or that threshold is exceeded,"** not the unconditional
+/// survivors-only average this comment described before WHI-1250 (that description is what
+/// `docs/DEFERRED_ISSUES.md`'s WHI-1249 entry flagged as contaminating the search itself —
+/// see that entry for the symptom it produced: a fingerprint-mode fit converging at
+/// `concentration=94.33`, near its own upper bound, versus the kept trade-triggered fit's
+/// interior `concentration=2.33`).
 /// WHI-1248's "never silently dropped" per-seed architecture (full message recovery, not
 /// just a valid/invalid split) still applies only to the *final* evaluation
 /// ([`run_fingerprint_final_eval`]) — this search loop only needs a number per point, so it
@@ -1754,6 +1824,57 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                 );
             }
 
+            // WHI-1250's pre-registered kill rule (`ceilings/C-orbic-oracle/NOTES.md` §
+            // WHI-1250, recorded before any measurement was taken under the buy-probe-only
+            // fix): a trip rate above the threshold closes this rung as a documented
+            // negative result — the trip table above is the evidence — rather than
+            // reporting a paired mean computed over only the seeds that happened to
+            // survive. That mean would be selection-biased regardless of how large a
+            // fraction survived (`oracle.rs::build_fingerprint_targets`'s doc comment,
+            // limitation 3, and `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248 trace why); the
+            // threshold only bounds how much of that bias a *reported* number is allowed to
+            // carry. This is the exact same rate rule [`score_fingerprint_survivors`] applies
+            // during the `screening`-segment search loop — checked again here, on the real
+            // final-evaluation segment, so the search and the headline never disagree about
+            // which rule governs.
+            if fingerprint_trip_rate_exceeds_kill_threshold(tripped.len(), configs.len()) {
+                let rate_pct = 100.0 * tripped.len() as f64 / configs.len() as f64;
+                let synthesized = PanicOutcome {
+                    message: format!(
+                        "{} of {} seed(s) ({rate_pct:.1}%) tripped a fingerprint hardening \
+                         check on `{segment_name}`, exceeding the WHI-1250 pre-registered \
+                         kill-rule threshold of {:.0}% (ceilings/C-orbic-oracle/NOTES.md § \
+                         WHI-1250) — this rung is closed as a documented negative result; no \
+                         mean is reported over the surviving seeds. See the trip table below \
+                         for every tripped seed's own classification and message.",
+                        tripped.len(),
+                        configs.len(),
+                        100.0 * FINGERPRINT_TRIP_RATE_KILL_THRESHOLD,
+                    ),
+                    recovered: true,
+                    fingerprint_calls_since_advance: None,
+                };
+                eprintln!(
+                    "ceiling `{stage}`: fingerprint trip rate {rate_pct:.1}% on \
+                     `{segment_name}` exceeds the WHI-1250 kill-rule threshold — closing as a \
+                     documented negative result, no mean reported (see the report)"
+                );
+                if !args.no_report {
+                    let path = write_ceiling_report(
+                        run_meta,
+                        &fitted,
+                        FinalEvalSummary::Invalid(&synthesized),
+                        &tripped_section,
+                    )?;
+                    println!("wrote {} (marked INVALID — see the report)", path.display());
+                }
+                anyhow::bail!(
+                    "fingerprint trip rate on `{segment_name}` exceeds the WHI-1250 kill-rule \
+                     threshold: {}",
+                    synthesized.message
+                );
+            }
+
             let surviving: HashSet<u64> = results.iter().map(|r| r.seed).collect();
             let filtered_reference = filter_batch_to_seeds(&reference_batch, &surviving);
             let paired = stats::paired_stat(&results, &filtered_reference.results)?;
@@ -2034,5 +2155,122 @@ mod tests {
         assert!(out.contains("42"));
         assert!(out.contains("CursorAssertion"));
         assert!(out.contains("boom"));
+    }
+
+    // --- WHI-1250: the pre-registered kill rule ------------------------------------------
+
+    #[test]
+    fn fingerprint_trip_rate_exceeds_kill_threshold_is_false_at_exactly_the_boundary() {
+        // The issue's own wording: "exceeds 1% (>10 of 1000 seeds)" — 10 of 1000 is exactly
+        // 1.0%, which must NOT trip the rule (strict `>`, not `>=`).
+        assert!(!fingerprint_trip_rate_exceeds_kill_threshold(10, 1000));
+    }
+
+    #[test]
+    fn fingerprint_trip_rate_exceeds_kill_threshold_is_true_just_past_the_boundary() {
+        assert!(fingerprint_trip_rate_exceeds_kill_threshold(11, 1000));
+    }
+
+    #[test]
+    fn fingerprint_trip_rate_exceeds_kill_threshold_is_false_for_zero_trips() {
+        assert!(!fingerprint_trip_rate_exceeds_kill_threshold(0, 1000));
+    }
+
+    #[test]
+    fn fingerprint_trip_rate_exceeds_kill_threshold_applies_the_same_rate_to_a_smaller_segment() {
+        // `screening` has 200 seeds, not 1000 — the rule is a rate, not a hardcoded count.
+        // 2 of 200 is exactly 1.0% (does not trip); 3 of 200 is 1.5% (trips).
+        assert!(!fingerprint_trip_rate_exceeds_kill_threshold(2, 200));
+        assert!(fingerprint_trip_rate_exceeds_kill_threshold(3, 200));
+    }
+
+    #[test]
+    fn fingerprint_trip_rate_exceeds_kill_threshold_is_false_for_zero_total_seeds() {
+        // Guards the division only — this shape is unreachable in practice.
+        assert!(!fingerprint_trip_rate_exceeds_kill_threshold(0, 0));
+    }
+
+    fn stale_for_test() -> StalenessSummary {
+        StalenessSummary {
+            n: 1,
+            mean: 0.0,
+            p50: 0.0,
+            p95: 0.0,
+            max: 0.0,
+        }
+    }
+
+    #[test]
+    fn score_fingerprint_survivors_is_invalid_when_nothing_survived() {
+        let outcome = score_fingerprint_survivors(Vec::new(), 5, 5);
+        match outcome {
+            PointOutcome::Invalid(msg) => {
+                assert!(msg.contains('5'), "expected the tripped count in: {msg}");
+            }
+            PointOutcome::Valid(v) => panic!("expected Invalid, got Valid({v})"),
+        }
+    }
+
+    /// The acceptance-criterion test: an over-threshold point must be scored `Invalid`, not
+    /// averaged over whatever survived, even though survivors exist. Before WHI-1250, this
+    /// exact shape (9 survivors, 91 tripped, well above the 1% threshold) would have
+    /// returned `Valid` with a mean computed over the 9 survivors — the selection-biased
+    /// number `docs/DEFERRED_ISSUES.md`'s WHI-1249 entry and
+    /// `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248 both document as unreportable.
+    #[test]
+    fn score_fingerprint_survivors_is_invalid_when_trip_rate_exceeds_the_kill_threshold_even_with_survivors(
+    ) {
+        let stale = stale_for_test();
+        let oks = vec![(
+            SimResult {
+                seed: 1,
+                submission_edge: 100.0,
+            },
+            stale,
+        )];
+        // 91 of 100 seeds tripped (91%), 9 survived (including the one above) — well past
+        // the 1% threshold.
+        let outcome = score_fingerprint_survivors(oks, 91, 100);
+        match outcome {
+            PointOutcome::Invalid(msg) => {
+                assert!(msg.contains("91"), "expected the trip count in: {msg}");
+                assert!(msg.contains("100"), "expected the total in: {msg}");
+                assert!(
+                    msg.contains("WHI-1250"),
+                    "expected the kill rule to be named in: {msg}"
+                );
+            }
+            PointOutcome::Valid(v) => {
+                panic!("expected Invalid under the kill rule, got Valid({v}) instead")
+            }
+        }
+    }
+
+    #[test]
+    fn score_fingerprint_survivors_is_valid_and_averages_only_survivors_below_the_threshold() {
+        let stale = stale_for_test();
+        let oks = vec![
+            (
+                SimResult {
+                    seed: 1,
+                    submission_edge: 10.0,
+                },
+                stale,
+            ),
+            (
+                SimResult {
+                    seed: 2,
+                    submission_edge: 20.0,
+                },
+                stale,
+            ),
+        ];
+        // 2 of 200 seeds tripped (1.0%, at but not past the threshold) — still Valid, and
+        // the mean is over the 2 survivors only (10.0 + 20.0) / 2 = 15.0.
+        let outcome = score_fingerprint_survivors(oks, 2, 200);
+        match outcome {
+            PointOutcome::Valid(v) => assert!((v - 15.0).abs() < 1e-9, "got {v}"),
+            PointOutcome::Invalid(msg) => panic!("expected Valid, got Invalid({msg})"),
+        }
     }
 }
