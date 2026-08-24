@@ -32,3 +32,13 @@ quote = "1"
 # temp file before loading it, so reloading the same build-dir output path never races a
 # still-mapped previous load (tools/bench/src/fast_compile.rs).
 tempfile = "3"
+# Pinned here, not in [workspace.dependencies] — same rationale as serde/toml above, plus a
+# harder requirement: the fingerprint cursor (WHI-1248, oracle.rs) replays
+# `crates/sim/src/arbitrageur.rs`'s own `Pcg64::seed_from_u64(seed)` + `LogNormal` draw
+# bit-for-bit to reconstruct its per-step probe sequence host-side, so these three version
+# strings must match root Cargo.lock's resolved versions for `rand`/`rand_pcg`/`rand_distr`
+# exactly (0.8.5 / 0.3.1 / 0.4.3 as of this pin) — a different minor version could change the
+# RNG or distribution algorithm and silently desync the replay from the real simulation.
+rand = "0.8.5"
+rand_pcg = "0.3.1"
+rand_distr = "0.4.3"

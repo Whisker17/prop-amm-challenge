@@ -5,36 +5,40 @@
 //! writes says so as its own literal first line (guard (c) below), and every table in it is
 //! deliberately shaped differently from `compare.rs`'s own paired-comparison table so the
 //! two are never mistaken for each other at a glance.
+//!
+//! WHI-1248 adds a second cursor rung alongside WHI-1247's trade-triggered one: the
+//! exact-step "fingerprint" cursor (`--cursor fingerprint --lag {0,1}`), which advances only
+//! when a `compute_swap` call's own `(side, input_amount)` matches the real arbitrageur's
+//! own next-step probe, reconstructed host-side (`oracle.rs`'s module doc comment). Its
+//! final evaluation never silently drops a tripped seed from the paired statistic — see
+//! [`run_fingerprint_final_eval`] for the two-phase (parallel-then-serial) architecture that
+//! guarantees every tripped seed is individually named and classified in the report.
 
+use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use clap::{Args, ValueEnum};
 use prop_amm_shared::config::SimulationConfig;
-use prop_amm_shared::result::BatchResult;
+use prop_amm_shared::result::{BatchResult, SimResult};
 
 use crate::commands::resolve_strategy_lib_path;
 use crate::compile::{self, Slot};
 use crate::config::{BenchConfig, Segment, SegmentSelector};
-use crate::oracle::{self, OracleParams, OracleVariant, StalenessSummary};
+use crate::oracle::{self, CursorMode, OracleParams, OracleVariant, StalenessSummary};
 use crate::params::ParamSpec;
+use crate::regime;
 use crate::report::DEFAULT_REPORT_DIR;
 use crate::search::{self, PointOutcome};
 use crate::stats;
 
-/// This issue's only cursor rung (WHI-1247 step 5), and the only value [`CeilingArgs::cursor`]
-/// accepts today — there is nothing else to select yet; a future rung (the exact-step
-/// cursor / L=1 fixed lag this issue explicitly Blocks) adds its own accepted value, not a
-/// retrofit of this one.
-const CURSOR_MODE: &str = "trade-triggered";
-
 /// The one guard checked at two sites: [`run`] checks it before dispatching to [`run_fit`]
 /// (so a bad combination fails before the segment/config machinery below it even runs),
 /// and [`run_fit`] checks it again in case a future caller ever reaches it a different way.
-/// Round-2 review of this issue caught that the two checks had drifted to differently
-/// worded messages for the identical condition — a user could only ever see the first one
-/// fire, but the second existed with different wording, ready to surprise the next reader.
+/// Round-2 review of WHI-1247 caught that the two checks had drifted to differently worded
+/// messages for the identical condition — a user could only ever see the first one fire,
+/// but the second existed with different wording, ready to surprise the next reader.
 /// One shared string keeps both checks (both still need to run) without collapsing them
 /// into one call site.
 const ANCHORED_FIT_CONCENTRATION_CONFLICT: &str =
@@ -78,6 +82,71 @@ impl VariantArg {
     }
 }
 
+/// WHI-1248's own CLI-selectable cursor rungs, alongside WHI-1247's existing `--variant`.
+/// `TradeTriggered` is WHI-1247 step 5's rung (the pre-existing default, no lag concept of
+/// its own — its cursor already IS the last executed trade). `Fingerprint` is this issue's
+/// exact-step rung, and always requires `--lag` (only `0` and `1` are implemented; `L in
+/// {5, 25}` is explicitly out of scope here — see [`validate_cursor_and_lag`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CursorArg {
+    TradeTriggered,
+    Fingerprint,
+}
+
+impl From<CursorArg> for CursorMode {
+    fn from(c: CursorArg) -> Self {
+        match c {
+            CursorArg::TradeTriggered => CursorMode::TradeTriggered,
+            CursorArg::Fingerprint => CursorMode::Fingerprint,
+        }
+    }
+}
+
+/// The `stage`/report slug fragment for a given `(cursor, lag)` combination — always called
+/// after [`validate_cursor_and_lag`] has already normalized `lag`, so `Fingerprint` always
+/// has a real value here (never the `None` the raw CLI arg can hold).
+fn cursor_slug(cursor: CursorArg, lag: u64) -> String {
+    match cursor {
+        CursorArg::TradeTriggered => "trade-triggered".to_string(),
+        CursorArg::Fingerprint => format!("fingerprint-l{lag}"),
+    }
+}
+
+/// Validates the `--cursor`/`--lag` combination and normalizes `lag` to a concrete value
+/// (`0` for `TradeTriggered`, which has no lag concept of its own but still needs *some*
+/// value threaded into [`OracleParams::fingerprint_lag`], which `oracle.rs` simply ignores
+/// outside `Fingerprint` mode). `Fingerprint` requires an explicit `--lag`, and only `0`
+/// (the `L=0` clairvoyant diagnostic rung) or `1` (the `L=1` headline deployment rung) are
+/// implemented — `L in {5, 25}` is explicitly out of scope for WHI-1248 unless the `L=1`
+/// vs. trade-triggered gap turns out to be surprising, in which case it is a follow-up
+/// issue, not scope creep here.
+fn validate_cursor_and_lag(cursor: CursorArg, lag: Option<u64>) -> anyhow::Result<u64> {
+    match cursor {
+        CursorArg::TradeTriggered => {
+            if lag.is_some() {
+                anyhow::bail!(
+                    "--lag is only meaningful alongside `--cursor fingerprint` — `--cursor \
+                     trade-triggered` has no fixed-lag concept of its own (WHI-1247 step 5's \
+                     own cursor already IS the last executed trade)"
+                );
+            }
+            Ok(0)
+        }
+        CursorArg::Fingerprint => match lag {
+            None => anyhow::bail!(
+                "`--cursor fingerprint` requires --lag (0 for the L=0 clairvoyant diagnostic \
+                 rung, 1 for the L=1 headline deployment rung — WHI-1248)"
+            ),
+            Some(l) if l == 0 || l == 1 => Ok(l),
+            Some(l) => anyhow::bail!(
+                "--lag {l} is out of scope for WHI-1248 (only 0 and 1 are implemented; L in \
+                 {{5, 25}} is explicitly deferred to a follow-up issue unless the L=1-vs-\
+                 trade-triggered gap turns out to be surprising)"
+            ),
+        },
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct CeilingArgs {
     #[command(flatten)]
@@ -87,14 +156,21 @@ pub struct CeilingArgs {
     #[arg(long, value_enum, default_value = "anchored")]
     pub variant: VariantArg,
 
-    /// Which cursor rung to run. Accepted only as an explicit spelling-match against
-    /// [`CURSOR_MODE`] (`"trade-triggered"`, the only rung this issue delivers) — present so
-    /// the spec's own literal example commands (`ceiling --variant anchored --cursor
-    /// trade-triggered ...`) actually work, without pretending there is a real choice here
-    /// yet. A future rung (the exact-step cursor / L=1 fixed lag this issue explicitly
-    /// Blocks) adds its own accepted value here, not a retrofit of this one.
-    #[arg(long, default_value = CURSOR_MODE)]
-    pub cursor: String,
+    /// Which cursor rung to run. `trade-triggered` (WHI-1247 step 5, the default) moves the
+    /// oracle's reading to the last *executed* trade's own step. `fingerprint` (WHI-1248) is
+    /// the exact-step rung: it advances only when a `compute_swap` call's own `(side,
+    /// input_amount)` matches the real arbitrageur's own next-step probe, reconstructed
+    /// host-side (`oracle.rs`'s module doc comment); it requires `--lag` (`0` for the `L=0`
+    /// clairvoyant diagnostic rung, `1` for the `L=1` headline deployment rung — `L in {5,
+    /// 25}` is out of scope for this issue).
+    #[arg(long, value_enum, default_value = "trade-triggered")]
+    pub cursor: CursorArg,
+
+    /// The fixed re-anchor lag, in steps, for `--cursor fingerprint` (WHI-1248) — required
+    /// alongside it, and only `0` or `1` are implemented. Must not be passed alongside
+    /// `--cursor trade-triggered`, which has no lag concept of its own.
+    #[arg(long)]
+    pub lag: Option<u64>,
 
     /// The allowlisted 0-line reference to measure against — a `strategies/<slug>`
     /// directory (WHI-1247 step 7 guard (a); ignored by `--self-check`, which always
@@ -260,49 +336,65 @@ fn spread_bps_spec() -> ParamSpec {
 }
 
 /// Last `Location` captured by [`catch_panicking`]'s own hook (below) — a caught panic's
-/// payload alone is often uninformative (round-2 review of this issue: a non-string payload
-/// downcasts to nothing better than "panicked with a non-string payload"), but the default
-/// hook's `file:line:column` is always available regardless of payload type, since
-/// `PanicHookInfo::location()` doesn't go through the payload at all. Reset to `None` before
-/// every `catch_unwind` so a stale location from an earlier point can never be attributed to
-/// a later one; read back only inside `catch_panicking`'s own `Err(payload)` arm.
+/// payload alone is often uninformative, but the default hook's `file:line:column` is
+/// always available regardless of payload type, since `PanicHookInfo::location()` doesn't
+/// go through the payload at all. Reset to `None` before every `catch_unwind` so a stale
+/// location from an earlier point can never be attributed to a later one; read back only
+/// inside `catch_panicking`'s own `Err(payload)` arm.
 static LAST_PANIC_LOCATION: Mutex<Option<String>> = Mutex::new(None);
+
+/// WHI-1248: the fingerprint-mode "calls since the cursor last advanced" diagnostic
+/// (`oracle::fingerprint_panic_diagnostics`), captured the same way as
+/// [`LAST_PANIC_LOCATION`] — from *inside* the installed panic hook, which runs
+/// synchronously on the panicking thread before any unwinding begins, so the thread-local
+/// counter `oracle.rs` maintains is still valid to read there. Reading it back from
+/// `catch_panicking`'s own `Err(payload)` arm (which runs on the *calling* thread, not
+/// necessarily the one that panicked when the panic propagated up through a rayon `join`)
+/// would read the wrong thread's own thread-local value — this static is what carries the
+/// right one across that boundary. `None` outside `Fingerprint` mode (`oracle.rs` returns
+/// `None` there unconditionally).
+static LAST_PANIC_FP_CALLS: Mutex<Option<u64>> = Mutex::new(None);
+
+/// A caught panic's recovered evidence — [`catch_panicking`]'s `Err` payload. `message` is
+/// display-ready (any [`LAST_PANIC_LOCATION`] hit is already appended); `recovered` says
+/// whether that text actually came from the panic's own `&str`/`String` payload (`true`, the
+/// `curve_checks.rs` shape-check case) or was synthesized from the payload's own `TypeId`
+/// because it downcast to neither (`false`, WHI-1248's fix to the original "defeated the
+/// downcast" placeholder — see [`panic_message`]). `fingerprint_calls_since_advance` is
+/// `Some(_)` only when the run that panicked was in `Fingerprint` cursor mode; used by
+/// [`classify_fingerprint_panic`] to distinguish a genuine hardening-check assertion from a
+/// `curve_checks.rs` shape panic that itself resulted from an early/false cursor advance.
+struct PanicOutcome {
+    message: String,
+    recovered: bool,
+    fingerprint_calls_since_advance: Option<u64>,
+}
 
 /// Runs `f`, catching any panic (e.g. a shape-check panic from `crates/sim/src/curve_checks.rs`
 /// the same way `commands/fit.rs::run_batch_catching_panics` does — `curve_checks.rs` treats a
 /// native submission fn identically to a compiled one, keying only on the AMM's own
 /// `"submission"` name, so a pathological corner of the oracle curve's own search space can
-/// panic mid-simulation exactly like a compiled candidate's PARAMS point can) into
+/// panic mid-simulation exactly like a compiled candidate's PARAMS point can, and WHI-1248's
+/// own fingerprint hardening-check assertions panic the same way too) into
 /// `Ok(Err(panic_message))` rather than propagating it. The default hook's stderr print is
 /// still suppressed for the duration (this is an expected, load-bearing control-flow path
 /// during a 300-point search, not a real crash — printing one stderr line per invalid point
 /// would swamp the terminal), but unlike a bare no-op hook, the installed hook first records
-/// the panic's source location into [`LAST_PANIC_LOCATION`] before doing nothing else — so a
-/// caught panic with a non-string payload (round-2 review: the `floating` INVALID report
-/// could previously say only "a panic occurred," with the cause "not pinned down") still
-/// carries a real `file:line:column` an investigator can jump to, independent of the
-/// payload's type. Shared by every catch-and-continue call site in this file — the search
-/// loop's own per-point evaluation ([`run_catching_panics`]) and the final re-evaluation of
-/// the fitted point ([`run_final_eval_catching_panics`]) — since both need the exact same
+/// the panic's source location into [`LAST_PANIC_LOCATION`] and (WHI-1248) the fingerprint
+/// call-since-advance counter into [`LAST_PANIC_FP_CALLS`] before doing nothing else — so a
+/// caught panic with a non-string payload still carries a real `file:line:column` an
+/// investigator can jump to, independent of the payload's type. Shared by every
+/// catch-and-continue call site in this file — the search loop's own per-point evaluation
+/// ([`run_catching_panics`]), the final re-evaluation of the fitted point
+/// ([`run_final_eval_catching_panics`]), and WHI-1248's own serial per-tripped-seed re-run
+/// ([`run_fingerprint_final_eval`]) — since all three need the exact same
 /// `take_hook`/`set_hook`/`catch_unwind` bracket and differ only in what they do with a
 /// successful `T`. `oracle::run_batch`'s own per-simulation loop is rayon-parallel
 /// (`oracle.rs`'s `native_pool`), so more than one worker thread can panic before the first
 /// unwind reaches this frame; the hook is process-global regardless of which thread panics,
-/// and `LAST_PANIC_LOCATION` intentionally keeps only the most recent write rather than every
-/// one — enough to point at *a* real panic site, not a claim that it is uniquely the one
+/// and both statics intentionally keep only the most recent write rather than every one —
+/// enough to point at *a* real panic site, not a claim that it is uniquely the one
 /// `catch_unwind` observed unwinding.
-/// A caught panic's recovered evidence — [`catch_panicking`]'s `Err` payload. `message` is
-/// display-ready (any [`LAST_PANIC_LOCATION`] hit is already appended); `recovered` says
-/// whether that text actually came from the panic's own `&str`/`String` payload (`true`, the
-/// `curve_checks.rs` shape-check case) or is a fixed placeholder because the payload
-/// downcast to neither (`false`). [`write_ceiling_report`]'s `Invalid` arm reads `recovered`
-/// so it never asserts the placeholder's own wording on a run where the message is real —
-/// round-3 review's standards finding #2.
-struct PanicOutcome {
-    message: String,
-    recovered: bool,
-}
-
 fn catch_panicking<T>(
     f: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<Result<T, PanicOutcome>> {
@@ -311,9 +403,15 @@ fn catch_panicking<T>(
         if let Ok(mut loc) = LAST_PANIC_LOCATION.lock() {
             *loc = Some(info.location().map(|l| l.to_string()).unwrap_or_default());
         }
+        if let Ok(mut fp) = LAST_PANIC_FP_CALLS.lock() {
+            *fp = crate::oracle::fingerprint_panic_diagnostics();
+        }
     }));
     if let Ok(mut loc) = LAST_PANIC_LOCATION.lock() {
         *loc = None;
+    }
+    if let Ok(mut fp) = LAST_PANIC_FP_CALLS.lock() {
+        *fp = None;
     }
     let result = catch_unwind(AssertUnwindSafe(f));
     std::panic::set_hook(previous_hook);
@@ -323,10 +421,8 @@ fn catch_panicking<T>(
         Ok(Err(e)) => Err(e),
         Err(payload) => {
             let location = LAST_PANIC_LOCATION.lock().ok().and_then(|mut g| g.take());
-            let (message, recovered) = match panic_message(&payload) {
-                Some(m) => (m, true),
-                None => ("panicked with a non-string payload".to_string(), false),
-            };
+            let fp_calls = LAST_PANIC_FP_CALLS.lock().ok().and_then(|mut g| g.take());
+            let (message, recovered) = panic_message(&payload);
             let with_location = match location {
                 Some(loc) if !loc.is_empty() => format!("{message} (at {loc})"),
                 _ => message,
@@ -334,6 +430,7 @@ fn catch_panicking<T>(
             Ok(Err(PanicOutcome {
                 message: with_location,
                 recovered,
+                fingerprint_calls_since_advance: fp_calls,
             }))
         }
     }
@@ -348,28 +445,129 @@ fn run_catching_panics(
     }
 }
 
+/// WHI-1248: the fingerprint-mode counterpart to [`run_catching_panics`] used by
+/// [`run_fit`]'s search loop once a candidate point's `OracleParams::cursor_mode ==
+/// CursorMode::Fingerprint`. Runs the same per-seed-isolated Phase 1 pipeline
+/// ([`oracle::run_batch_fingerprint_checked`]) the final evaluation uses, but — unlike
+/// [`run_fingerprint_final_eval`] — never serially re-runs a tripped seed to recover its
+/// message: the search loop only ever consumes the returned `f64`, so paying that cost on
+/// every one of up to 300 candidate points would be pure waste. `Invalid` only when not a
+/// single seed survived (nothing to average); otherwise `Valid` over whatever did survive,
+/// exactly mirroring how the final report's own number is computed so a search that
+/// prefers one point over another is optimizing the same quantity that gets reported.
+///
+/// **Post-measurement caveat (WHI-1248, see `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248
+/// for the full write-up):** the mean this function computes over "whatever survived" is a
+/// selection-biased estimate, not merely a smaller-`n` one — `tools/bench/src/oracle.rs`'s
+/// `build_fingerprint_targets` doc comment (limitation 3) traces the mechanism: a tripped
+/// seed is a deterministic function of that seed's own RNG stream (not a flaky artifact),
+/// and which seeds trip is correlated with the RNG's own floor-clamp-prone draws, not
+/// independent of anything this function measures. This function still exists — `--fit`
+/// needs *some* scalar per candidate point to do coordinate descent at all, and the
+/// alternative (treating every point as `Invalid`) makes the search a no-op — but no number
+/// this function (or its caller) produces is committed as a headline `L=1`/`L=0` result;
+/// this repo's decision is to close both fingerprint rungs as a documented negative/
+/// method-level result instead (`ceilings/C-orbic-oracle/NOTES.md` § WHI-1248).
+fn evaluate_fingerprint_point(
+    params: OracleParams,
+    configs: &[SimulationConfig],
+) -> anyhow::Result<PointOutcome> {
+    let (oks, tripped) = oracle::run_batch_fingerprint_checked(params, configs)?;
+    if oks.is_empty() {
+        return Ok(PointOutcome::Invalid(format!(
+            "all {} seed(s) tripped a WHI-1248 fingerprint hardening check on this point \
+             (nothing survived to average)",
+            tripped.len()
+        )));
+    }
+    let results: Vec<_> = oks.into_iter().map(|(result, _staleness)| result).collect();
+    let batch = BatchResult::from_results(results);
+    Ok(PointOutcome::Valid(batch.avg_edge()))
+}
+
 /// Originally byte-identical to `commands/fit.rs::panic_message` (which has the same job
 /// for `fit`'s own train/validation re-evaluation) — a deliberate duplicate, not a missed
 /// dedup: WHI-1247's "what must not change" list forbids editing `fit.rs` or exposing its
 /// private helpers, and `panic_message` is private there, so there is no way to share one
-/// definition without violating that constraint. Diverges from that copy only in its return
-/// type (round-3 review, standards finding #2): `fit.rs` never needs to tell a caller
-/// whether the message it got back was actually recovered from the payload or is a
-/// placeholder, but this lane's own `Invalid` report section does — printing "a non-string
-/// panic payload defeated this lane's own downcast" on a run where the payload downcast
-/// cleanly would be self-contradicting generated evidence. `curve_checks.rs`'s own
-/// `panic!("submission shape violation during {context}: {message}")` is always a `&str` or
-/// `String`, so `Some(_)` here means that exact text; `None` means the payload was neither
-/// (including every panic this lane's own Orbic curve throws that isn't routed through
-/// `curve_checks.rs`), in which case the caller supplies its own placeholder text rather
-/// than failing to produce an outcome at all. Either way, [`catch_panicking`]'s own
-/// `LAST_PANIC_LOCATION` hook still recovers a real `file:line:column` independent of which
-/// branch fires.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> Option<String> {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
+/// definition without violating that constraint. Diverges from that copy in its return
+/// type (round-3 review of WHI-1247, standards finding #2): `fit.rs` never needs to tell a
+/// caller whether the message it got back was actually recovered from the payload or is a
+/// placeholder, but this lane's own `Invalid` report section does.
+///
+/// WHI-1248 changes this function twice over (the amendment's scope item #4).
+///
+/// First, and most importantly: the original two-branch version (`&str`, then `String`,
+/// then a fixed placeholder) was verified against synthetic unit-test payloads only, and
+/// turned out to be broken end-to-end against the *real* fingerprint-cursor pipeline — a
+/// live smoke test on `screening` (103/200 seeds tripped by the hardening checks below)
+/// showed every single trip falling to the placeholder branch, even though the underlying
+/// panics are ordinary `assert_eq!` (hardening check (a), `oracle.rs`) and `panic!`
+/// (`curve_checks.rs`'s shape violation) calls whose payloads are, at the origin, plain
+/// `String`. Root cause: `run_batch`/`run_batch_fingerprint_checked` run each seed inside a
+/// `rayon` pool via `.par_iter().map(...).collect()`; whenever the panicking seed actually
+/// executes on a pool *worker* thread rather than the thread that called `.install()` (true
+/// for nearly every seed, since 8 seeds run concurrently), `rayon-core`'s own cross-thread
+/// panic-propagation machinery catches the panic on the worker, stores it, and
+/// `resume_unwind`s it on the joining thread wrapped in *its own* `Box<dyn Any + Send>` —
+/// so the payload `catch_panicking`'s `catch_unwind` hands back here is one layer of
+/// `Box<dyn Any + Send>` deeper than the original panic site, and a flat `&str`/`String`
+/// downcast on it always misses. (Confirmed directly: instrumenting this function inside a
+/// real run showed `Any::type_id()` matching `Box<dyn Any + Send>` at depth 0 and matching
+/// `String` at depth 1, on all 103/103 tripped seeds; three isolated repro programs did
+/// *not* reproduce this, because none of them forced the panicking closure onto a non-
+/// calling worker thread under real contention.) The fix: peel any `Box<dyn Any + Send>`
+/// layers (bounded by `MAX_UNWRAP_DEPTH`, defensively, in case a future rayon version boxes
+/// more than once) before attempting the `&str`/`String` downcasts, rather than assuming a
+/// single flat layer.
+///
+/// Second, the fallback branch's own behavior: the original returned `None` for a
+/// non-string payload, which `catch_panicking` turned into the fixed, uninformative
+/// placeholder `"panicked with a non-string payload"`. For whatever still isn't a
+/// `&str`/`String` after unwrapping — e.g. an arithmetic overflow panic — the fallback now
+/// synthesizes a message from the payload's own `Any::type_id()` and how many box layers
+/// were peeled, instead of a fixed placeholder: strictly more informative (it names the
+/// concrete type a reader can go looking for in the source), never less, and never invents
+/// text that isn't true of the payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> (String, bool) {
+    // WHI-1248 amendment scope item #4: a real panic caught through `catch_panicking` here
+    // is not always a bare `&str`/`String` payload one level down. Rayon's own cross-thread
+    // panic propagation (`rayon-core`'s job/unwind machinery, exercised whenever the
+    // panicking work actually runs on a pool worker thread rather than the thread that
+    // called `.install()`) re-wraps the original payload in its own `Box<dyn Any + Send>`
+    // before `resume_unwind`-ing it to the joining thread — so the payload this function
+    // receives is one level of `Box<dyn Any + Send>` deeper than the original `panic!`/
+    // `assert_eq!` call site. Peel that (and, defensively, any further nesting) before
+    // attempting the `&str`/`String` downcasts, rather than assuming a single flat layer.
+    const MAX_UNWRAP_DEPTH: u8 = 10;
+    let mut current: &(dyn std::any::Any + Send) = payload;
+    let mut depth = 0u8;
+    loop {
+        if let Some(s) = current.downcast_ref::<&str>() {
+            return (s.to_string(), true);
+        }
+        if let Some(s) = current.downcast_ref::<String>() {
+            return (s.clone(), true);
+        }
+        if depth >= MAX_UNWRAP_DEPTH {
+            break;
+        }
+        match current.downcast_ref::<Box<dyn std::any::Any + Send>>() {
+            Some(inner) => {
+                current = &**inner;
+                depth += 1;
+            }
+            None => break,
+        }
+    }
+    (
+        format!(
+            "non-string panic payload (Any::type_id = {:?}, peeled {depth} nested box \
+             layer(s)) — recovered no message text, only that a panic occurred and this \
+             payload's concrete type",
+            current.type_id()
+        ),
+        false,
+    )
 }
 
 /// The raw outcome of the *final* re-evaluation of a fitted point (as opposed to a point
@@ -383,6 +581,10 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> Option<String> {
 /// panics on `--segment observation`/`train`/`validation` would abort the whole process
 /// with an unhandled panic and no report at all, rather than the established "evidence
 /// gathered so far is still written, the point is not entered into a ranking" behavior.
+///
+/// Used only for the `TradeTriggered` cursor — [`run_fingerprint_final_eval`] is
+/// `Fingerprint` mode's own final-evaluation path, with the stronger "never silently drop a
+/// tripped seed" guarantee WHI-1248 requires.
 enum OracleBatchOutcome {
     Valid {
         batch: BatchResult,
@@ -426,11 +628,62 @@ struct FittedPoint {
     search_outcome: Option<search::SearchOutcome>,
 }
 
+/// Evaluates one candidate `(concentration, spread_bps)` point during [`run_fit`]'s search
+/// loop, dispatching on `cursor_mode` — the one piece of logic that used to be duplicated
+/// verbatim between `run_fit`'s `VariantArg::Anchored` and `VariantArg::Floating` arms
+/// (round-1 standards review of this issue, finding #4; the doc comment that used to sit
+/// here — on `run_fit` itself, describing the fit loop's own design — was misattributed to
+/// this function by that extraction and has been moved back; round-2 review of this issue,
+/// standards finding A / spec finding (c)). The two arms differ only in which `ParamSpec`s
+/// they search over and how `concentration`/`spread_bps` are derived from `values`; this
+/// function is everything downstream of that.
+fn eval_fit_point(
+    params: OracleParams,
+    configs: &[SimulationConfig],
+) -> anyhow::Result<PointOutcome> {
+    if params.cursor_mode == CursorMode::Fingerprint {
+        evaluate_fingerprint_point(params, configs)
+    } else {
+        let configs = configs.to_vec();
+        run_catching_panics(move || {
+            oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
+        })
+    }
+}
+
+/// The `screening`-segment fit loop is kept generically usable under either cursor mode
+/// (`cursor_mode`/`fingerprint_lag` are threaded straight into every point's own
+/// [`OracleParams`]). For `CursorMode::TradeTriggered` it keeps the pre-existing single
+/// batch-level-panic [`run_catching_panics`]/`oracle::run_batch` pattern unchanged from
+/// WHI-1247: a search point that panics on even one of `screening`'s own seeds is simply
+/// `Invalid` for that point.
+///
+/// For `CursorMode::Fingerprint` that all-or-nothing rule is unusable in practice, not just
+/// theoretically stricter — on two independent segments: `ceilings/C-orbic-oracle/NOTES.md`
+/// measured a ~50%+ per-seed hardening-check trip rate on `validation` under the L=1 rung
+/// (564 of 1000 seeds, round-2 review of this issue, spec finding (c) — corrected here from
+/// an earlier version of this comment that misattributed that figure to `screening`), and
+/// `screening`'s own 200 IID seeds hit the same failure mode directly and unambiguously:
+/// before this fix, `--fit --max-points 30` reported "every evaluated grid point (9) was
+/// invalid (a caught shape-check panic)" and could never produce a fitted point at all —
+/// with any positive per-seed trip probability, 200 IID seeds are, with near certainty,
+/// never simultaneously panic-free. So every candidate point evaluated under fingerprint
+/// mode instead goes through [`eval_fit_point`] -> [`evaluate_fingerprint_point`], which
+/// mirrors [`run_fingerprint_final_eval`]'s own semantics (mean edge over the *surviving*
+/// seeds only, `Invalid` only if literally none survive) rather than this function's own
+/// now-inapplicable all-or-nothing rule.
+/// WHI-1248's "never silently dropped" per-seed architecture (full message recovery, not
+/// just a valid/invalid split) still applies only to the *final* evaluation
+/// ([`run_fingerprint_final_eval`]) — this search loop only needs a number per point, so it
+/// skips that function's serial per-tripped-seed re-run to avoid multiplying wall-clock
+/// cost across a budget of up to 300 points for messages nothing here reads.
 fn run_fit(
     variant: VariantArg,
     fixed_concentration: Option<f64>,
     screening_configs: &[SimulationConfig],
     budget: usize,
+    cursor_mode: CursorMode,
+    fingerprint_lag: u64,
 ) -> anyhow::Result<FittedPoint> {
     match variant {
         VariantArg::Anchored => {
@@ -445,11 +698,10 @@ fn run_fit(
                     variant: variant.into(),
                     concentration,
                     spread_bps,
+                    cursor_mode,
+                    fingerprint_lag,
                 };
-                let configs = screening_configs.to_vec();
-                run_catching_panics(move || {
-                    oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
-                })
+                eval_fit_point(params, screening_configs)
             })?;
             let concentration = outcome.best[0] as f64 / 100.0;
             let spread_bps = outcome.best[1] as f64;
@@ -473,11 +725,10 @@ fn run_fit(
                     variant: variant.into(),
                     concentration,
                     spread_bps,
+                    cursor_mode,
+                    fingerprint_lag,
                 };
-                let configs = screening_configs.to_vec();
-                run_catching_panics(move || {
-                    oracle::run_batch(params, &configs).map(|(batch, _staleness)| batch)
-                })
+                eval_fit_point(params, screening_configs)
             })?;
             let spread_bps = outcome.best[0] as f64;
             Ok(FittedPoint {
@@ -496,13 +747,7 @@ fn run_fit(
 ///
 /// - `mean_of_means`, `median_of_means`, `p95_of_means` are genuine statistics of the
 ///   per-simulation *mean* staleness — the mean, p50, and a real (not maximum-as-a-proxy)
-///   95th percentile of that distribution across simulations. Round-2 review of this issue
-///   correctly flagged that an earlier version of this struct had a field literally named
-///   `p95_of_p95` whose value was actually computed via `f64::max` — i.e. it was the
-///   *maximum* p95 across simulations, not a percentile of the per-sim p95s at all; the
-///   field name overclaimed what the doc comment (accurately) called "the largest p95 seen
-///   across simulations." That field is renamed to `max_of_p95` below to say what it
-///   actually is, and this genuinely percentile `p95_of_means` is added alongside it.
+///   95th percentile of that distribution across simulations.
 /// - `max_of_p95` and `max_of_max` are deliberately worst-case (not percentile) figures —
 ///   the largest per-sim p95 and the largest per-sim max seen anywhere in the batch — kept
 ///   because an average-of-averages alone could hide a badly stale minority of simulations
@@ -542,10 +787,10 @@ fn aggregate_staleness(summaries: &[StalenessSummary]) -> StalenessAggregate {
 
 /// The run's own identity — every field [`write_ceiling_report`] needs to describe *what*
 /// was measured, as opposed to [`FittedPoint`]/[`FinalEvalSummary`] which describe the
-/// measurement itself. These six always travel together (one run has exactly one stage, one
-/// segment, one sim/step count, one variant, one reference) — bundled into one struct rather
-/// than six positional parameters so the call site reads as "the run" and not an
-/// order-sensitive tuple, and so `write_ceiling_report` no longer needs
+/// measurement itself. These seven always travel together (one run has exactly one stage,
+/// one segment, one sim/step count, one variant, one cursor, one reference) — bundled into
+/// one struct rather than positional parameters so the call site reads as "the run" and not
+/// an order-sensitive tuple, and so `write_ceiling_report` no longer needs
 /// `#[allow(clippy::too_many_arguments)]` to satisfy that lint honestly rather than by
 /// suppression.
 struct CeilingRunMeta<'a> {
@@ -555,6 +800,7 @@ struct CeilingRunMeta<'a> {
     n_steps: u32,
     variant: VariantArg,
     reference_slug: &'a str,
+    cursor_slug: &'a str,
 }
 
 /// WHI-1247 step 7 guard (c): the report's own machine-readable marker, as the literal first
@@ -565,10 +811,16 @@ struct CeilingRunMeta<'a> {
 /// differently from `compare.rs`'s own `| regime | n | mean diff | 95% CI |` — this is an
 /// out-of-competition measurement and must never be mistaken for a ranked comparison at a
 /// glance.
+///
+/// `extra_sections` (WHI-1248) is appended verbatim after the core content below, for
+/// whatever additional material only one cursor mode needs (the per-sigma-tier slices for
+/// every rung; the fingerprint hardening-check trip table and, for `--lag 0`, the analytic
+/// envelope check, both `Fingerprint`-only) — empty for a plain `TradeTriggered` run.
 fn write_ceiling_report(
     meta: CeilingRunMeta<'_>,
     fitted: &FittedPoint,
     final_eval: FinalEvalSummary<'_>,
+    extra_sections: &str,
 ) -> anyhow::Result<std::path::PathBuf> {
     let CeilingRunMeta {
         stage,
@@ -577,6 +829,7 @@ fn write_ceiling_report(
         n_steps,
         variant,
         reference_slug,
+        cursor_slug,
     } = meta;
 
     let dir = Path::new(DEFAULT_REPORT_DIR);
@@ -595,10 +848,6 @@ fn write_ceiling_report(
          measurement of an oracle re-anchor the arbitrageur cannot front-run. Nothing on this \
          page is submittable or ranked.\n\n",
     );
-    // Round-3 review, spec finding #4: this paragraph used to run unconditionally and say
-    // "bound what this number means" even for an `Invalid` run that produced no number at
-    // all. Which of the two prints depends on `final_eval`, which is available here as a
-    // borrow (the owning `match` further down still takes it by value).
     match &final_eval {
         FinalEvalSummary::Valid { .. } => out.push_str(
             "**Three honesty constraints bound what this number means** (WHI-1247 § Context): \
@@ -627,7 +876,7 @@ fn write_ceiling_report(
     out.push_str(&format!("- Steps: {n_steps}\n"));
     out.push_str("- Execution path: native (host-side, never BPF-compiled)\n");
     out.push_str(&format!("- Variant: {}\n", variant.slug()));
-    out.push_str(&format!("- Cursor mode: {CURSOR_MODE}\n"));
+    out.push_str(&format!("- Cursor mode: {cursor_slug}\n"));
     out.push_str(&format!("- Reference (0-line): `{reference_slug}`\n"));
     out.push('\n');
 
@@ -654,14 +903,6 @@ fn write_ceiling_report(
 
     match final_eval {
         FinalEvalSummary::Valid { paired, staleness } => {
-            // Round-3 review, spec finding #4: step 3's own scoping of `floating` as
-            // "never a result on its own" (`ceilings/C-orbic-oracle/NOTES.md` § Anchored vs.
-            // floating) applies just as much to a `floating` run that happens to come back
-            // `Valid` as to the INVALID one this lane actually measured — nothing about a
-            // future clean re-evaluation would change what the variant means. Only the
-            // INVALID outcome made this report variant-blind so far, since no `Valid`
-            // `floating` run has happened yet; mark it here so one never prints as if it
-            // were a second headline number.
             if variant == VariantArg::Floating {
                 out.push_str(
                     "**Diagnostic caveat (variant: floating):** WHI-1247 step 3 scopes this \
@@ -684,6 +925,13 @@ fn write_ceiling_report(
                 paired.ci_low, paired.ci_high
             ));
             out.push('\n');
+            out.push_str(
+                "**Reminder:** per the one-sided-bound honesty constraint above, this is a \
+                 lower bound on perfect-information value, not an upper bound on any specific \
+                 submission's remaining headroom — a stronger submission clearing this number \
+                 is expected and not itself informative about how much further headroom \
+                 remains.\n\n",
+            );
 
             out.push_str(
                 "## Trade-triggered cursor staleness (steps since last executed trade)\n\n",
@@ -713,23 +961,17 @@ fn write_ceiling_report(
         }
         FinalEvalSummary::Invalid(panic) => {
             out.push_str("## Final re-evaluation: INVALID\n\n");
-            // Round-3 review, standards finding #2 (hard): this used to always assert "a
-            // non-string panic payload defeated this lane's own panic_message downcast," even
-            // on the common path where `curve_checks.rs` panicked with a real `String` this
-            // lane's own downcast recovered verbatim — self-contradicting generated evidence,
-            // in a lane whose whole justification is honest reporting. `panic.recovered` (set
-            // by `catch_panicking`/`panic_message`) is what makes this conditional instead of
-            // asserted.
             let cause_sentence = if panic.recovered {
                 "The panic message below was recovered verbatim from the panic's own payload \
-                 — a `curve_checks.rs`-style `panic!(\"submission shape violation ...\")` \
-                 always downcasts cleanly to a `String` — so it is the actual cause, not a \
-                 placeholder."
+                 — a `curve_checks.rs`-style `panic!(\"submission shape violation ...\")` or a \
+                 WHI-1248 hardening-check `assert!`/`assert_eq!` always downcasts cleanly to a \
+                 `String` — so it is the actual cause, not a placeholder."
             } else {
-                "The panic message below is a fixed placeholder: a non-string panic payload \
-                 defeated this lane's own `panic_message` downcast, so the cause is not pinned \
-                 down further than \"a panic occurred\" plus whatever source location the \
-                 installed panic hook captured independently of the payload."
+                "The panic message below was synthesized from the panic payload's own \
+                 `Any::type_id()` (WHI-1248): the payload was neither `&str` nor `String`, so \
+                 no literal message text could be recovered, but the message still names the \
+                 payload's concrete type rather than falling back to a fixed, uninformative \
+                 placeholder."
             };
             out.push_str(&format!(
                 "The fitted point above was chosen from a search on the `screening` segment, \
@@ -747,13 +989,15 @@ fn write_ceiling_report(
         }
     }
 
+    out.push_str(extra_sections);
+
     std::fs::write(&path, out)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(path)
 }
 
 /// Duplicated from `report.rs::commit_sha` (private there, byte-for-byte the same logic,
-/// including the `--untracked-files=no` rationale below): round-2 review of this issue
+/// including the `--untracked-files=no` rationale below): round-2 review of WHI-1247
 /// suggested making the original `pub(crate)` instead, but WHI-1247's own "what must not
 /// change" list is not "don't extend `report.rs`'s public surface" — it is **zero edits**
 /// to `tools/bench/src/report.rs` at all, full stop, alongside a fixed list of other
@@ -867,15 +1111,434 @@ fn run_self_check(configs: Vec<SimulationConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
-    if args.cursor != CURSOR_MODE {
+/// WHI-1248: one tripped seed's own re-run outcome — the "never silently dropped from a
+/// paired statistic" acceptance criterion means every seed that trips a fingerprint
+/// hardening check during Phase 1 (`oracle::run_batch_fingerprint_checked`'s parallel,
+/// per-seed `catch_unwind`) is individually named here, whether or not it survives Phase 2's
+/// serial re-run. `label` classifies the recovered message per [`classify_fingerprint_panic`].
+struct TrippedSeedOutcome {
+    seed: u64,
+    label: &'static str,
+    message: String,
+}
+
+/// Named alias for `run_fingerprint_final_eval`'s return type — clippy's `type_complexity`
+/// lint objects to the bare nested tuple-of-Vecs spelled out inline.
+type FingerprintFinalEvalOutcome = (Vec<(SimResult, StalenessSummary)>, Vec<TrippedSeedOutcome>);
+
+/// A rough upper bound on how many `compute_swap` calls a single simulation step's own
+/// bisection-style price search (`crates/sim/src/arbitrageur.rs`'s bracket-then-refine
+/// search for the arbitrageur's own optimal trade size) can issue before it either finds a
+/// profitable size or gives up — used only to distinguish, heuristically, "the cursor
+/// advanced on a false match very early in a step's own search" (few calls since the last
+/// advance) from "a shape panic that has nothing to do with the fingerprint cursor at all"
+/// (many calls since the last advance, or a message that doesn't look like a shape
+/// violation to begin with). This is a diagnostic heuristic, not a hard guarantee — every
+/// tripped seed's own message is still reported verbatim regardless of which bucket it
+/// lands in, so a wrong guess here costs a misleading label, never a lost seed.
+///
+/// The value itself is not arbitrary: `crates/sim/src/arbitrageur.rs`'s own search bounds
+/// its work with `BRACKET_MAX_STEPS` (24) bracketing steps followed by `GOLDEN_MAX_ITERS`
+/// (12) golden-section refinement iterations, plus 8 calls of headroom for the handful of
+/// direct `compute_swap` probes the search issues outside that loop (the same
+/// `BRACKET_MAX_STEPS + GOLDEN_MAX_ITERS + 8` shape already used, for the same reason, in
+/// that file's own `Vec::with_capacity` call) — `24 + 12 + 8 = 44`.
+const FP_EARLY_ADVANCE_CALL_THRESHOLD: u64 = 44;
+
+/// Classifies a fingerprint-mode panic into one of three buckets, purely from the recovered
+/// [`PanicOutcome`] (WHI-1248's own required distinction: "an early cursor advance may
+/// surface first as a `curve_checks` panic... rather than as the assertion — catch and
+/// label that case distinctly"):
+///
+/// - `"CursorAssertion"`: the message is one of `oracle.rs`'s own three hardening-check
+///   assertions (they all share the literal prefix checked below) — a directly observed
+///   cursor-verification failure, not an inference.
+/// - `"SuspectedEarlyAdvance"`: the message looks like a `crates/sim/src/curve_checks.rs`
+///   shape violation (`"submission shape violation during"`), *and* the fingerprint cursor
+///   had advanced only a handful of calls ago (at or under
+///   [`FP_EARLY_ADVANCE_CALL_THRESHOLD`]) — consistent with an early/false cursor advance
+///   having handed the oracle curve a wrong-for-this-step price that then failed its own
+///   shape check, exactly the surfacing path the issue calls out.
+/// - `"Other"`: neither of the above — a panic this lane cannot attribute to the
+///   fingerprint cursor specifically from the message and call count alone.
+fn classify_fingerprint_panic(outcome: &PanicOutcome) -> &'static str {
+    if outcome
+        .message
+        .contains("WHI-1248 fingerprint cursor hardening check")
+    {
+        "CursorAssertion"
+    } else if outcome.message.contains("submission shape violation")
+        && matches!(
+            outcome.fingerprint_calls_since_advance,
+            Some(n) if n <= FP_EARLY_ADVANCE_CALL_THRESHOLD
+        )
+    {
+        "SuspectedEarlyAdvance"
+    } else {
+        "Other"
+    }
+}
+
+/// WHI-1248's Fingerprint-mode final evaluation — the two-phase "never silently dropped"
+/// architecture the issue requires. Phase 1 ([`oracle::run_batch_fingerprint_checked`]) runs
+/// every seed with its own per-seed `catch_unwind` inside a rayon `par_iter`, so one seed's
+/// trip never drops any *other* seed's valid result. Phase 2, here, serially re-runs each
+/// Phase-1-tripped seed, one at a time, through the pre-existing [`catch_panicking`] /
+/// `oracle::run_batch` (the same machinery `run_final_eval_catching_panics` already uses)
+/// to recover a full, classified message. A seed that does *not* reproduce its trip on this
+/// solo re-run is reported as such and its (now successful) result is folded back in; a
+/// seed that reproduces the trip is reported with its classification and excluded from the
+/// surviving set the caller pairs against the reference batch — either way, every tripped
+/// seed's own fate is named in the returned `Vec<TrippedSeedOutcome>`, never silently
+/// absorbed into a smaller `n` with no trace.
+///
+/// **Post-measurement caveat (WHI-1248) — read before reporting any number this produces:**
+/// this function's own "never silently dropped" per-seed accounting is correct and
+/// verified (every tripped seed is individually named, classified, and either recovered or
+/// reported with its own message) — that part of the design works exactly as intended and
+/// is real, valuable infrastructure. What it does **not** fix is the deeper problem: the
+/// surviving-seed set this function hands back to its caller for pairing is not a random
+/// subsample. `tools/bench/src/oracle.rs::build_fingerprint_targets`'s doc comment
+/// (limitation 3) traces why — floor-clamping makes a tripped seed a deterministic,
+/// RNG-stream-correlated event, not an independent one, so any paired mean/CI computed over
+/// only the surviving seeds is selection-biased, regardless of how carefully the pairing
+/// itself is index-aligned (`reorder_oks_to_configs_order`/`filter_batch_to_seeds` below do
+/// that part correctly). See `ceilings/C-orbic-oracle/NOTES.md` § WHI-1248 for the measured
+/// trip rate, the traced example, and this repo's resulting decision to close the
+/// fingerprint-mode `L=1`/`L=0` rungs as a documented negative result rather than report a
+/// number computed this way.
+fn run_fingerprint_final_eval(
+    params: OracleParams,
+    configs: &[SimulationConfig],
+) -> anyhow::Result<FingerprintFinalEvalOutcome> {
+    let (mut oks, tripped_seeds) = oracle::run_batch_fingerprint_checked(params, configs)?;
+
+    let mut tripped_outcomes = Vec::with_capacity(tripped_seeds.len());
+    for tripped in tripped_seeds {
+        let single = vec![tripped.config.clone()];
+        let seed = tripped.seed;
+        match catch_panicking(move || oracle::run_batch(params, &single))? {
+            Ok((batch, staleness)) => {
+                // Only claim inclusion once it has actually happened — pushing the
+                // "included in the paired statistic below" message unconditionally, before
+                // checking whether the re-run batch was non-empty, would assert something
+                // the run didn't establish for an empty-batch edge case (the exact class of
+                // bug this "never silently dropped" architecture exists to prevent; round-1
+                // review of this issue, standards finding #2).
+                let included = if let (Some(result), Some(stale)) = (
+                    batch.results.into_iter().next(),
+                    staleness.into_iter().next(),
+                ) {
+                    oks.push((result, stale));
+                    true
+                } else {
+                    false
+                };
+                let message = if included {
+                    "did not reproduce when re-run serially and alone; its result from that \
+                     re-run is included in the paired statistic below"
+                        .to_string()
+                } else {
+                    "did not reproduce when re-run serially and alone, but the re-run batch \
+                     unexpectedly returned no result for this seed; it is NOT included in the \
+                     paired statistic below"
+                        .to_string()
+                };
+                tripped_outcomes.push(TrippedSeedOutcome {
+                    seed,
+                    label: "RecoveredOnSerialRerun",
+                    message,
+                });
+            }
+            Err(outcome) => {
+                let label = classify_fingerprint_panic(&outcome);
+                tripped_outcomes.push(TrippedSeedOutcome {
+                    seed,
+                    label,
+                    message: outcome.message,
+                });
+            }
+        }
+    }
+
+    Ok((oks, tripped_outcomes))
+}
+
+/// Restores `configs`' own original relative order over a (possibly reordered, by Phase 2
+/// appending recovered seeds at the end) set of surviving `(SimResult, StalenessSummary)`
+/// pairs — required so the candidate results line up index-for-index with the reference
+/// batch (built straight from `configs` in its original order, and itself filtered to the
+/// same surviving-seed set via [`filter_batch_to_seeds`]) for `stats::paired_stat`, which
+/// pairs strictly by index, not by seed lookup.
+fn reorder_oks_to_configs_order(
+    configs: &[SimulationConfig],
+    oks: Vec<(SimResult, StalenessSummary)>,
+) -> (Vec<SimResult>, Vec<StalenessSummary>) {
+    let mut by_seed: HashMap<u64, (SimResult, StalenessSummary)> =
+        oks.into_iter().map(|(r, s)| (r.seed, (r, s))).collect();
+    let mut results = Vec::new();
+    let mut staleness = Vec::new();
+    for config in configs {
+        if let Some((r, s)) = by_seed.remove(&config.seed) {
+            results.push(r);
+            staleness.push(s);
+        }
+    }
+    (results, staleness)
+}
+
+/// Filters a reference [`BatchResult`] down to exactly the surviving seed set, preserving
+/// its own existing relative order (which already matches `configs`' original order, since
+/// the reference batch is built straight from `configs.clone()`) — the counterpart to
+/// [`reorder_oks_to_configs_order`] so both sides of a fingerprint-mode paired comparison
+/// are index-aligned subsequences of the very same original seed order.
+fn filter_batch_to_seeds(batch: &BatchResult, seeds: &HashSet<u64>) -> BatchResult {
+    let results: Vec<SimResult> = batch
+        .results
+        .iter()
+        .filter(|r| seeds.contains(&r.seed))
+        .cloned()
+        .collect();
+    BatchResult::from_results(results)
+}
+
+/// WHI-1248: per-sigma-tier slices of the same paired comparison the headline table
+/// reports — reuses `regime.rs`'s own tier reconstruction (`Tier::{Low,Mid,High}`, equal-
+/// width thirds of `HyperparameterVariance`'s own sampling range, which by construction
+/// track `config/bench.toml`'s three `[grid] gbm_sigma_levels`, docs/DESIGN.md §2.3),
+/// grouped purely by `Regime.sigma` — deliberately narrower than `regime::slice_paired_stats`'s
+/// own full 3-axis (fee x liquidity x sigma) grouping, since this issue's own scope is
+/// specifically a claim about the sigma axis alone ("converge at low sigma / fan out at
+/// high sigma"), not the full regime.
+fn slice_by_sigma_tier(
+    base: &SimulationConfig,
+    candidate: &[SimResult],
+    reference: &[SimResult],
+) -> anyhow::Result<Vec<(regime::Tier, stats::PairedStat)>> {
+    if candidate.len() != reference.len() {
         anyhow::bail!(
-            "`--cursor {}` is not a recognised cursor rung — only `{CURSOR_MODE}` exists yet \
-             (WHI-1247 step 5); a future issue adds the exact-step / L=1 fixed-lag rung this \
-             one Blocks",
-            args.cursor
+            "sigma-tier slicing requires equal-length batches: candidate={} reference={}",
+            candidate.len(),
+            reference.len()
         );
     }
+    let mut bins: std::collections::BTreeMap<regime::Tier, (Vec<SimResult>, Vec<SimResult>)> =
+        std::collections::BTreeMap::new();
+    for (i, (c, r)) in candidate.iter().zip(reference.iter()).enumerate() {
+        if c.seed != r.seed {
+            anyhow::bail!(
+                "sigma-tier slicing unpaired at index {i}: candidate seed {} vs reference \
+                 seed {}",
+                c.seed,
+                r.seed
+            );
+        }
+        let tier = regime::classify_seed(base, c.seed).sigma;
+        let entry = bins.entry(tier).or_default();
+        entry.0.push(c.clone());
+        entry.1.push(r.clone());
+    }
+    bins.into_iter()
+        .map(|(tier, (c, r))| Ok((tier, stats::paired_stat(&c, &r)?)))
+        .collect()
+}
+
+/// Renders [`slice_by_sigma_tier`]'s output as a report section, plus the explicit
+/// converge-at-low/fan-out-at-high verdict WHI-1248 requires. `grid_levels`, when available
+/// (`config/bench.toml`'s existing `[grid] gbm_sigma_levels`, read-only — no new `[grid]`
+/// axis is added), labels each tier with the representative level it roughly corresponds to;
+/// purely cosmetic; slicing itself never depends on it. The verdict is operationalized as
+/// 95% CI *width* (a real statistic [`stats::PairedStat`] already exposes per bin) rather
+/// than a raw per-sim variance, which is not available per bin from the existing stats
+/// machinery — stated explicitly here so the operationalization is never mistaken for the
+/// only possible one.
+fn format_sigma_slices(
+    grid_levels: Option<&[f64]>,
+    slices: &[(regime::Tier, stats::PairedStat)],
+    slicing_error: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("## Per-sigma-tier slices (WHI-1248)\n\n");
+    // Round-2 standards review of this issue, finding B: an empty `slices` has two
+    // genuinely different causes — the bins were legitimately empty, or slicing itself
+    // failed and this call site degraded gracefully instead of aborting the whole report
+    // (round-1 standards finding #5). Render the real cause rather than letting the
+    // generic "bin was empty" verdict below assert something that didn't happen.
+    if let Some(err) = slicing_error {
+        out.push_str(&format!(
+            "**Not computed — sigma-tier slicing itself failed** for this run's own \
+             results (the paired statistic above is unaffected and was computed \
+             separately): {err}\n\n",
+        ));
+        return out;
+    }
+    out.push_str(
+        "Slices purely by `regime.rs`'s own `sigma` tier (Low/Mid/High thirds of \
+         `HyperparameterVariance`'s sampling range, which by construction track \
+         `config/bench.toml`'s three `[grid] gbm_sigma_levels`), ignoring the fee/liquidity \
+         axes `regime::slice_paired_stats` also splits on — a claim specifically about the \
+         sigma axis, not the full regime.\n\n",
+    );
+    out.push_str("| sigma tier | approx level | n | mean diff | 95% CI |\n|---|---|---|---|---|\n");
+    let sorted_levels: Option<Vec<f64>> = grid_levels.map(|l| {
+        let mut v = l.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).expect("gbm_sigma_levels are finite"));
+        v
+    });
+    for (tier, stat) in slices {
+        let level_str = match (&sorted_levels, tier) {
+            (Some(levels), regime::Tier::Low) if levels.len() == 3 => format!("{:.4}", levels[0]),
+            (Some(levels), regime::Tier::Mid) if levels.len() == 3 => format!("{:.4}", levels[1]),
+            (Some(levels), regime::Tier::High) if levels.len() == 3 => {
+                format!("{:.4}", levels[2])
+            }
+            _ => "n/a".to_string(),
+        };
+        out.push_str(&format!(
+            "| {:?} | {level_str} | {} | {:.6} | [{:.6}, {:.6}] |\n",
+            tier, stat.n, stat.mean_diff, stat.ci_low, stat.ci_high
+        ));
+    }
+    out.push('\n');
+
+    let low_width = slices
+        .iter()
+        .find(|(t, _)| *t == regime::Tier::Low)
+        .map(|(_, s)| s.ci_high - s.ci_low);
+    let high_width = slices
+        .iter()
+        .find(|(t, _)| *t == regime::Tier::High)
+        .map(|(_, s)| s.ci_high - s.ci_low);
+    let verdict = match (low_width, high_width) {
+        (Some(lw), Some(hw)) if hw > lw => format!(
+            "**Converge/fan-out verdict:** HELD — the Low-sigma tier's 95% CI width \
+             ({lw:.6}) is narrower than the High-sigma tier's ({hw:.6}), consistent with the \
+             \"converge at low sigma / fan out at high sigma\" prediction (CI width used as \
+             the dispersion proxy, since `stats::PairedStat` does not expose a per-bin raw \
+             variance directly)."
+        ),
+        (Some(lw), Some(hw)) => format!(
+            "**Converge/fan-out verdict:** DID NOT HOLD — the Low-sigma tier's 95% CI width \
+             ({lw:.6}) is not narrower than the High-sigma tier's ({hw:.6}); the prediction is \
+             not borne out by this run (CI width used as the dispersion proxy)."
+        ),
+        _ => "**Converge/fan-out verdict:** not computable — a Low or High sigma tier bin was \
+              empty on this segment's seeds."
+            .to_string(),
+    };
+    out.push_str(&verdict);
+    out.push_str("\n\n");
+    out
+}
+
+/// WHI-1248's closed-form analytic envelope for the `L=0` clairvoyant rung, re-derived for
+/// variant (a) per the amendment (still an upper bound, but looser than variant (b)'s own
+/// clean derivation): `sum(retail volume_y) x captured spread`, at 100% flow share (assume
+/// every unit of retail flow the router could possibly send goes to this pool, not just its
+/// actual share against the normalizer) and zero adverse selection (assume every unit fully
+/// captures the nominal quoted spread, with no erosion from being picked off by informed
+/// flow).
+///
+/// Under variant (a) (`target_x` pinned to the pair's own fixed `initial_x`, never
+/// `reserve_x` itself), retail flow drifts `reserve_x` away from `target_x` over the course
+/// of a simulation; `base = v0 + reserve_x - target_x` (`oracle.rs::oracle_swap`) then
+/// departs from `v0`, and the curve's own marginal price at that drifted `reserve_x` moves
+/// away from the flat `p_oracle * (1 +/- spread)` this envelope assumes. This is a standard
+/// AMM inventory-skew effect: as inventory drifts toward one side, the curve's own effective
+/// execution price for further same-direction flow degrades toward the oracle price,
+/// capturing *less* than the full nominal spread on that flow — it can only ever reduce the
+/// realized captured spread relative to this flat-spread idealization, never increase it.
+/// The envelope therefore remains a valid upper bound for variant (a) too, just a looser one
+/// than variant (b)'s (where `target_x` tracks `reserve_x` exactly, so there is no drift
+/// term to begin with).
+///
+/// **Scope caveat (round-1 spec review of this issue, finding #6):** this is deliberately a
+/// retail-flow-only quantity — `sum(retail volume_y)`, exactly the issue's own literal
+/// wording — and does not add an arbitrageur-volume term. A real simulated `l0_avg_edge`
+/// (built from [`SimResult::submission_edge`], which *does* include whatever the
+/// arbitrageur itself contributes) is therefore not a strictly apples-to-apples quantity
+/// against this envelope: the two can differ for a reason that has nothing to do with
+/// whether this bound holds, not only because it does or doesn't. Treat a `PASS` from
+/// [`format_envelope_check`] as consistent with the bound, not as proof the two quantities
+/// were computed over identical volume — the derivation above bounds only the retail term.
+fn analytic_envelope_l0_upper_bound(configs: &[SimulationConfig], spread_bps: f64) -> f64 {
+    if configs.is_empty() {
+        return 0.0;
+    }
+    let spread_fraction = spread_bps / 10_000.0;
+    let total: f64 = configs
+        .iter()
+        .map(|cfg| {
+            let expected_retail_volume_y =
+                f64::from(cfg.n_steps) * cfg.retail_arrival_rate * cfg.retail_mean_size;
+            expected_retail_volume_y * spread_fraction
+        })
+        .sum();
+    total / configs.len() as f64
+}
+
+/// Renders the `L=0` simulated-vs-envelope comparison the issue requires as a blocker check:
+/// "the simulated L=0 number must sit below this envelope, or it's a blocker."
+fn format_envelope_check(l0_avg_edge: f64, envelope: f64) -> String {
+    let mut out = String::new();
+    out.push_str("## L=0 analytic envelope check (WHI-1248)\n\n");
+    out.push_str(&format!(
+        "- Simulated `L=0` avg edge: {l0_avg_edge:.6}\n- Closed-form upper envelope: \
+         {envelope:.6}\n- Scope caveat: the envelope is a retail-flow-only quantity \
+         (`sum(retail volume_y)`, per the issue's own wording); the simulated avg edge \
+         also includes whatever the arbitrageur itself contributes, so the two are not a \
+         strictly apples-to-apples comparison — see `analytic_envelope_l0_upper_bound`'s \
+         doc comment.\n"
+    ));
+    if l0_avg_edge <= envelope {
+        out.push_str(&format!(
+            "- **Sits below the envelope: PASS** ({l0_avg_edge:.6} <= {envelope:.6}).\n\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "- **BLOCKER: the simulated L=0 avg edge exceeds its own closed-form upper \
+             envelope** ({l0_avg_edge:.6} > {envelope:.6}) — this is disqualifying per \
+             WHI-1248's own acceptance criteria and means either the envelope's derivation or \
+             the L=0 measurement itself has a bug that must be found before this number is \
+             reported as real.\n\n"
+        ));
+    }
+    out
+}
+
+/// Renders the fingerprint hardening-check trip table WHI-1248 requires: "a seed that trips
+/// any check must be reported and re-run, never silently dropped from a paired statistic."
+fn format_tripped_seeds(tripped: &[TrippedSeedOutcome]) -> String {
+    let mut out = String::new();
+    out.push_str("## Fingerprint hardening-check trips (WHI-1248)\n\n");
+    if tripped.is_empty() {
+        out.push_str(
+            "Zero seeds tripped any fingerprint hardening check during Phase 1 (per-seed, \
+             parallel) of this run.\n\n",
+        );
+        return out;
+    }
+    out.push_str(&format!(
+        "{} seed(s) tripped a fingerprint hardening check during Phase 1 and were re-run \
+         serially, one at a time (Phase 2), to recover a classified message — none was \
+         silently dropped from the paired statistic without being named here.\n\n",
+        tripped.len()
+    ));
+    out.push_str("| seed | classification | message |\n|---|---|---|\n");
+    for t in tripped {
+        out.push_str(&format!(
+            "| {} | {} | {} |\n",
+            t.seed,
+            t.label,
+            t.message.replace('|', "\\|").replace('\n', " ")
+        ));
+    }
+    out.push('\n');
+    out
+}
+
+pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
+    let lag = validate_cursor_and_lag(args.cursor, args.lag)?;
     validate_max_points_requires_no_report(args.max_points, args.no_report)?;
 
     let bench_config = BenchConfig::load_default()?;
@@ -902,8 +1565,10 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
 
     let (reference_slug, reference_lib_path) = validate_reference_allowlist(&args.reference)?;
     let variant_slug = args.variant.slug();
+    let cursor_mode: CursorMode = args.cursor.into();
+    let cursor_slug_str = cursor_slug(args.cursor, lag);
     let stage = format!(
-        "ceiling-{variant_slug}-{CURSOR_MODE}-{segment_name}-orbic-oracle-vs-{reference_slug}"
+        "ceiling-{variant_slug}-{cursor_slug_str}-{segment_name}-orbic-oracle-vs-{reference_slug}"
     );
 
     if !args.no_report {
@@ -922,7 +1587,14 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         let budget = args
             .max_points
             .unwrap_or_else(|| bench_config.search_max_points());
-        run_fit(args.variant, args.concentration, &screening_configs, budget)?
+        run_fit(
+            args.variant,
+            args.concentration,
+            &screening_configs,
+            budget,
+            cursor_mode,
+            lag,
+        )?
     } else {
         FittedPoint {
             concentration: args.concentration.expect("validated above"),
@@ -935,15 +1607,10 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         variant: args.variant.into(),
         concentration: fitted.concentration,
         spread_bps: fitted.spread_bps,
+        cursor_mode,
+        fingerprint_lag: lag,
     };
-    let outcome = run_final_eval_catching_panics(params, &configs)?;
 
-    // Round-3 review, standards finding #6: the `Valid`/`Invalid` arms below used to build
-    // near-identical `CeilingRunMeta` literals, differing only in `n_sims` (`batch.n_sims()`
-    // vs `configs.len()`) — but `run_batch`'s own rayon loop (`oracle.rs`) is
-    // `configs.par_iter().map(..).collect()`, one result per config with no filtering, so
-    // `batch.n_sims() == configs.len()` on every `Valid` outcome. One `run_meta`, built once,
-    // is exactly as correct and reads as "the run" rather than two copies that could drift.
     let run_meta = CeilingRunMeta {
         stage: &stage,
         segment_name,
@@ -951,17 +1618,180 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
         n_steps: base_config.n_steps,
         variant: args.variant,
         reference_slug: &reference_slug,
+        cursor_slug: &cursor_slug_str,
     };
 
-    match outcome {
-        OracleBatchOutcome::Valid { batch, staleness } => {
-            let paired = stats::paired_stat(&batch.results, &reference_batch.results)?;
-            let staleness = aggregate_staleness(&staleness);
+    let grid_levels = bench_config.grid().ok().map(|g| g.gbm_sigma_levels.clone());
+
+    match cursor_mode {
+        CursorMode::TradeTriggered => {
+            let outcome = run_final_eval_catching_panics(params, &configs)?;
+
+            match outcome {
+                OracleBatchOutcome::Valid { batch, staleness } => {
+                    let paired = stats::paired_stat(&batch.results, &reference_batch.results)?;
+                    let staleness_agg = aggregate_staleness(&staleness);
+                    // Degrade gracefully rather than `?`-propagating: a slicing failure
+                    // here (e.g. an unpaired batch) must not discard an already-finished,
+                    // already-valid 1000-sim measurement and abort with no report written
+                    // at all (round-1 standards review of this issue, finding #5). The
+                    // error, when there is one, is threaded into `format_sigma_slices`
+                    // itself (round-2 standards finding B) rather than silently becoming
+                    // an empty slice vector indistinguishable from a legitimately empty
+                    // tier bin.
+                    let mut sigma_slicing_error = None;
+                    let sigma_slices = match slice_by_sigma_tier(
+                        &base_config,
+                        &batch.results,
+                        &reference_batch.results,
+                    ) {
+                        Ok(slices) => slices,
+                        Err(e) => {
+                            eprintln!(
+                                "warning: sigma-tier slicing failed for `{stage}` \
+                                 (report still written without it): {e}"
+                            );
+                            sigma_slicing_error = Some(e.to_string());
+                            Vec::new()
+                        }
+                    };
+
+                    println!(
+                        "ceiling `{stage}`: mean edge diff (oracle - {reference_slug}) = \
+                         {:.6} (95% CI [{:.6}, {:.6}], n={})",
+                        paired.mean_diff, paired.ci_low, paired.ci_high, paired.n
+                    );
+
+                    if !args.no_report {
+                        let extra = format_sigma_slices(
+                            grid_levels.as_deref(),
+                            &sigma_slices,
+                            sigma_slicing_error.as_deref(),
+                        );
+                        let path = write_ceiling_report(
+                            run_meta,
+                            &fitted,
+                            FinalEvalSummary::Valid {
+                                paired: &paired,
+                                staleness: &staleness_agg,
+                            },
+                            &extra,
+                        )?;
+                        println!("wrote {}", path.display());
+                    }
+
+                    Ok(())
+                }
+                OracleBatchOutcome::Invalid(panic) => {
+                    eprintln!(
+                        "ceiling `{stage}`: the fitted point (concentration={:.4}, \
+                         spread_bps={:.4}) panicked during final re-evaluation on \
+                         `{segment_name}` — caught, not crashed: {}",
+                        fitted.concentration, fitted.spread_bps, panic.message
+                    );
+
+                    if !args.no_report {
+                        let path = write_ceiling_report(
+                            run_meta,
+                            &fitted,
+                            FinalEvalSummary::Invalid(&panic),
+                            "",
+                        )?;
+                        println!("wrote {} (marked INVALID — see the report)", path.display());
+                    }
+
+                    anyhow::bail!(
+                        "the fitted point {:?} panicked during final re-evaluation on \
+                         `{segment_name}` — valid on `screening`'s seeds does not guarantee \
+                         valid on a different, larger seed set (docs/DESIGN.md \
+                         §2.4/§2.5/WHI-1213; the Orbic family's own quantization jitter, \
+                         WHI-1206, is exactly this). Do not trust this point without \
+                         investigating why: {}",
+                        (fitted.concentration, fitted.spread_bps),
+                        panic.message,
+                    );
+                }
+            }
+        }
+        CursorMode::Fingerprint => {
+            let (oks, tripped) = run_fingerprint_final_eval(params, &configs)?;
+            let (results, staleness) = reorder_oks_to_configs_order(&configs, oks);
+            let tripped_section = format_tripped_seeds(&tripped);
+
+            if results.is_empty() {
+                let synthesized = PanicOutcome {
+                    message: format!(
+                        "all {} seed(s) tripped a fingerprint hardening check and none \
+                         survived Phase 2's serial re-run — see the trip table below for each \
+                         one's own classification and message",
+                        tripped.len()
+                    ),
+                    recovered: true,
+                    fingerprint_calls_since_advance: None,
+                };
+                eprintln!(
+                    "ceiling `{stage}`: zero surviving seeds under the fingerprint cursor on \
+                     `{segment_name}` — see the report"
+                );
+                if !args.no_report {
+                    let path = write_ceiling_report(
+                        run_meta,
+                        &fitted,
+                        FinalEvalSummary::Invalid(&synthesized),
+                        &tripped_section,
+                    )?;
+                    println!("wrote {} (marked INVALID — see the report)", path.display());
+                }
+                anyhow::bail!(
+                    "zero surviving seeds under the fingerprint cursor on `{segment_name}`: {}",
+                    synthesized.message
+                );
+            }
+
+            let surviving: HashSet<u64> = results.iter().map(|r| r.seed).collect();
+            let filtered_reference = filter_batch_to_seeds(&reference_batch, &surviving);
+            let paired = stats::paired_stat(&results, &filtered_reference.results)?;
+            let staleness_agg = aggregate_staleness(&staleness);
+            // Same graceful-degradation rationale as the trade-triggered branch above
+            // (round-1 standards review of this issue, finding #5): don't let a slicing
+            // failure discard the already-computed paired statistic and abort with no
+            // report at all. Same round-2 finding-B fix as that branch: thread the error
+            // through rather than collapsing it into an indistinguishable empty Vec.
+            let mut sigma_slicing_error = None;
+            let sigma_slices =
+                match slice_by_sigma_tier(&base_config, &results, &filtered_reference.results) {
+                    Ok(slices) => slices,
+                    Err(e) => {
+                        eprintln!(
+                            "warning: sigma-tier slicing failed for `{stage}` (report still \
+                             written without it): {e}"
+                        );
+                        sigma_slicing_error = Some(e.to_string());
+                        Vec::new()
+                    }
+                };
+
+            let mut extra = tripped_section;
+            extra.push_str(&format_sigma_slices(
+                grid_levels.as_deref(),
+                &sigma_slices,
+                sigma_slicing_error.as_deref(),
+            ));
+            if lag == 0 {
+                let envelope = analytic_envelope_l0_upper_bound(&configs, fitted.spread_bps);
+                let l0_avg_edge =
+                    results.iter().map(|r| r.submission_edge).sum::<f64>() / results.len() as f64;
+                extra.push_str(&format_envelope_check(l0_avg_edge, envelope));
+            }
 
             println!(
-                "ceiling `{stage}`: mean edge diff (oracle - {reference_slug}) = {:.6} \
-                 (95% CI [{:.6}, {:.6}], n={})",
-                paired.mean_diff, paired.ci_low, paired.ci_high, paired.n
+                "ceiling `{stage}`: mean edge diff (oracle - {reference_slug}) = {:.6} (95% \
+                 CI [{:.6}, {:.6}], n={}) [{} tripped seed(s), see report]",
+                paired.mean_diff,
+                paired.ci_low,
+                paired.ci_high,
+                paired.n,
+                tripped.len()
             );
 
             if !args.no_report {
@@ -970,37 +1800,233 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
                     &fitted,
                     FinalEvalSummary::Valid {
                         paired: &paired,
-                        staleness: &staleness,
+                        staleness: &staleness_agg,
                     },
+                    &extra,
                 )?;
                 println!("wrote {}", path.display());
             }
 
             Ok(())
         }
-        OracleBatchOutcome::Invalid(panic) => {
-            eprintln!(
-                "ceiling `{stage}`: the fitted point (concentration={:.4}, spread_bps={:.4}) \
-                 panicked during final re-evaluation on `{segment_name}` — caught, not \
-                 crashed: {}",
-                fitted.concentration, fitted.spread_bps, panic.message
-            );
+    }
+}
 
-            if !args.no_report {
-                let path =
-                    write_ceiling_report(run_meta, &fitted, FinalEvalSummary::Invalid(&panic))?;
-                println!("wrote {} (marked INVALID — see the report)", path.display());
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-            anyhow::bail!(
-                "the fitted point {:?} panicked during final re-evaluation on `{segment_name}` \
-                 — valid on `screening`'s seeds does not guarantee valid on a different, \
-                 larger seed set (docs/DESIGN.md §2.4/§2.5/WHI-1213; the Orbic family's own \
-                 quantization jitter, WHI-1206, is exactly this). Do not trust this point \
-                 without investigating why: {}",
-                (fitted.concentration, fitted.spread_bps),
-                panic.message,
-            );
-        }
+    #[test]
+    fn panic_message_recovers_a_str_payload_verbatim() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        let (message, recovered) = panic_message(&*payload);
+        assert_eq!(message, "boom");
+        assert!(recovered);
+    }
+
+    #[test]
+    fn panic_message_recovers_a_string_payload_verbatim() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom".to_string());
+        let (message, recovered) = panic_message(&*payload);
+        assert_eq!(message, "boom");
+        assert!(recovered);
+    }
+
+    #[test]
+    fn panic_message_synthesizes_a_readable_message_for_a_non_string_payload() {
+        // WHI-1248 amendment scope item #4: the original downcast returned `None` here,
+        // which `catch_panicking` turned into a fixed, uninformative placeholder. The fix
+        // must produce a message that is both non-empty and names the payload's own type
+        // rather than a generic string.
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
+        let (message, recovered) = panic_message(&*payload);
+        assert!(!recovered);
+        assert!(
+            message.contains("non-string panic payload") && message.contains("type_id"),
+            "expected a readable, type-naming message, got: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_cursor_and_lag_accepts_trade_triggered_with_no_lag() {
+        assert_eq!(
+            validate_cursor_and_lag(CursorArg::TradeTriggered, None).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn validate_cursor_and_lag_rejects_trade_triggered_with_a_lag() {
+        let err = validate_cursor_and_lag(CursorArg::TradeTriggered, Some(1)).unwrap_err();
+        assert!(err.to_string().contains("only meaningful alongside"));
+    }
+
+    #[test]
+    fn validate_cursor_and_lag_requires_lag_for_fingerprint() {
+        let err = validate_cursor_and_lag(CursorArg::Fingerprint, None).unwrap_err();
+        assert!(err.to_string().contains("requires --lag"));
+    }
+
+    #[test]
+    fn validate_cursor_and_lag_accepts_fingerprint_lag_0_and_1() {
+        assert_eq!(
+            validate_cursor_and_lag(CursorArg::Fingerprint, Some(0)).unwrap(),
+            0
+        );
+        assert_eq!(
+            validate_cursor_and_lag(CursorArg::Fingerprint, Some(1)).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn validate_cursor_and_lag_rejects_out_of_scope_lag_values() {
+        let err = validate_cursor_and_lag(CursorArg::Fingerprint, Some(5)).unwrap_err();
+        assert!(err.to_string().contains("out of scope"));
+        let err = validate_cursor_and_lag(CursorArg::Fingerprint, Some(25)).unwrap_err();
+        assert!(err.to_string().contains("out of scope"));
+    }
+
+    #[test]
+    fn classify_fingerprint_panic_recognizes_a_cursor_assertion() {
+        let outcome = PanicOutcome {
+            message: "WHI-1248 fingerprint cursor hardening check (a): mismatch".to_string(),
+            recovered: true,
+            fingerprint_calls_since_advance: None,
+        };
+        assert_eq!(classify_fingerprint_panic(&outcome), "CursorAssertion");
+    }
+
+    #[test]
+    fn classify_fingerprint_panic_recognizes_a_suspected_early_advance() {
+        let outcome = PanicOutcome {
+            message: "submission shape violation during buy: price moved".to_string(),
+            recovered: true,
+            fingerprint_calls_since_advance: Some(3),
+        };
+        assert_eq!(
+            classify_fingerprint_panic(&outcome),
+            "SuspectedEarlyAdvance"
+        );
+    }
+
+    #[test]
+    fn classify_fingerprint_panic_falls_back_to_other() {
+        let outcome = PanicOutcome {
+            message: "attempt to divide by zero".to_string(),
+            recovered: true,
+            fingerprint_calls_since_advance: None,
+        };
+        assert_eq!(classify_fingerprint_panic(&outcome), "Other");
+
+        // A shape-violation-looking message with a large or missing call count is not
+        // attributed to an early advance either.
+        let outcome = PanicOutcome {
+            message: "submission shape violation during buy: price moved".to_string(),
+            recovered: true,
+            fingerprint_calls_since_advance: Some(1_000),
+        };
+        assert_eq!(classify_fingerprint_panic(&outcome), "Other");
+    }
+
+    #[test]
+    fn reorder_oks_to_configs_order_restores_original_order_and_drops_missing_seeds() {
+        let base = SimulationConfig {
+            seed: 1,
+            ..SimulationConfig::default()
+        };
+        let configs: Vec<SimulationConfig> = (1..=3)
+            .map(|s| {
+                let mut c = base.clone();
+                c.seed = s;
+                c
+            })
+            .collect();
+        let stale = StalenessSummary {
+            n: 1,
+            mean: 0.0,
+            p50: 0.0,
+            p95: 0.0,
+            max: 0.0,
+        };
+        // Seed 2 is missing (as if it never survived); seeds 3 and 1 arrive out of order.
+        let oks = vec![
+            (
+                SimResult {
+                    seed: 3,
+                    submission_edge: 0.3,
+                },
+                stale,
+            ),
+            (
+                SimResult {
+                    seed: 1,
+                    submission_edge: 0.1,
+                },
+                stale,
+            ),
+        ];
+        let (results, staleness) = reorder_oks_to_configs_order(&configs, oks);
+        assert_eq!(
+            results.iter().map(|r| r.seed).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(staleness.len(), 2);
+    }
+
+    #[test]
+    fn filter_batch_to_seeds_keeps_only_the_given_seeds_in_original_order() {
+        let batch = BatchResult::from_results(vec![
+            SimResult {
+                seed: 1,
+                submission_edge: 0.1,
+            },
+            SimResult {
+                seed: 2,
+                submission_edge: 0.2,
+            },
+            SimResult {
+                seed: 3,
+                submission_edge: 0.3,
+            },
+        ]);
+        let seeds: HashSet<u64> = [1, 3].into_iter().collect();
+        let filtered = filter_batch_to_seeds(&batch, &seeds);
+        assert_eq!(
+            filtered.results.iter().map(|r| r.seed).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
+    fn analytic_envelope_l0_upper_bound_is_zero_for_zero_spread() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(analytic_envelope_l0_upper_bound(&[cfg], 0.0), 0.0);
+    }
+
+    #[test]
+    fn analytic_envelope_l0_upper_bound_is_positive_for_positive_spread() {
+        let cfg = SimulationConfig::default();
+        let envelope = analytic_envelope_l0_upper_bound(&[cfg], 20.0);
+        assert!(envelope > 0.0);
+    }
+
+    #[test]
+    fn format_tripped_seeds_reports_zero_trips_explicitly() {
+        let out = format_tripped_seeds(&[]);
+        assert!(out.contains("Zero seeds tripped"));
+    }
+
+    #[test]
+    fn format_tripped_seeds_lists_every_seed_with_its_classification() {
+        let tripped = vec![TrippedSeedOutcome {
+            seed: 42,
+            label: "CursorAssertion",
+            message: "boom".to_string(),
+        }];
+        let out = format_tripped_seeds(&tripped);
+        assert!(out.contains("42"));
+        assert!(out.contains("CursorAssertion"));
+        assert!(out.contains("boom"));
     }
 }

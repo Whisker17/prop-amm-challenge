@@ -362,3 +362,181 @@ describes as probabilistic across seeds, not deterministic per parameter value),
 trading one uncaught failure mode for a laundered one that merely didn't trip on this
 particular re-evaluation. Reporting that as if it were `floating`'s real number would be
 worse than reporting nothing.
+
+## WHI-1248 — exact-step fingerprint cursor: `L=1`/`L=0` closed as a negative result
+
+**What was built and works as designed.** `tools/bench/src/oracle.rs` gained a second
+cursor mode (`CursorMode::Fingerprint`, alongside WHI-1247's `TradeTriggered`): per seed,
+`build_fingerprint_targets` replays `Pcg64::seed_from_u64(cfg.seed.wrapping_add(2))` through
+the identical `LogNormal` construction `Arbitrageur::new` uses (`arbitrageur.rs:53-58`),
+applies the same floor clamps, and nano-quantizes the result into a per-step
+`(buy_probe, sell_probe)` target pair. `maybe_advance_fingerprint_cursor` advances a
+monotone cursor by exactly one whenever a live `oracle_swap` call's probe matches the
+*next* step's target, gated by a "seen a `side == 1` call since the last advance" predicate
+(hardening check (c)). Two more hardening checks run at measurement time
+(`commands/ceiling.rs::run_fingerprint_final_eval`): a per-trade assertion that the cursor
+already equals the executed trade's own step by the time its `after_swap` fires (check
+(a)), and a terminal assertion that the cursor reached the simulation's final step (check
+(b)). All three are unit-tested directly (`oracle::tests::per_trade_assertion_fires_on_a_
+corrupted_cursor`, `oracle::tests::terminal_assertion_fires_when_cursor_never_reaches_the_
+final_step`, both `#[should_panic]` tests that pass), and a curve_checks-shape-violation
+panic caused by an early false advance is classified distinctly from a genuine
+`CursorAssertion` trip or an unrelated `"Other"` panic
+(`commands/ceiling.rs::classify_fingerprint_panic`, unit-tested). The panic-payload downcast
+fix (`ca8b865`, `commands/ceiling.rs::panic_message`) peels rayon's cross-thread
+`Box<dyn Any + Send>` re-wrap before attempting the `&str`/`String` downcast, and is
+directly demonstrated below to produce a fully readable message on a real, reproduced
+panic — not the earlier session's opaque `"panicked with a non-string payload"` placeholder.
+
+**What does not work: the exact-match reconstruction itself, once floor-clamping is in
+play.** A live `--fit` run measured a ~50%+ per-seed hardening-check trip rate on
+`validation` — roughly nine orders of magnitude above this design's own derived
+expectation (~1e-10 per comparison, treating a match as a random continuous-value
+collision). That gap was traced to a specific mechanism, reproduced deterministically on
+seed `2_000_011` (`validation` segment, `concentration=94.33, spread_bps=102.0`, variant
+(a), full `n_steps=10_000`):
+
+1. The cursor advances correctly for 3201 consecutive steps.
+2. At `oracle.rs`-call-index 121973 — 26 calls into step 3201's *own* sell-side search — a
+   probe of exactly `f64_to_nano(0.001) = 1_000_000` matches step **3202**'s own
+   `sell_target`, which had independently floor-clamped to the identical value (its own
+   `start_y ~= 0.1118`, `fair_price[3202] = 116.58`, `start_x = start_y / fair_price ~=
+   0.00096 < FP_MIN_INPUT`). The cursor advances one step early.
+3. The very next `after_swap` (step 3201's genuine trade) fires the per-trade assertion
+   verbatim: `WHI-1248 fingerprint cursor hardening check (a): the fingerprint cursor
+   (3202) must already equal the executed trade's own step (3201) ...` — the readable
+   message the panic-payload fix produces, no downcast failure.
+4. That `input=1_000_000` probe is not a coincidence between two independent draws — it is
+   `arbitrageur.rs::golden_section_max`'s own first internal evaluation, `objective(left)`
+   where `left == lo`, and `bracket_maximum`'s common early-return paths (`if mid_value <=
+   0.0 { return (lo, mid); }`; `if hi_value <= mid_value || hi >= max_input { return (lo,
+   hi); }` — both return before the `for` loop's own first `lo = mid;` reassignment) hand
+   back `lo` unchanged at the original floor constant. For the sell side that floor is
+   `min_sell_input_x(fair_price) == FP_MIN_INPUT == 0.001` whenever `fair_price >
+   MIN_ARB_NOTIONAL_Y / MIN_INPUT == 10` (true for essentially this entire run); for the
+   buy side it is the unconditional constant `min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y ==
+   0.01`, always. **Every step's own search therefore routinely re-probes a fixed floor
+   value, independent of that step's own draw** — a direct count over this seed's
+   `FP_TARGETS` found exactly 2 of the 10,000 steps' `sell_target`s independently floor to
+   that same constant, each one a near-guaranteed false-match trap the moment the cursor's
+   `next` pointer reaches it.
+5. `SEEN_SIDE1_SINCE_ADVANCE` (hardening check (c)) does not block this: its own doc
+   comment already named this exact residual case ("within a step's own sell-side search
+   evaluating a value that happens to equal the next step's own sell probe") as
+   unprotected — measurement now shows it is the *dominant* failure mode, not a residual
+   one.
+
+Full trace and code-level detail: `tools/bench/src/oracle.rs::build_fingerprint_targets`'s
+doc comment, limitation 3.
+
+**Why this rules out reporting a number, not just a threshold tweak.** A tripped seed is a
+deterministic function of that seed's own RNG stream — re-running the identical seed
+reproduces the identical trip every time, so "re-run" cannot mean "check for a fluke" here.
+Worse, floor-clamp exposure is correlated with the RNG's own low-draw episodes, not
+independent of the quantity being measured — so averaging a paired statistic over only the
+seeds that happened not to trip is a **selection-biased** estimate, not a smaller-`n`
+version of the same estimate, regardless of how carefully the surviving sets are index-
+paired between the candidate and the `001-cpmm-fee` reference (`run_fingerprint_final_eval`'s
+own `reorder_oks_to_configs_order`/`filter_batch_to_seeds` machinery does that part
+correctly — pairing integrity was checked and is not the problem). This is not a
+miscalibrated hardening-check threshold: the checks are working exactly as intended,
+correctly catching a real, structural defect in the underlying reconstruction method. Nor
+is it fixable by a "cheap" tweak in this issue's scope — the false-matching probe and a
+step's own genuine probe are, at the interface this replay observes, the same value
+arriving through the same call, with no additional signal available at match-time to tell
+them apart; a real fix would need a materially different (and more expensive)
+reconstruction strategy, which is out of scope for "three cheap hardening checks."
+
+**Decision: `L=1` (variant (a), the headline rung) and `L=0` (variant (a), the diagnostic
+rung) are closed as a documented negative/method-level result — no mean-edge-diff number,
+no CI, and no per-sigma slice is reported for either.** This mirrors the precedent already
+in this file for `floating`'s own diagnostic ("never a result on its own") and this repo's
+own prior-established precedent (005b's ablation closing with no committable point) — an
+honest negative result, not a gap to paper over. A previously generated report from this
+investigation
+(`results/2026-08-23-ceiling-anchored-fingerprint-l1-validation-orbic-oracle-vs-001-cpmm-fee.md`,
+written to a detached scratch worktree, never committed to this repo) reported `mean edge
+diff = 225.124282, 95% CI [204.396653, 245.851912], n=436, 564 tripped seeds` — that number
+is exactly the selection-biased quantity described above and is **not** a valid ceiling
+measurement; it is recorded here only so the number is not silently reproduced later
+without this context.
+
+**`L in {5, 25}`**: out of scope per the issue regardless of this outcome (the `L=1` vs.
+trade-triggered gap was never established as "surprising" enough to justify going beyond
+`L=1`, since `L=1` itself could not be measured).
+
+**Analytic envelope — formula re-derived for variant (a), no concrete comparison
+possible.** `commands/ceiling.rs::analytic_envelope_l0_upper_bound` is a pure closed-form
+calculation (`sum(retail volume_y) x captured spread`, at 100% flow share and zero adverse
+selection) that does not itself depend on the fingerprint cursor — its doc comment
+re-derives the bound for variant (a) explicitly: inventory drift away from `target_x ==
+ANCHOR_X` (fixed, unlike variant (b)'s `target_x == reserve_x`) can only ever *reduce* the
+realized captured spread relative to this flat-spread idealization (a standard AMM
+inventory-skew effect), so the bound remains valid, just looser than variant (b)'s. It is
+unit-tested for its own boundary behavior
+(`analytic_envelope_l0_upper_bound_is_zero_for_zero_spread`,
+`_is_positive_for_positive_spread`). What cannot be produced is a **concrete number** to
+compare it against: computing the envelope for a specific `spread_bps` requires a fitted
+point, and the only fit pipeline available for `CursorMode::Fingerprint`
+(`evaluate_fingerprint_point`) suffers the identical selection-bias problem — it may steer
+the search itself toward parameter regions that happen to produce fewer floor collisions
+rather than the true optimum, so even the *fitted point* (not just the final number) is
+untrustworthy here. There is therefore no simulated `L=0` number to check against the
+envelope, and none is reported; the formula's own boundary behavior is unit-tested, and it
+is a candidate for reuse once (if ever) a non-selection-biased fingerprint-mode measurement
+pipeline exists — but "unit-tested for its own boundary behavior" is the extent of what has
+been verified. One caveat applies regardless of the selection-bias problem above and
+survives any future fix to it: the envelope is deliberately a **retail-flow-only**
+quantity (`sum(retail volume_y)`, matching the issue's own literal wording), while a real
+simulated `l0_avg_edge` is built from `submission_edge`, which also includes whatever the
+arbitrageur itself contributes. The two are therefore never a strictly apples-to-apples
+comparison — a future `PASS` against this envelope would be consistent with the bound
+holding, not proof the two quantities were computed over identical volume. See
+`analytic_envelope_l0_upper_bound`'s own doc comment in `commands/ceiling.rs`.
+
+**Per-sigma slices: not performed.** `commands/ceiling.rs::slice_by_sigma_tier`/
+`format_sigma_slices` are implemented and reuse `regime.rs`'s existing tier reconstruction
+exactly as scoped (no new `[grid]` axis), but slicing a rung that has no valid headline
+measurement produces no meaningful converge/fan-out verdict — there is nothing to slice.
+No "converge at low sigma / fan out at high sigma" statement can be made for `L=1`/`L=0`
+under this method.
+
+**Acceptance criteria — explicit accounting (WHI-1248):**
+
+- Hardening checks (a)/(b)/(c) implemented and unit-tested to fire on a corrupted
+  cursor/stalled terminal state: **met**.
+- Full lane run reports zero assertion failures, or names every tripped seed + re-run
+  outcome: **met, but the outcome is the negative result above** — every tripped seed
+  Phase 2 processes is individually named, classified, and either recovered or reported
+  with its own message (`run_fingerprint_final_eval`); none is silently dropped. The
+  *volume* of trips (not their individual handling) is what disqualifies the resulting
+  average from being reported.
+- `curve_checks` panic from an early cursor advance caught and labelled distinctly:
+  **met** (`classify_fingerprint_panic`'s `"SuspectedEarlyAdvance"` bucket, unit-tested).
+- Headline `L=1` variant (a) paired-by-seed mean diff + 95% CI on `validation`: **not
+  met, deliberately** — see Decision above; any such number is selection-biased.
+- `L=0` variant (a) diagnostic sits below the analytic envelope: **not evaluable** — no
+  valid simulated `L=0` number exists to compare; the envelope formula itself is
+  implemented, re-derived for variant (a), and unit-tested (boundary cases only — see the
+  scope caveat above: it is a retail-flow-only bound, not a like-for-like quantity against
+  `submission_edge`).
+- Per-sigma slices for every rung with an explicit converge/fan-out statement: **not
+  met** — no valid rung exists to slice; the slicing/formatting code is implemented and
+  ready.
+- `rand_pcg`/`rand_distr` pinned in `tools/bench/Cargo.toml` only: **met**
+  (`rand = "0.8.5"`, `rand_pcg = "0.3.1"`, `rand_distr = "0.4.3"`, not touching the
+  workspace `[workspace.dependencies]` table).
+- Panic-payload downcast fix produces readable messages: **met and demonstrated** — the
+  step 3201/3202 trace above shows the exact, readable
+  `"WHI-1248 fingerprint cursor hardening check (a): ..."` assertion text recovered
+  verbatim, not the pre-fix `"panicked with a non-string payload"` placeholder.
+- One-sided-bound caveat repeated: **N/A for this rung** — no number is reported for
+  `L=1`/`L=0`, so there is no ceiling figure to attach the caveat to; the caveat continues
+  to apply, unchanged, to WHI-1247's own committed trade-triggered number above.
+
+**What this does not reopen.** `002`'s own §6.2 row, §2.10's addition clause, and the
+`test` segment remain untouched, exactly as scoped. `L in {5, 25}` was never attempted, for
+the reason given above. WHI-1247's own trade-triggered `anchored` measurement
+(87.234885 edge/sim above the 0-line, `observation`, n=1000) is unaffected by any of this
+— it uses a different cursor mode entirely and is not implicated by the fingerprint-mode
+finding.
