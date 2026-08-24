@@ -513,6 +513,18 @@ same estimate" conclusion below, not a same-segment apples-to-apples delta.) The
 different (and larger) number than any credible correction of the same estimate, in the
 direction that would have overstated this lane's ceiling had it been reported as-is.
 
+**This ≈+62.29 figure is illustrative arithmetic about the rejected report's own bias, not
+a prediction of any future measurement.** It is a crude equal-weight re-pooling of three
+tier means that were themselves computed on a biased survivor subset, evaluated at that
+subset's own contaminated fitted point (`concentration = 94.33`) — a point WHI-1249 names
+above as a likely product of the same search-time contamination, not a point any
+non-contaminated search would have chosen. WHI-1250's fresh, non-contaminated re-fit lands
+at a different point entirely (`concentration = 62.4200`, confirmed distinct from `94.33`
+below), so there is no basis for reading ≈+62.29 as an estimate of what that re-fit would
+find, and it is not treated as one anywhere in this file. Its only role is the qualitative
+one stated above: showing that the rejected 225.12 headline itself cannot be trusted, not
+forecasting a replacement number.
+
 **The rejected report's own "Converge/fan-out verdict: HELD" must not be cited.** That
 verdict — Low tier's CI width (37.758948) narrower than High's (209.757852), read as
 consistent with "converge at low sigma / fan out at high sigma" — was computed entirely on
@@ -552,6 +564,20 @@ point, and the only fit pipeline available for `CursorMode::Fingerprint`
 the search itself toward parameter regions that happen to produce fewer floor collisions
 rather than the true optimum, so even the *fitted point* (not just the final number) is
 untrustworthy here.
+
+**Superseded by WHI-1250, below.** This limitation was specific to the search-time
+contamination this paragraph describes; WHI-1250's `score_fingerprint_survivors` fix
+**bounds** it — caps how large the below-threshold survivors-only bias is allowed to be,
+and kills the rung outright as a documented negative if it isn't — it does not remove
+survivors-only averaging itself, which still runs on every point the search evaluates
+whenever that point's own trip rate is at or under the 1% threshold. What that bound does
+buy is a fitted point the reader can act on: the WHI-1250 section below reports the actual
+fitted point, the actual simulated `L=0` number, and the actual envelope comparison (PASS)
+that this paragraph says cannot be produced, each disclosed as a survivors-only mean with
+its own named/classified exclusions. Nothing here is retroactively wrong — it correctly
+describes why no number existed *at the time WHI-1248 closed* — but a reader should not
+stop at this paragraph believing the envelope is still unevaluated, nor should they read
+WHI-1250 as having eliminated the search-time incentive described two paragraphs below.
 
 **WHI-1249: naming this as a distinct finding — search-time contamination, not just
 reporting-time bias.** `evaluate_fingerprint_point` scores each candidate parameter point
@@ -634,3 +660,366 @@ the reason given above. WHI-1247's own trade-triggered `anchored` measurement
 (87.234885 edge/sim above the 0-line, `observation`, n=1000) is unaffected by any of this
 — it uses a different cursor mode entirely and is not implicated by the fingerprint-mode
 finding.
+
+## WHI-1250 — buy-probe-only cursor advance, and the pre-registered kill rule
+
+**What changed.** `tools/bench/src/oracle.rs::maybe_advance_fingerprint_cursor` now
+advances the fingerprint cursor only on a `side == 0` (buy) probe match against the next
+step's own buy target. A `side == 1` (sell) call still sets the `SEEN_SIDE1_SINCE_ADVANCE`
+gate (kept as the backstop it was written for — a buy-before-sell collision within the
+same step), but can never itself advance the cursor any more. This directly attacks the
+mechanism WHI-1248/WHI-1249 traced: the sell-side floor clamp (`min_sell_input_x`, binds at
+roughly P ≈ 1e-4/step once `fair_price > 10`, true for essentially this entire run) was
+being routinely re-probed as `bracket_maximum`/`golden_section_max`'s own early-return `lo`
+value and false-matched against the next step's target; the buy-side floor
+(`min_buy_input_y`, the constant `FP_MIN_ARB_NOTIONAL_Y`) binds roughly four orders of
+magnitude more rarely, and the real arbitrageur's own first `compute_swap` call every step
+is always the buy probe (`Arbitrageur::execute_arb`'s `Self::best_candidate(self.
+plan_arb_buy_x(..), self.plan_arb_sell_x(..))` evaluates its first argument — the whole
+buy-side search — before its second, by Rust's left-to-right argument evaluation), so a
+buy-only advance rule removes the dominant ambiguity class by construction. Proven by a new
+unit test, `oracle::tests::side1_probe_never_advances_the_cursor_even_on_an_exact_sell_
+target_match`, which drives a `side == 1` call against an exact match of the *next*
+target's own sell component with the gate already open — pre-WHI-1250 code would have
+advanced here; post-WHI-1250 code does not, and only a subsequent `side == 0` match against
+the next target's buy component does.
+
+**The search-time contamination WHI-1249 flagged is bounded, not removed, in the
+same change.** `commands/ceiling.rs::evaluate_fingerprint_point` previously scored every
+candidate point by averaging over whichever seeds survived that point's own fingerprint
+hardening checks, with no upper bound on how many seeds could be silently excluded from the
+average — exactly the mechanism suspected of pulling the pre-fix fit to
+`concentration = 94.33`, near its own declared upper bound (docs/DEFERRED_ISSUES.md's
+WHI-1249 entry). Below the kill-rule threshold this fix still averages over survivors only
+— `docs/DEFERRED_ISSUES.md`'s WHI-1249 entry asks for the search's scoring path to "stop
+silently dropping tripped seeds (e.g. penalize instead of exclude, or score over the full
+seed set with a fixed penalty for tripped ones)"; nothing here does that. What this fix
+does do is cap *how large* that drop is allowed to be before the point is thrown out
+outright (`Invalid`, no mean reported). Disclosure is asymmetric between the two callers
+of this shared decision, and that asymmetry is deliberate, not a gap this fix missed:
+`run`'s `CursorMode::Fingerprint` branch (the real final-evaluation headline decision) does
+serially re-run every tripped seed to recover a named, classified message — that is where
+"no longer silent" actually holds, and it is what makes the per-seed tables below possible.
+`evaluate_fingerprint_point` (the `screening`-segment search loop, up to 300 candidate
+points per fit) does not: its own doc comment states it "never serially re-runs a tripped
+seed to recover its message" — paying that cost on every candidate point would be pure
+waste for numbers that are never reported — so a below-threshold candidate point's dropped
+seeds are still silent during the search itself, known only as a bare count, exactly the
+mechanism `docs/DEFERRED_ISSUES.md`'s WHI-1249 entry describes. The fix factors the shared
+bounded-exclusion-plus-invalidate decision into one pure function,
+`score_fingerprint_survivors(oks, tripped_count, total_seeds)`, applied identically by both
+callers — see the kill rule below for what it does — but "applied identically" is about the
+kill-rule threshold and the `Invalid` cutoff, not about how much identifying detail either
+caller has available to disclose. `commands/ceiling.rs`'s new unit tests exercise both
+`Invalid` branches directly against synthetic survivor/trip counts (not a real
+simulation's own trip rate, which this fix is specifically trying to lower) —
+`score_fingerprint_survivors_is_invalid_when_trip_rate_exceeds_the_kill_threshold_even_
+with_survivors` is the acceptance-criterion test: 9 survivors, 91 tripped (91%, well past
+the threshold below) must score `Invalid`, not a mean over the 9 that happened to survive.
+
+**The pre-registered kill rule (recorded here before any measurement was taken under this
+fix — this section was written, and this repo's own commit history for this issue shows
+it, before the first `--fit`/final-eval command below was run):**
+
+> If the per-seed fingerprint hardening-check trip rate on the segment being measured
+> exceeds **1% (strictly more than 10 of 1000 seeds on `validation`, or more than 2 of 200
+> on `screening`** — the rule is a rate, not a hardcoded count, so it applies unmodified to
+> either segment size), that point/run is scored `Invalid` and the rung is closed as a
+> documented negative/method-level result: no mean-edge-diff number, no CI, and no
+> per-sigma slice is reported. Trip data (every tripped seed's own seed number,
+> classification, and message, via `format_tripped_seeds`) is reported as the evidence for
+> the negative result instead. This threshold is not raised after seeing a measured trip
+> rate, under any circumstance — the entire purpose of writing it down first is to remove
+> that judgment call once a number is in hand. At or below the threshold, the point is
+> scored `Valid` and its mean **is** reported — but that mean is still, and must always be
+> disclosed as, a **survivors-only mean**: the exact survivor count out of the segment's
+> total, and every excluded seed's own number and classification, are reported alongside
+> it, never folded into a bare figure that reads as if the full segment survived.
+> WHI-1249's own finding above is that a tripped seed is a deterministic,
+> RNG-stream-correlated event, not an independent draw, so even a "small" excluded
+> fraction is a biased one, not merely a noisier one. This threshold bounds how large that
+> bias is *allowed* to be before the rung is killed outright as a documented negative —
+> it does not make a below-threshold exclusion disappear, and it does not license
+> reporting the survivors-only number as though every seed survived.
+
+Implemented as `commands/ceiling.rs::FINGERPRINT_TRIP_RATE_KILL_THRESHOLD = 0.01` and
+`fingerprint_trip_rate_exceeds_kill_threshold`, checked in both
+`score_fingerprint_survivors` (search loop) and directly in `run`'s `CursorMode::
+Fingerprint` branch (final evaluation), using strict `>` — exactly 10-of-1000 (1.0%) does
+not trip the rule, matching the rule's own "exceeds 1%" wording; 11-of-1000 (1.1%) does.
+Unit-tested at the boundary on both segment sizes
+(`fingerprint_trip_rate_exceeds_kill_threshold_is_false_at_exactly_the_boundary`,
+`_is_true_just_past_the_boundary`, `_applies_the_same_rate_to_a_smaller_segment`).
+
+**Measurement outcome — recorded here once, immediately after it was taken, under the
+rule above:**
+
+<!-- WHI-1250-MEASUREMENT-PLACEHOLDER: now filled in below with the actual re-fit
+     and final evaluation results; this comment marker is kept, unreplaced, as the
+     literal record that the kill rule above was written and committed (`492df79`)
+     before any measurement was taken (`85a05f5`), per the ordering constraint this
+     section opens with — the marker's own presence is the evidence, not a to-do. -->
+
+### `L=1` headline, `validation` (the substantive question)
+
+Fitted point: `concentration = 62.4200, spread_bps = 178.0000` — genuinely distinct from
+the pre-fix, search-time-contaminated fit's `concentration = 94.33` (WHI-1249), consistent
+with `score_fingerprint_survivors` actually changing the search's own behavior and not just
+gating the final number.
+
+| field | value |
+|---|---|
+| n | 991 of 1000 |
+| mean edge diff (oracle − `001-cpmm-fee`) | 161.468800 |
+| std error | 6.465080 |
+| 95% CI | [148.797477, 174.140123] |
+| tripped seeds | 9 (0.9% of 1000) |
+
+**The pre-registered kill rule did not fire.** 9 of 1000 seeds (0.9%) is at or below the
+1% threshold recorded above, so per that rule — committed in `492df79`, before this
+measurement was taken — the point is scored `Valid` and this mean is reportable.
+
+**That is not the same thing as the acceptance criterion "all seeds surviving" being
+met — it is not met.** n = 991, not 1000. The kill rule passing means this rung is not
+*closed* the way WHI-1248's was; it does not mean the exclusion did not happen. This is,
+plainly, a **survivors-only mean**, just at a 0.9% exclusion rate rather than WHI-1248's
+56.4% — smaller by roughly two orders of magnitude, but not zero, and it is disclosed here
+on exactly the same terms the kill-rule paragraph above requires: the exact survivor count,
+and every excluded seed named and classified, not folded into a bare "n=1000"-looking
+figure.
+
+The 9 tripped seeds (Phase 2 serial re-run, each individually classified — none silently
+dropped):
+
+| seed | classification | message |
+|---|---|---|
+| 2000010 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000023 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000056 | Other | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000088 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000319 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000335 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000573 | Other | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000716 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 2000895 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+
+Full messages (input/output pairs) are in the committed report,
+`results/2026-08-24-ceiling-anchored-fingerprint-l1-validation-orbic-oracle-vs-001-cpmm-fee.md`.
+All 9 are, per their own report messages, genuinely the same class of trip WHI-1248/WHI-1249
+already characterized (a sell-side floor false-match); the buy-probe-only fix reduced the
+count from 564 to 9 (98.4% reduction) but did not, and was never claimed to, reduce it to
+exactly zero. (A distinct, much rarer buy-side residual — the class the buy-probe-only fix
+cannot remove by construction, since it only ever targets sell-side false-matches — shows up
+instead in the `L=0` and `observation` rows below; see the notes there.)
+
+**All 9 excluded seeds sit in the `High` sigma tier** (verified directly, seed by seed,
+via `regime::classify_seed(&SimulationConfig::default(), seed).sigma` in a throwaway
+scratch test against the same `SimulationConfig::default()` base the per-sigma-tier slices
+below use — a precise per-seed result, not an inference). The tier-count tables below are
+consistent with this but do not, on their own, prove exactly 9: `L=1`'s own tier slices are
+339/349/**303** (n=991) against `L=0`'s 339/349/**311** (n=999, 1 tripped) — Low and Mid are
+identical between the two runs, so the count delta alone bounds the structural difference to
+"8 or 9 of the 9 excluded seeds are in High" (it pins down 8 unconditionally; the 9th depends
+on which tier `L=0`'s own single excluded seed, `2000504`, itself falls in). The direct
+`classify_seed` check above resolves that remaining ambiguity to exactly 9; it is the primary
+evidence, and the tier-count delta is corroborating, not the reverse. Practically, this means
+the exclusion is not scattered evenly across the sample: it draws entirely from the tier with
+the highest positive mean (see the per-sigma table below, High ≈291 vs. Low ≈67). If — and
+only if — the 9 excluded seeds' own (unmeasured, and unmeasurable in principle, since
+exclusion is precisely why they have no reported mean) true values are drawn from
+something like that tier's own distribution rather than the implausible −6,490 figure
+below, this would, if anything, pull the true full-sample mean *above* the 161.4688
+survivors-only figure, not below it — but this is a conditional illustration, not a claim
+that the excluded seeds' true values are known or knowable from this data. This does not
+license reporting a higher number; it is disclosed here as part of what the exclusion
+structure actually looks like, not folded silently into the bias-bound paragraph that
+follows.
+
+**Bias bound on the 9 excluded seeds.** For the full-1000-seed mean to fall all the way to
+`008`'s own `observation`-segment headline of +101.60, the 9 excluded seeds would have to
+average, among themselves:
+
+```
+X = (1000 × 101.60 − 991 × 161.4688) / 9
+  = (101600 − 160015.5808) / 9
+  = −58415.5808 / 9
+  ≈ −6490.62
+```
+
+i.e. each excluded seed would need to average roughly **−6,490** edge/sim — about **19.3×**
+worse than the single worst per-tier mean ever observed anywhere in this investigation
+(WHI-1248's biased High-sigma tier, −336.257804, itself already the tail of a
+selection-biased sample). Nothing in this repo's own data suggests a plausible mechanism
+for a per-seed mean anywhere near that magnitude; the 9 excluded seeds are far more likely,
+on the evidence of what they actually are (a floor-collision false-match, not an economic
+outlier), to sit somewhere in the same broad range as the 991 survivors than to average
+−6,490. This bounds, but does not eliminate, how much the exclusion could be masking — it
+converts "9 seeds were dropped" from an unquantified weakness into an arithmetically
+bounded one. **This bound is presented as context, not as a substitute for the AC being
+unmet**, and the `008` figure it references is `observation`-segment, not `validation` —
+comparing a `validation`-segment number's own robustness against an `observation`-segment
+threshold value is a deliberate choice of a concrete, previously-established benchmark, not
+a same-segment paired comparison; §2.2's non-decision-input status for `observation` and
+the "never a computed pair" constraint on the `008` comparison both continue to apply
+unchanged (see the bracket-placement paragraph below).
+
+**Per-sigma-tier slices, `L=1`/`validation`** (labels per WHI-1249's corrected
+`regime::tier_bounds`):
+
+| sigma tier | tier range | n | mean diff | 95% CI |
+|---|---|---|---|---|
+| Low | [0.0001, 0.0024) | 339 | 66.911770 | [47.006290, 86.817249] |
+| Mid | [0.0024, 0.0047) | 349 | 140.536290 | [121.755982, 159.316599] |
+| High | [0.0047, 0.0070) | 303 | 291.370713 | [271.149320, 311.592105] |
+
+**Converge/fan-out verdict: HELD, but by a margin this section is not entitled to call
+decisive** — Low tier's 95% CI width (39.810960) is narrower than High tier's (40.442785),
+consistent with "converge at low sigma / fan out at high sigma," but the two widths are only
+1.6% apart (WHI-1248's own precedent gap on this same file was 37.76 vs 209.76 — an order of
+magnitude, not a few percent). CI width is a coarse dispersion proxy in the first place
+(`stats::PairedStat` exposes no per-bin raw variance), so this verdict should be read as
+"not contradicted," not as a strong confirmation of the converge/fan-out prediction. (These
+991-seed tier slices carry the same survivors-only caveat as the headline above; they are
+not re-derived on a hypothetical full-1000 sample.)
+
+### `L=0` diagnostic, `validation` (analytic-envelope check)
+
+Fitted point: `concentration = 99.6200, spread_bps = 95.0000`.
+
+| field | value |
+|---|---|
+| n | 999 of 1000 |
+| mean edge diff (oracle − `001-cpmm-fee`) | 400.295089 |
+| std error | 6.514270 |
+| 95% CI | [387.527354, 413.062823] |
+| tripped seeds | 1 (0.1% of 1000) |
+
+Also a survivors-only mean, disclosed on the same terms: 1 seed excluded
+(`2000504`, `SuspectedEarlyAdvance`), 999 survive. Unlike the 9 seeds excluded from the
+`L=1` headline above, this one is **not** the sell-side floor false-match class the
+buy-probe-only fix targets — its own report message is "submission shape violation
+during arbitrage **buy** search," the rarer buy-side residual the fix cannot remove by
+construction (`min_buy_input_y`/`FP_MIN_ARB_NOTIONAL_Y` binds roughly four orders of
+magnitude less often than the sell-side floor, per the buy-probe-only rationale above, but
+not literally never). It also sits in the `High` sigma tier, same as every excluded seed
+on every rung of this section (verified via `regime::classify_seed`).
+
+**Analytic-envelope check — required by this issue, and a blocker if it had failed:**
+
+| field | value |
+|---|---|
+| simulated `L=0` avg edge (raw, not the paired diff above) | 802.284247 |
+| closed-form upper envelope (`analytic_envelope_l0_upper_bound`) | 1502.562225 |
+| result | **PASS — sits below the envelope** (802.284247 ≤ 1502.562225) |
+
+Scope caveat carried over unchanged from WHI-1248: the envelope is a retail-flow-only
+quantity (`sum(retail volume_y)`); the simulated figure also includes whatever the
+arbitrageur itself contributes, so this is not a strictly like-for-like comparison — a
+`PASS` is consistent with the bound holding, not proof the two quantities are computed over
+identical volume.
+
+**Per-sigma-tier slices, `L=0`/`validation`:**
+
+| sigma tier | tier range | n | mean diff | 95% CI |
+|---|---|---|---|---|
+| Low | [0.0001, 0.0024) | 339 | 263.483173 | [248.973806, 277.992540] |
+| Mid | [0.0024, 0.0047) | 349 | 358.504837 | [343.339849, 373.669826] |
+| High | [0.0047, 0.0070) | 311 | 596.320931 | [576.507105, 616.134758] |
+
+**Converge/fan-out verdict: HELD** — Low tier's CI width (29.018734) is narrower than High
+tier's (39.627653), same direction as `L=1`'s verdict above.
+
+### `observation` context row (§2.2 — non-decision-input, reported for continuity only)
+
+`--variant anchored --fit --segment observation --cursor fingerprint --lag 1`. Same
+screening-fit point as the `validation` headline above (`concentration = 62.4200,
+spread_bps = 178.0000` — the search fits on `screening`'s fixed 200 seeds regardless of
+which segment the final evaluation runs against, so this is expected, not a coincidence).
+
+| field | value |
+|---|---|
+| n | 992 of 1000 |
+| mean edge diff (oracle − `001-cpmm-fee`) | 157.807787 |
+| std error | 6.284680 |
+| 95% CI | [145.490040, 170.125534] |
+| tripped seeds | 8 (0.8% of 1000, under the 1% kill-rule threshold) |
+
+Also a survivors-only mean, disclosed the same way as the `L=1`/`validation` table
+above — every excluded seed individually named and classified, not a disjunction:
+
+| seed | classification | message |
+|---|---|---|
+| 125 | SuspectedEarlyAdvance | submission shape violation during arbitrage **buy** search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 212 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 243 | Other | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 268 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 292 | Other | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 609 | Other | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 925 | Other | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+| 933 | SuspectedEarlyAdvance | submission shape violation during arbitrage sell search: monotonicity violated (`crates/sim/src/curve_checks.rs:23:9`) |
+
+Full messages (input/output pairs) are in the committed report,
+`results/2026-08-24-ceiling-anchored-fingerprint-l1-observation-orbic-oracle-vs-001-cpmm-fee.md`.
+7 of the 8 are the dominant sell-side floor false-match class; seed `125` is, per its own
+report message, the same rarer buy-side residual class as `L=0`'s `2000504` above, not
+the sell-side class — the buy-probe-only fix does not and cannot remove this residual by
+construction. All 8 excluded seeds sit in the `High` sigma tier — verified directly via
+the same `regime::classify_seed` scratch check as the `L=1`/`validation` rung above, the
+same concentration pattern found there. Unlike that rung, this claim has no independent
+structural cross-check available (there is no sibling `observation`-segment run at a
+different fit point to compare tier-count deltas against, the way `L=1` and `L=0` on
+`validation` cross-check each other above); it rests on the direct per-seed verification
+alone.
+
+Per-sigma slices: Low n=350 mean=71.111180 CI[51.874998, 90.347361]; Mid n=327
+mean=118.839503 CI[101.542684, 136.136321]; High n=315 mean=294.590140
+CI[275.141342, 314.038938] — Low CI width (38.472363) narrower than High's (38.897595), a
+1.1% margin — **HELD, same direction as `validation`, with the identical small-margin
+caveat given there** (not a decisive confirmation, not contradicted either). **Non-decision-input per §2.2: this row is
+reported for continuity with WHI-1247's own `observation`-segment headline and is not
+used to decide anything in this issue** — the `validation`-segment measurement above is
+what the kill rule, the bias bound, and the bracket placement below are all computed
+against.
+
+### Where this places the substantive question
+
+This issue opened with an informal, pre-measurement bracket for `L=1` of
+`[≈+87.23, ≈+1,632]` — WHI-1247's trade-triggered +87.234885 as the floor this fix had to
+clear or fall short of, and a rough estimate of the `L=0` diagnostic ceiling as the
+informal top, before any `L=0` number existed to compute one from. That top is now
+superseded by an actual measurement, not a re-estimate chased after the fact: the
+closed-form envelope computed above is **1502.562225** (≈+1,503), and the `L=0` diagnostic
+sits at 802.284247, comfortably under it. The bracket is therefore restated using the real
+number now in hand: **`[≈+87.23, ≈+1,503]`**. The measured `L=1`/`validation` figure,
+**+161.468800** (survivors-only, n=991/1000, 0.9% excluded, kill rule did not fire), lands
+inside that bracket, above the trade-triggered floor and well below the `L=0` ceiling —
+consistent with "an every-block re-anchor beats a trade-triggered one, but by less than the
+idealized, never-front-run `L=0` case." As **context only**, `008`'s own
+`observation`-segment headline is +101.60 — the measured `L=1`/`validation` figure of
++161.4688 is larger, but this is never reported as a computed pair: the two numbers sit on
+different segments (`validation` vs. `observation`), so this placement is qualitative, not
+a claim that this fix "beats `008` by 59.87."
+
+The `observation` context row measured above (+157.807787) is a narrower case in one
+respect and a weaker one in another. Narrower: it is on the *same* segment as `008`'s own
+headline, so — unlike the validation-based headline above — the two numbers are at least
+measuring the same thing. Weaker: +157.807787 is itself a survivors-only mean over n=992,
+with all 8 exclusions concentrated in the highest-mean `High` sigma tier (disclosed above),
+while `008`'s own +101.60 is that report's full-sample headline; a subtraction across those
+two would not be an apples-to-apples "beats `008` by N" figure without first restating one
+side or the other on a matching basis, which this document does not do. For that reason no
+such subtraction is computed or reported here, on top of the independent §2.2 reason that
+`observation` is non-decision-input for this issue. Both reasons hold at once; neither is
+being used to paper over the other.
+
+Whether an every-block oracle re-anchor beats what `008` achieves with no oracle at all —
+the question this issue exists to close — is answered **yes, on the evidence available
+here**, resting on the `validation`-segment reading alone (+161.468800, survivors-only,
+n=991/1000, cross-segment against `008`'s `observation` headline, kill rule did not fire).
+The `observation` context row is reported for continuity per §2.2 and happens to point the
+same direction, but it is **not** cited as a second, corroborating basis for the "yes"
+answer — doing so would use a declared non-decision-input row to help decide the very
+question §2.2 excludes it from deciding. The caveats above (survivors-only, cross-segment,
+one-sided lower bound, retail-flow-only envelope) attach to that "yes," not hidden behind
+it. The reference allowlist for this comparison remains unchanged: `000-normalizer`,
+`001-cpmm-fee`.
