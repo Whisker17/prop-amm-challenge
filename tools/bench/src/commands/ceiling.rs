@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use clap::{Args, ValueEnum};
-use prop_amm_shared::config::{HyperparameterVariance, SimulationConfig};
+use prop_amm_shared::config::SimulationConfig;
 use prop_amm_shared::result::{BatchResult, SimResult};
 
 use crate::commands::resolve_strategy_lib_path;
@@ -1623,11 +1623,11 @@ pub fn run(args: CeilingArgs) -> anyhow::Result<()> {
     // WHI-1249: the sigma-tier report's "tier range" column uses the same sigma
     // sampling range `regime::classify_seed` itself samples against (the default
     // `HyperparameterVariance`), not a `config/bench.toml` `[grid]` axis — the two are
-    // unrelated (see `format_sigma_slices`'s doc comment).
-    let sigma_range = {
-        let variance = HyperparameterVariance::default();
-        (variance.gbm_sigma_min, variance.gbm_sigma_max)
-    };
+    // unrelated (see `format_sigma_slices`'s doc comment). Read via `regime::
+    // default_sigma_range()` rather than constructing our own `HyperparameterVariance::
+    // default()` here, so this range can't drift from the one `classify_seed` samples
+    // against if that default is ever parameterized.
+    let sigma_range = regime::default_sigma_range();
 
     match cursor_mode {
         CursorMode::TradeTriggered => {

@@ -395,8 +395,11 @@ comparable to this design's own per-**comparison** expectation (~1e-10, treating
 as a random continuous-value collision) without converting it to matched units first. An earlier draft of this note
 (WHI-1248) compared the two figures directly and reported "roughly nine orders of
 magnitude" — wrong, because it never converted the per-seed rate down to a
-per-comparison one before comparing (WHI-1249 fixes this). At matched units, the
-implied per-comparison rate is **~1.4e-6**, roughly **four** orders of magnitude above the
+per-comparison one before comparing (WHI-1249 fixes this). The conversion: the
+reproduction below hits `oracle.rs`-call-index 121973 by step 3201, ≈38 comparisons/step;
+scaled to a full `n_steps=10_000` run that's ≈3.8e5 comparisons/seed, rounded here to
+**4e5** for this order-of-magnitude conversion. Dividing, `0.564 / 4e5 ≈ 1.4e-6` — at
+matched units, the implied per-comparison rate is **~1.4e-6**, roughly **four** orders of magnitude above the
 ~1e-10 design expectation (1.4e-6 / 1e-10 ≈ 1.4e4). That gap was traced to a specific
 mechanism, reproduced deterministically on seed `2_000_011` (`validation` segment,
 `concentration=94.33, spread_bps=102.0`, variant (a), full `n_steps=10_000`):
@@ -451,10 +454,14 @@ correctly catching a real, structural defect in the underlying reconstruction me
 reconstruction strategy" — a cheap, bounded fix exists, tracked as WHI-1250.** On the
 **sell** side the false-matching probe and a step's own genuine probe are, at the
 interface this replay observes, the same value arriving through the same call, with no
-additional signal available at match-time to tell them apart — the sell floor
-(`FP_MIN_INPUT = 0.001` X) clamps whenever `fair_price > MIN_ARB_NOTIONAL_Y / MIN_INPUT ==
-10` (true for essentially this entire run, P ≈ 1e-4/step, consistent with the direct
-per-seed count above of 2 floor-clamped `sell_target`s out of 10,000 steps). The **buy**
+additional signal available at match-time to tell them apart. Two different rates are at
+play on the sell side and must not be conflated: the floor's *formula* is
+`min_sell_input_x(fair_price) == FP_MIN_INPUT == 0.001` whenever `fair_price >
+MIN_ARB_NOTIONAL_Y / MIN_INPUT == 10`, which is true for essentially this entire run — but
+that only fixes *which constant a clamp would land on*, not *how often the draw actually
+gets clamped to it*. The floor only actually *binds* (the drawn `start_x` falls at or below
+that constant) at roughly P ≈ 1e-4/step, consistent with the direct per-seed count above of
+2 floor-clamped `sell_target`s out of 10,000 steps. The **buy**
 side is different in kind, not just degree: its floor (`start_y = draw.max(0.01)`, i.e.
 `min_buy_input_y() == FP_MIN_ARB_NOTIONAL_Y == 0.01`) clamps far more rarely (P ≈
 1e-8/step), and the very first `compute_swap` call of *every* step is always the buy-side
@@ -497,10 +504,14 @@ one regime tier where this fitted point *loses* to the 0-line — while Low and 
 at their full rate. A crude equal-weight post-stratification (weighting each tier's own
 mean by 1/3, undoing the survivor-count imbalance rather than the report's own n-weighted
 pooling) gives `(278.630199 + 244.485003 − 336.257804) / 3 ≈ +62.29` — **below** the kept
-trade-triggered result's +87.234885, not above it. The 225.124282 headline is therefore not
-merely noisier for having a smaller n; it is a different (and larger) number than any
-credible correction of the same estimate, in the direction that would have overstated this
-lane's ceiling had it been reported as-is.
+trade-triggered result's +87.234885, not above it. (Note the segments differ: the rejected
+report and its ≈+62.29 debias are on `validation`, per the report filename above, while
++87.234885 is `observation`'s own headline, line 239 above — this comparison is cross-
+segment, which is why it can only support the qualitative "not a smaller-n version of the
+same estimate" conclusion below, not a same-segment apples-to-apples delta.) The
+225.124282 headline is therefore not merely noisier for having a smaller n; it is a
+different (and larger) number than any credible correction of the same estimate, in the
+direction that would have overstated this lane's ceiling had it been reported as-is.
 
 **The rejected report's own "Converge/fan-out verdict: HELD" must not be cited.** That
 verdict — Low tier's CI width (37.758948) narrower than High's (209.757852), read as
@@ -512,8 +523,11 @@ inadmissible, for the same reason the headline mean is.
 **The pairing arithmetic itself was correct — the flaw is the non-random subset, not
 broken pairing.** The reference (`001-cpmm-fee`) side of this comparison was filtered to
 the identical set of surviving seeds via `filter_batch_to_seeds`, and `stats::paired_stat`
-asserts seed alignment between its two inputs before computing anything — so candidate and
-reference were correctly index-paired throughout. A future reader re-deriving this number
+bails on the first index where the two inputs' seeds diverge, per element, while it computes
+the diff vector (`stats.rs::paired_stat`'s `.map()` over `candidate.iter().zip(reference
+.iter())`) — so any pairing break would have surfaced as an error rather than silently
+mispairing, and none did: candidate and reference were correctly index-paired throughout. A
+future reader re-deriving this number
 should not go looking for a pairing bug; there isn't one. The defect is entirely that the
 436 surviving seeds are not a random subset of the original 1000 (WHI-1249).
 

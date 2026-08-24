@@ -54,6 +54,17 @@ pub fn tier_bounds(tier: Tier, min: f64, max: f64) -> (f64, f64) {
     }
 }
 
+/// WHI-1249: the single source of the sigma axis's default sampling range. `classify_seed`
+/// (below) needs the *whole* `HyperparameterVariance` to reconstruct a sampled config, so it
+/// cannot call this directly — but any caller that only wants the sigma bounds `tier_bounds`
+/// partitions (e.g. `tools/bench/src/commands/ceiling.rs`'s sigma-slice report) should read
+/// them from here rather than constructing its own `HyperparameterVariance::default()`, so the
+/// range a label is computed over can't drift from the range `classify_seed` actually samples.
+pub fn default_sigma_range() -> (f64, f64) {
+    let variance = HyperparameterVariance::default();
+    (variance.gbm_sigma_min, variance.gbm_sigma_max)
+}
+
 /// A simulation's regime, reconstructed from its sampled config (docs/DESIGN.md §2.3's three
 /// grid axes) rather than the full continuous value — coarse enough to slice a report by,
 /// fine enough to separate "cheap, thin, volatile" corners from calm ones.
