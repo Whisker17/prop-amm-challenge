@@ -908,7 +908,8 @@ through `strategies/*/NOTES.md` and closed issues.
    finding 5 names as missing, not this finding's flow-share/competitor-inference axis. This
    finding's own v0.2.0 candidate remains unattacked by any measured M1 entry.
 
-*Resolved negatives*
+*Resolved negatives* — items 3–4 unconditionally; item 5's concentration half is
+provisional pending WHI-1273 (its shock-surcharge half is resolved).
 
 3. **Floor subtraction on the own-trade-impact signal is dead in this harness.**
    `results/2026-08-22-estimator-probe-005b.md` § Added scope measured `004`'s `ewma_vol`
