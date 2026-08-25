@@ -151,7 +151,8 @@ The parent's pre-fix collapse on this seed at `k=1` was stored <1% of the true r
 write is the current reserve ratio, never `i_old * R_f`. It does **not** by itself
 prove the `K_BPS=2500` −20,235 edge is "not a runaway of some other kind" — it only
 proves the stored mid tracks the reserve ratio. The economic reading (adverse
-selection at low k, parent Step 0.5 #4) is unchanged and is WHI-1273's to re-measure.
+selection at low k, parent Step 0.5 #4) is unchanged; the joint fit below re-measured
+it and confirmed economic, not plumbing.
 
 ## WHI-1273 — joint fit of `(K_BPS, FEE_BPS)`
 
@@ -287,7 +288,10 @@ plus the k-sweep both failed to find a better interior `k`.
   `/tmp/prop-amm-whi-1273-meas/target/release/bench` and
   `/tmp/prop-amm-whi-1273-meas/target/release/prop-amm`.
 - Detached checkout: `/tmp/prop-amm-whi-1273-meas` at `231dd58` (worktree
-  `.claude/worktrees/whi-1273` is not where measurements ran).
+  `.claude/worktrees/whi-1273` is not where measurements ran). Committed `results/`
+  headers stamp `Commit: 231dd58` because that is the clean sha the binaries
+  measured; later commits in this PR are docs/comment only and do not change
+  `compute_swap` / `after_swap`.
 - WHI-1272 plumbing measurements remain those recorded above (fuzz / runaway diagnostic)
   from `/tmp/prop-amm-whi-1272-meas`.
 - Unit tests in `lib.rs` (`#[cfg(test)]`) are **not** part of `cargo test --workspace`

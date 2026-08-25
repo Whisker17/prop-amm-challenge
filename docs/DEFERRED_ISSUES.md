@@ -43,8 +43,8 @@ soon — anything touching a declared high-risk path defaults to at least High),
   issue into a k<1 bisection rewrite of the quadratic (a named parent fallback that a
   first attempt here made `K_BPS=25` *worse*). WHI-1273's joint search winner landed at
   `(K_BPS=10_000, FEE_BPS=66)`, not 5000/7500, so the quote-path rewrite was not in
-  scope there; a dedicated ticket still owns the 2-nano miss. Do not treat it as an
-  `after_swap` runaway.
+  scope there; a future quote-path ticket (none opened here) still owns the 2-nano
+  miss. Do not treat it as an `after_swap` runaway.
 - **`resolve_ceiling_segment` re-implements part of `SegmentSelector::resolve`'s single-use
   check, and `VariantArg` carries its `OracleVariant` mapping and its report-slug string as
   two separate hand-written `match`es** (Low, WHI-1247). Both flagged in round-1 review of
