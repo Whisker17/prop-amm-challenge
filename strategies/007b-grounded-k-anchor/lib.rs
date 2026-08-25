@@ -66,6 +66,10 @@ const RESERVE_CLAMP: u128 = 1u128 << 59;
 // for, returning the cap-point output for anything larger — a terminal plateau, monotone by
 // construction, not a truncation.
 const INPUT_CAP_MULT: u128 = 16;
+// Interior-k only: below this reserve the quadratic's b_sig flip is not monotone, so
+// solve_quadratic_for_trade falls back to the k=1 closed form. 1e6 nano = 0.001 tokens.
+// Not a PARAMS search dimension.
+const DUST_RESERVE: u128 = 1_000_000;
 
 // ---- searched parameters -----------------------------------------------------
 // K_BPS: curvature, in units of 1e-4 of ONE (k = K_BPS/K_DEN). FEE_BPS: fee on the output,
@@ -255,9 +259,8 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
     }
     // Dust reserves: the k<1 quadratic's b_sig flip is not monotone (0-hole then a dip
     // below even the k=1 fill). Fall back to the k=1 closed form, which is monotone for
-    // any v. 1e6 nano = 0.001 tokens — unreachable at the committed k=1 point, reached
-    // at interior k with a raw-ratio mid after a 2000-step drain (007b seed 9008).
-    const DUST_RESERVE: u128 = 1_000_000;
+    // any v. Unreachable at the committed k=1 point; reached at interior k with a
+    // raw-ratio mid after a 2000-step drain (007b seed 9008).
     if v < DUST_RESERVE {
         return k1_out;
     }
@@ -529,8 +532,9 @@ mod tests {
 
     #[test]
     fn dust_reserve_falls_back_to_k1_and_is_monotone() {
-        // Seed-9008 parity panic: rx=8291 nano (< DUST_RESERVE), so k_bps is not read —
-        // this asserts the k-independent k=1 fallback, not the interior-k quadratic.
+        // Seed-9008 monotonicity hole (35220000→0 after 35210000→8235): rx=8291 nano
+        // (< DUST_RESERVE), so k_bps is not read — this asserts the k-independent k=1
+        // fallback, not the interior-k quadratic.
         let rx = 8_291u64;
         let ry = 35_386_792u64;
         let mut prev = 0u128;
@@ -538,6 +542,8 @@ mod tests {
         let i_fp = raw_ratio_price(rx as u128, ry as u128);
         let i_used = reciprocal_fp(i_fp);
         let fair = fair_amount(rx as u128, input, i_used);
+        // Independent oracle of the k=1 closed form — do not substitute `k1_out` from
+        // solve_quadratic_for_trade or the assertion becomes tautological.
         let k1 = fair.saturating_mul(rx as u128) / (rx as u128).saturating_add(fair);
         let first = solve_quadratic_for_trade(rx as u128, input, i_used, 25);
         assert_eq!(
