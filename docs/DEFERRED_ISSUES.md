@@ -31,6 +31,19 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
+- **`prop-amm validate` 2-nano concavity miss at `K_BPS=5000` and `7500` on the 007 PMM quote path** (Medium, WHI-1272).
+  `strategies/007b-grounded-k-anchor/lib.rs::solve_quadratic_for_trade` — WHI-1272's
+  acceptance asked `prop-amm validate` (1-nano step tolerance) to PASS at
+  `K_BPS ∈ {25, 100, 400, 1000, 2500, 5000, 7500, 10_000}`.
+  Six of those pass; `5000`/`7500` fail with a 2-nano buy-side concavity miss
+  (`size=100, step2=9836 > step1=9834` and `size=50, step2=9861 > step1=9859`). The same
+  two strings reproduce on an unmodified copy of `strategies/007-dodo-pmm/lib.rs` — parent
+  Step 0.5 never validated these k values (its set was `{25, 400, 2500, 10_000}`).
+  `bench fuzz` (the §2.9 4-nano gate) PASSes both. Deferred rather than expanding this
+  issue into a k<1 bisection rewrite of the quadratic (a named parent fallback that a
+  first attempt here made `K_BPS=25` *worse*). Fix belongs with WHI-1273 if that search
+  actually lands on 5000/7500, or a dedicated quote-path ticket; do not treat it as an
+  `after_swap` runaway.
 - **`resolve_ceiling_segment` re-implements part of `SegmentSelector::resolve`'s single-use
   check, and `VariantArg` carries its `OracleVariant` mapping and its report-slug string as
   two separate hand-written `match`es** (Low, WHI-1247). Both flagged in round-1 review of
@@ -401,6 +414,22 @@ soon — anything touching a declared high-risk path defaults to at least High),
   line item stays open for that reason, tracked at the ceiling-lane level in
   `ceilings/C-orbic-oracle/NOTES.md`'s WHI-1250 section rather than reopened as a new
   ticket, since no further work on it is currently planned.
+- **`007b-grounded-k-anchor` has no row in `strategies/README.md`** (Low, WHI-1272).
+  `strategies/README.md` — `docs/DESIGN.md` §4.2 and the registry's own rule give every
+  candidate directory a row, and `007b` is the only directory without one. Deferred rather
+  than fixed because WHI-1272's own Out of scope and Acceptance name this exclusion
+  explicitly ("No `strategies/README.md` row"; "no 007b row until WHI-1273 has a fitted
+  point"). The directory has no terminal or ranked state — constants stay pinned at the
+  parent's `(K_BPS=10_000, FEE_BPS=66)` and this issue's only new number is "the `k<1` path
+  no longer runs away" — so the row's Status and Current numbers columns would have nothing
+  truthful to record. `005b` is not a counter-precedent: its row carries no committed
+  `lib.rs` but does record a *terminal* negative result, whereas `007b` is mid-flight
+  plumbing for WHI-1273. `strategies/README.md` is also being edited by parallel sibling
+  WHI-1271 in this same wave, so writing the row here would collide. The state is not
+  undiscoverable in the meantime: `strategies/007b-grounded-k-anchor/NOTES.md` § Provenance
+  records it in the directory itself. Closes when WHI-1273 commits a fitted point and adds
+  the row — or, if WHI-1273 is abandoned, when `007b` is marked Canceled per
+  `docs/DESIGN.md` §2.10's removal clause rather than left as a pinned `(10000, 66)`.
 
 ---
 
