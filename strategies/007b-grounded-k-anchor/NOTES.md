@@ -8,11 +8,11 @@ not a fresh external port — no new `docs/references/` directory; the parent's 
 PMM quote, same `R = ONE` collapse, same fee-on-output. The only mechanism change is the
 k<1 (now: all-k) `after_swap` anchor update.
 
-**This directory has no terminal / ranked state.** Constants stay at the parent's
-`(K_BPS=10_000, FEE_BPS=66)` so this issue's only new number is “the k<1 path no longer
-runs away.” Fitting is WHI-1273, the only issue that may commit a ranked point. If
-WHI-1273 is abandoned, `007b` is marked Canceled per §2.10's removal clause, not left as a
-pinned `(10000, 66)`.
+**Ranked point (WHI-1273):** `(K_BPS=10_000, FEE_BPS=66)` — the 300-point §2.5 joint
+search's own winner. `K_BPS` is a frozen-range upper-bound hit; `FEE_BPS=66` is the
+search's fitted fee, not a copy of `001@66` (it happens to equal that value). Step-4
+reading 2 applied: the search collapsed to `k=1`, so concentration is a jointly-fitted
+negative. v1's `007` snapshots are untouched.
 
 ## Objective (WHI-1272's own framing)
 
@@ -86,8 +86,9 @@ reserves — so the runaway-anchor failure mode cannot accumulate.
 | `K_BPS` | **25..=10_000** | Parent's frozen range. `k=0` excluded as shape-fatal (source's own `k=0` branch is a hard flat cap that fails `validate`'s strict monotonicity). |
 | `FEE_BPS` | **1..=500** | Same as `001-cpmm-fee` / the parent. |
 
-Committed in this directory, **not as a ranked point:** `(K_BPS=10_000, FEE_BPS=66)`.
-The frozen space is unchanged; this issue does not spend search budget.
+Committed as the ranked point (WHI-1273): `(K_BPS=10_000, FEE_BPS=66)`. Frozen space
+unchanged from the parent. `K_BPS=10_000` is a **boundary hit** (WHI-1209 presentation);
+`FEE_BPS=66` is whatever the search fitted, not `001`'s fee held fixed.
 
 ## Pre-search shape-fuzz gate (docs/DESIGN.md §2.9)
 
@@ -150,21 +151,154 @@ The parent's pre-fix collapse on this seed at `k=1` was stored <1% of the true r
 write is the current reserve ratio, never `i_old * R_f`. It does **not** by itself
 prove the `K_BPS=2500` −20,235 edge is "not a runaway of some other kind" — it only
 proves the stored mid tracks the reserve ratio. The economic reading (adverse
-selection at low k, parent Step 0.5 #4) is unchanged and is WHI-1273's to re-measure.
+selection at low k, parent Step 0.5 #4) is unchanged; the joint fit below re-measured
+it and confirmed economic, not plumbing.
+
+## WHI-1273 — joint fit of `(K_BPS, FEE_BPS)`
+
+Release profile; detached checkout `/tmp/prop-amm-whi-1273-meas` at `231dd58` (Trap 4 /
+WHI-1247). Binaries `target/release/bench` and `target/release/prop-amm`. Reports generated
+from that clean sha (no `+dirty`). `test` segment was not read. `research-out/` was not
+cited.
+
+### Step 1 — containment (not the ranking snapshot)
+
+Degenerate-range copy pinning `K_BPS 10000..=10000`, `FEE_BPS 66..=66`. Genuine `bench fit`
+(report on) plus `bench parity --segment observation`.
+
+| | 007b `(10000, 66)` | parent 007 |
+| --- | ---: | ---: |
+| screening (n=200) | 386.052462 | 386.052462 |
+| train (n=1,000) | 407.545843 | 407.545843 |
+| validation (n=1,000) | 403.257399 | 403.257399 |
+| observation (n=1,000) | 401.28 | 401.28 |
+
+Parity: 1000/1000 observation seeds agree to `0` relative difference; fast-path avg 401.28
+matches `prop-amm run` avg 401.28, total edge 401284.20.
+`results/2026-08-25-fit-007b-k1-containment.md`,
+`results/2026-08-25-parity-007b-k1-containment.md`.
+Mismatch would have blocked the search; it did not.
+
+`prop-amm validate` 2-nano concavity at `K_BPS=5000`/`7500` re-derived on unmodified parent
+007 and on 007b (identical strings). Not a 007b regression. Search winner did not land
+there, so the quote-path rewrite stays deferred (`docs/DEFERRED_ISSUES.md`).
+
+### Step 2 — 300-point search (unconditional)
+
+`bench fit --strategy strategies/007b-grounded-k-anchor` (no `--max-points` / `--no-report`).
+Coarse-grid-then-coordinate-descent, screening seeds `1_000_000..=1_000_199`.
+
+- Cap: 300. **Spent: 170/300.** Invalid: 0. Stopped: converged.
+- Winner: `K_BPS=10000, FEE_BPS=66`. Screening 386.052462; train 407.545843; validation
+  403.257399.
+- Ranking snapshot: `results/2026-08-25-fit-007b-grounded-k-anchor.md`.
+
+The search ran to completion before either step-4 reading was applied.
+
+### Bands actually evaluated (grid or descent)
+
+Linear `K_BPS` grid nodes (12-point linspace 25..=10000): 25, 932, 1839, 2745, 3652, 4559,
+5466, 6373, 7280, 8186, 9093, 10000. Descent then walked `K_BPS` 7507, 8754, 9377, 9689,
+9845, 9923, 9962, 9981, 9991, 9996, 9998, 9999 around the `k=1` basin, and `FEE_BPS` around
+66.
+
+| Band | Evaluated? | Points |
+| --- | --- | --- |
+| `K_BPS ∈ [25, 400]` | yes (grid) | 25 only — the linear grid undersamples small-`k` (the whole band is one node) |
+| `(400, 2500]` | yes (grid) | 932, 1839 |
+| `(2500, 9000]` | yes (grid + descent) | 2745, 3652, 4559, 5466, 6373, 7280, 7507, 8186, 8754 |
+| `10_000` | yes (grid + descent) | 10000, plus neighbours 9999…9093 |
+
+No band was missing. Compensatory coverage of the undersampled small-`k` band is the
+k-sweep below, not invented grid points.
+
+### Step 4 — what “best” means
+
+**Reading 2 applied:** the search collapsed to `K_BPS=10_000`. Concentration is a
+jointly-fitted negative. Commit `(10000, fitted FEE_BPS)` = `(10000, 66)`. Boundary hit
+flagged. `FEE_BPS=66` is the search's own fitted fee (the k=1 fee-on-output slice peaked
+at 66: screening 65→385.980622, 66→386.052462, 67→385.823268), not `001@66` copied in.
+
+Reading 1 (interior `K_BPS` wins on screening and holds on validation) did not apply.
+
+### Step 5 — k-sweep at `FEE_BPS* = 66` (reporting only)
+
+`results/2026-08-25-ksweep-007b-grounded-k-anchor.md`. 12 degenerate-range genuine `bench
+fit`s, plus the recorded `k=0` validate FAIL.
+
+| `K_BPS` | `k` | screening avg edge |
+| --- | --- | ---: |
+| 25 | 0.0025 | −20011.90 |
+| 50 | 0.005 | −20013.23 |
+| 100 | 0.01 | −20012.69 |
+| 200 | 0.02 | −20011.70 |
+| 400 | 0.04 | −20012.47 |
+| 800 | 0.08 | −20012.70 |
+| 1500 | 0.15 | −20015.83 |
+| 2500 | 0.25 | −20028.53 |
+| 4000 | 0.40 | −19998.48 |
+| 6000 | 0.60 | 133.45 |
+| 8000 | 0.80 | 323.41 |
+| 10000 | 1.00 | **386.05** (search winner) |
+
+`k=0`: `FAIL: Monotonicity violation (sell side). size=200 output=9934000000000 <= prev_output=9934000000000`.
+
+**Lesson 7 did not fire:** no sweep cell beat the search winner on screening. The table did
+not silently displace `(10000, 66)`. Interior `k ≤ 0.40` is a ~−20,000 screening plateau
+(the low-`k` cells wiggle by tens, they do not rise toward `k=1`); from `k=0.60` the
+response then rises toward the winner. Economic, not plumbing — WHI-1272 factor 1.000 on
+seed `1_000_231` at `K_BPS=2500`.
+
+### Step 6 — grid / parity / compare on the fitted point
+
+**Grid** vs `001-cpmm-fee` (`results/2026-08-25-grid-007b-grounded-k-anchor.md`): **24/27
+cells favor `007b` with a CI excluding 0; 3 (cells 7, 16, 24) are statistical ties**; no
+cell flips sign. Bit-identical to the parent's k=1 grid, as required of the grounded k=1
+path.
+
+**Parity** (`results/2026-08-25-parity-007b-grounded-k-anchor.md`): `prop-amm validate`
+PASS; 1000/1000 observation seeds agree to `0` relative; fast-path avg **401.28** matches
+`prop-amm run` 401.28 (total 401284.20). Leaderboard-comparable number: avg edge **401.28**
+(`observation`, seeds `0..=999`) vs `001`'s 399.97.
+
+**Compare `--segment train`** vs `001-cpmm-fee`
+(`results/2026-08-25-compare-007b-grounded-k-anchor-vs-001-cpmm-fee.md`): candidate
+407.55, reference 406.14, paired mean diff **1.401555**, 95% CI **[1.246297, 1.556812]**,
+n=1,000 (excludes 0). Regime slices (equal-width thirds): every populated bin has a
+non-negative mean diff; five bins' CIs include zero (`fee=High` × `liq=Mid` all sigma,
+and `liq=High` low/mid sigma) and reappear with the same CIs as the parent compare.
+Pooling reproduces the headline 1.401555.
+
+### Consolidated segment table
+
+| Segment | n | `007b` avg edge | `001` avg edge | diff |
+| --- | --- | ---: | ---: | ---: |
+| screening | 200 | 386.05 | 384.82 | +1.23 |
+| train | 1,000 | 407.55 | 406.14 | +1.40 (paired 1.401555) |
+| validation | 1,000 | 403.26 | 401.80 | +1.46 |
+| observation | 1,000 | 401.28 | 399.97 | +1.31 |
+
+Same numbers as v1 `007` at this point — expected, because the k=1 quote and after_swap
+write are bit-identical to the parent. The new evidence is that a 170-point joint search
+plus the k-sweep both failed to find a better interior `k`.
 
 ## Measurement provenance
 
 - Build profile: `target/release/` — binaries
-  `/tmp/prop-amm-whi-1272-meas/target/release/prop-amm` and
-  `/tmp/prop-amm-whi-1272-meas/target/release/bench`.
-- Detached checkout: `/tmp/prop-amm-whi-1272-meas`, synced to this issue's `007b` sources
-  (worktree `.claude/worktrees/whi-1272`).
-- No `results/` ranking snapshot was written by this issue (no `bench fit` / `grid` /
-  `compare`).
+  `/tmp/prop-amm-whi-1273-meas/target/release/bench` and
+  `/tmp/prop-amm-whi-1273-meas/target/release/prop-amm`.
+- Detached checkout: `/tmp/prop-amm-whi-1273-meas` at `231dd58` (worktree
+  `.claude/worktrees/whi-1273` is not where measurements ran). Committed `results/`
+  headers stamp `Commit: 231dd58` because that is the clean sha the binaries
+  measured; later commits in this PR are docs/comment only and do not change
+  `compute_swap` / `after_swap`.
+- WHI-1272 plumbing measurements remain those recorded above (fuzz / runaway diagnostic)
+  from `/tmp/prop-amm-whi-1272-meas`.
 - Unit tests in `lib.rs` (`#[cfg(test)]`) are **not** part of `cargo test --workspace`
-  (`strategies/` is not a workspace member, same as `003`/`003b`). Run manually against
-  an isolated crate (`/tmp/whi-1272-tdd`, `cargo test --lib --features no-entrypoint`):
-  **3 passed** (`after_swap_sell_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
+  (`strategies/` is not a workspace member, same as `003`/`003b`). WHI-1272 ran them
+  against an isolated crate (`/tmp/whi-1272-tdd`, `cargo test --lib --features
+  no-entrypoint`): **3 passed**
+  (`after_swap_sell_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
   `after_swap_buy_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
   `dust_reserve_falls_back_to_k1_and_is_monotone`). Also red-then-green at `K_BPS=2500`
   on the parent recursive `after_swap` before the helpers were deleted.

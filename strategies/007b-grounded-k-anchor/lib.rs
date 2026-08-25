@@ -74,6 +74,9 @@ const DUST_RESERVE: u128 = 1_000_000;
 // ---- searched parameters -----------------------------------------------------
 // K_BPS: curvature, in units of 1e-4 of ONE (k = K_BPS/K_DEN). FEE_BPS: fee on the output,
 // bps of 10_000 — same convention and frozen range as 001-cpmm-fee's own FEE_BPS.
+// WHI-1273: these values are the 300-point search's own winner (K_BPS upper bound;
+// FEE_BPS is the search-fitted fee, coincidentally equal to 001@66 in bps units, not
+// copied from it).
 // === PARAMS BEGIN ===
 const K_BPS: u128 = 10_000; // range: 25..=10000
 const FEE_BPS: u128 = 66; // range: 1..=500

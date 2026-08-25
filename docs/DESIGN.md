@@ -692,22 +692,24 @@ not a general reopening. It **supersedes** the v0.2.0 earmark above:
 exactly DODO PMM collapsed to `R = ONE`, so that idea is absorbed into `007` rather than
 left open as a separate future v0.2.0 issue.
 
-**Answered on an unfitted 1-axis probe, not merely relocated (WHI-1235; under
-re-measurement by WHI-1273).**
-`007`'s own M1 result answered the absorbed earmark rather than just carrying it forward,
-but that answer was a pre-registered 1-axis probe at `FEE_BPS=66` (copied from `001`'s own
-fitted fee-on-input optimum), not a §2.5 joint search of the declared `(K_BPS, FEE_BPS)`
-space — 0 of the 300-point budget was spent, `k ∈ (0.25, 1)` was never quoted, and the
-`k<1` after_swap path was still the recursive `i_old * R_f` structure that produced the
-k=1 runaway (WHI-1271; see §8 finding 5). What v1 actually measured, labelled as an
-unfitted boundary point: the family closed at `(K_BPS=10_000, FEE_BPS=66)` with a small
-win over `001` and large interior-probe losses at that same unfitted fee
-(`results/2026-08-21-grid-007-dodo-pmm.md`, `strategies/007-dodo-pmm/NOTES.md` § Negative
-result — see §8). "Virtual-reserve amplification at a real spread" is therefore **not** a
-jointly-fitted negative until WHI-1273 completes, and it is also **not** an open v0.2.0
-candidate: this qualification and WHI-1273's re-measurement do not reopen the §2.10 freeze
-or stand the absorbed earmark back up as a live v0.2.0 candidate. §8 finding 2's orphan
-rule stands.
+**Jointly fitted on the grounded-anchor variant (WHI-1273); concentration is a confirmed
+negative.**
+v1's `007` close (WHI-1219) was a pre-registered 1-axis probe at `FEE_BPS=66` copied from
+`001`, 0 of 300 search points, recursive `k<1` after_swap still in place (WHI-1271).
+WHI-1273 ran the missing §2.5 joint search of `(K_BPS, FEE_BPS)` on `007b` (grounded
+`after_swap`, WHI-1272): spent **170/300**, converged to `(K_BPS=10_000, FEE_BPS=66)` — a
+`K_BPS` upper-bound hit; `FEE_BPS=66` is the search's own fitted fee, not a copy of `001`.
+All four k-bands were evaluated (the linear grid's `[25, 400]` node is `K_BPS=25`
+only — small-`k` coverage is the k-sweep, not extra grid points); the spec's 12-point
+k-sweep (denser at small `k`) is strictly worse than the winner at every interior `k`
+(lesson 7 did not fire). "Virtual-reserve
+amplification at a real spread" is therefore a **jointly-fitted negative**. This does
+**not** reopen the §2.10 freeze or stand the absorbed earmark back up as a live v0.2.0
+candidate. §8 finding 2's orphan rule stands. v1's `007` snapshots stay the unfitted
+1-axis-probe record (`results/2026-08-21-grid-007-dodo-pmm.md`,
+`strategies/007-dodo-pmm/NOTES.md`); the fitted numbers live on `007b`
+(`results/2026-08-25-fit-007b-grounded-k-anchor.md`,
+`strategies/007b-grounded-k-anchor/NOTES.md`).
 
 **`008` was added post-freeze by exception** (`WHI-1236`), approved by the owner
 2026-08-22, with the test segment (§2.2) still unspent at approval time — the same window
@@ -908,8 +910,8 @@ through `strategies/*/NOTES.md` and closed issues.
    finding 5 names as missing, not this finding's flow-share/competitor-inference axis. This
    finding's own v0.2.0 candidate remains unattacked by any measured M1 entry.
 
-*Resolved negatives* — items 3–4 unconditionally; item 5's concentration half is
-provisional pending WHI-1273 (its shock-surcharge half is resolved).
+*Resolved negatives* — items 3–5 (concentration jointly fitted by WHI-1273; shock
+surcharge already resolved).
 
 3. **Floor subtraction on the own-trade-impact signal is dead in this harness.**
    `results/2026-08-22-estimator-probe-005b.md` § Added scope measured `004`'s `ewma_vol`
@@ -969,26 +971,30 @@ provisional pending WHI-1273 (its shock-surcharge half is resolved).
    performs strongly on this harness: validation avg edge **503.907498**, the largest margin
    over the current leader of any M1 entry (paired **+57.61** `[53.21, 62.01]` over `004`,
    n=1,000).
-5. **Concentration closed on an unfitted 1-axis probe (under re-measurement by
-   WHI-1273); shock surcharge measured net-harmful.** Concentration / virtual-reserve
-   amplification (`007`, WHI-1219): the v1 close was a pre-registered 1-axis probe at
-   `FEE_BPS=66` (copied from `001`'s own fitted fee-on-input optimum), not a §2.5 joint
-   search of the declared `(K_BPS, FEE_BPS)` space — 0 of the 300-point budget was spent,
-   and the probe skipped `k ∈ (0.25, 1)` (nothing in `K_BPS ∈ (2500, 10_000)`). Interior
-   `k<1` quotes still ran `after_swap`'s general recursive `i_old * R_f` path, the same
-   non-self-correcting structure that produced the k=1 runaway (special-cased only at the
-   boundary); NOTES.md § Step 0.5 #4's own per-seed re-check found the mildest interior
-   loss (`K_BPS=2500`) was not primarily an artifact of that path (the other two rest on
-   an a-fortiori argument, not their own re-check). What v1 actually measured, labelled
-   as an unfitted boundary point: the family closed at `(K_BPS=10_000, FEE_BPS=66)`, a
-   small consistent edge win over `001` (validation 403.26; 24/27 grid cells favor `007`
-   with a CI excluding 0; `results/2026-08-21-grid-007-dodo-pmm.md`,
-   `strategies/007-dodo-pmm/NOTES.md` § Negative result / § Step 0.5 #4), while the three
-   interior probe points at that same unfitted `FEE_BPS=66` were large net losses
-   (screening vs. `001`: `K_BPS=2500` −215.76, `400` −2,117.68, `100` −5,535.48). This
-   qualification opens **no** v0.2.0 candidate and does **not** reopen the §2.10 freeze;
-   §8 finding 2's orphan rule stands. WHI-1273 supersedes this qualification with a
-   jointly-fitted result when it completes.
+5. **Concentration is a jointly-fitted negative (WHI-1273); shock surcharge measured
+   net-harmful.** Concentration / virtual-reserve amplification (`007`/`007b`): the
+   300-point §2.5 joint search of the declared `(K_BPS, FEE_BPS)` space on the
+   grounded-anchor variant (`007b`, WHI-1272 plumbing) spent 170/300 and collapsed to
+   `(K_BPS=10_000, FEE_BPS=66)` — `K_BPS` is a range-boundary hit; `FEE_BPS=66` is the
+   search's own fitted fee (coincidentally equal to `001`'s fee-on-input optimum, not
+   copied from it). Every k-band `[25, 400]`, `(400, 2500]`, `(2500, 9000]`, `10_000`
+   was actually evaluated; `[25, 400]` is the single linear-grid node `K_BPS=25`
+   (small-`k` is undersampled there — the k-sweep is the compensatory control). The
+   spec's 12-point k-sweep (denser at small `k`) is strictly worse than the winner at
+   every interior `k`; no sweep cell beat the search winner on screening, so lesson 7
+   did not fire (`results/2026-08-25-fit-007b-grounded-k-anchor.md`,
+   `results/2026-08-25-ksweep-007b-grounded-k-anchor.md`,
+   `strategies/007b-grounded-k-anchor/NOTES.md`). Interior `k` at the fitted fee is
+   economically large-negative on the **grounded** mid (screening at `K_BPS=2500`:
+   −20,028.53; max stored-anchor/raw-ratio factor 1.000 on seed `1_000_231`, WHI-1272)
+   — not the same number as v1's recursive-`after_swap` 1-axis probe at that fee
+   (screening vs. `001`: `K_BPS=2500` −215.76, `400` −2,117.68, `100` −5,535.48). v1's
+   `007` close at the k=1 point was that unfitted probe (WHI-1219/WHI-1271); the joint
+   search confirms the collapse. At the committed k=1 point the family still posts a
+   small consistent edge win over `001` (validation 403.26; 24/27 grid cells favor
+   `007b` with a CI excluding 0; train paired **+1.401555 [1.246297, 1.556812]**,
+   n=1,000). This finding opens **no** v0.2.0 candidate and does **not** reopen the
+   §2.10 freeze; §8 finding 2's orphan rule stands.
 
    Event-driven shock surcharge (`004`'s own search): ablated to exactly 0 by the search
    (`SHOCK_FEE_PER_STEP_BPS = 0` at the fitted point, `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`;
@@ -1084,7 +1090,7 @@ rely on this issue's table — verify it" instruction) gives:
 | 004 EWMA Dynamic Fee | 446.297129 | `results/2026-08-21-fit-004-ewma-shock-decay-fee.md` |
 | 003 Piecewise Linear | 432.445900 | `results/2026-08-21-fit-003-piecewise-linear.md` |
 | 005 Vol-Adaptive CPMM Fee | 425.946116 | `results/2026-08-21-fit-005-vol-adaptive-cpmm-fee.md` |
-| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its own Step 0.5 boundary hit without running the 300-point search (§2.9, §8 finding 6); the 403.26 is the unfitted `(K_BPS=10_000, FEE_BPS=66)` point (under re-measurement by WHI-1273) |
+| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its own Step 0.5 boundary hit without running the 300-point search (§2.9, §8 finding 6); the 403.26 is the unfitted `(K_BPS=10_000, FEE_BPS=66)` v1 point (re-measured on `007b` by WHI-1273; this row is unchanged) |
 | 001 CPMM @66 (0-line) | 401.800851 | `results/2026-08-20-fit-001-cpmm-fee.md` |
 | 006 Hedged PnL | 379.350266 | `results/2026-08-21-fit-006-hedged-pnl.md` |
 
