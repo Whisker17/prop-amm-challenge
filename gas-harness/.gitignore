@@ -1,0 +1,6 @@
+out/
+cache/
+broadcast/
+# lib/ is populated by script/vendor-libs.sh from the pinned read-only checkouts;
+# it is not part of this repository's source of truth.
+lib/

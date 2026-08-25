@@ -1,0 +1,31 @@
+{
+  "expectedMidPriceWad": "100000000000000000000",
+  "allEqual": true,
+  "rows": [
+    {"strategy": "dodo-k1000000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c1", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k500000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c2", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k200000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c5", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k100000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c10", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k50000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c20", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k20000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c50", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k10000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c100", "midPriceWad": "100000000000000000000"},
+    {"strategy": "dodo-k1000000000000000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "flashbots-c1000", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ2-zero-fee", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-full-range-zero-fee", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c2", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c5", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c10", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c20", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c50", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c100", "midPriceWad": "100000000000000000000"},
+    {"strategy": "univ3-conc-c1000", "midPriceWad": "100000000000000000000"}
+  ]
+}

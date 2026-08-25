@@ -358,7 +358,9 @@ and `strategies/README.md`'s registry records which one applies: *loses to the 0
 (`006`, avg edge 369.79 < `001`'s 399.97), *ties its parent bit-exact* (`004b`, `bench
 compare` vs. `004` measures a paired mean diff of exactly 0.000000, CI `[0.000000,
 0.000000]`), and *closes on a probe-stage measurement without running a search*
-(`007`'s Step 0.5 boundary hit; `005b`'s Probe A survives its own literal kill conditions,
+(`007`'s Step 0.5 boundary hit, which held `FEE_BPS` fixed at `001`'s own fitted
+fee-on-input optimum rather than jointly searching the declared 2-dimensional space;
+`005b`'s Probe A survives its own literal kill conditions,
 but a paired `bench compare` CI computed at the probe stage shows a real net loss — either
 way, none of §2.5's 300-point budget is spent). The distinction
 matters for how much weight the negative carries: a bit-exact tie is not evidence the
@@ -690,13 +692,22 @@ not a general reopening. It **supersedes** the v0.2.0 earmark above:
 exactly DODO PMM collapsed to `R = ONE`, so that idea is absorbed into `007` rather than
 left open as a separate future v0.2.0 issue.
 
-**Measured and closed, not merely relocated (WHI-1235).** `007`'s own M1 result answers the
-absorbed earmark rather than just carrying it forward: concentration is net-harmful at
-every tested `K_BPS` short of its own `k = 1` CPMM boundary
+**Answered on an unfitted 1-axis probe, not merely relocated (WHI-1235; under
+re-measurement by WHI-1273).**
+`007`'s own M1 result answered the absorbed earmark rather than just carrying it forward,
+but that answer was a pre-registered 1-axis probe at `FEE_BPS=66` (copied from `001`'s own
+fitted fee-on-input optimum), not a §2.5 joint search of the declared `(K_BPS, FEE_BPS)`
+space — 0 of the 300-point budget was spent, `k ∈ (0.25, 1)` was never quoted, and the
+`k<1` after_swap path was still the recursive `i_old * R_f` structure that produced the
+k=1 runaway (WHI-1271; see §8 finding 5). What v1 actually measured, labelled as an
+unfitted boundary point: the family closed at `(K_BPS=10_000, FEE_BPS=66)` with a small
+win over `001` and large interior-probe losses at that same unfitted fee
 (`results/2026-08-21-grid-007-dodo-pmm.md`, `strategies/007-dodo-pmm/NOTES.md` § Negative
-result — see §8). "Virtual-reserve amplification at a real spread" is therefore a
-**measured negative**, not an open v0.2.0 candidate waiting on `007` to run. §2.10's
-addition clause does not reopen it without a fresh measurement.
+result — see §8). "Virtual-reserve amplification at a real spread" is therefore **not** a
+jointly-fitted negative until WHI-1273 completes, and it is also **not** an open v0.2.0
+candidate: this qualification and WHI-1273's re-measurement do not reopen the §2.10 freeze
+or stand the absorbed earmark back up as a live v0.2.0 candidate. §8 finding 2's orphan
+rule stands.
 
 **`008` was added post-freeze by exception** (`WHI-1236`), approved by the owner
 2026-08-22, with the test segment (§2.2) still unspent at approval time — the same window
@@ -897,7 +908,8 @@ through `strategies/*/NOTES.md` and closed issues.
    finding 5 names as missing, not this finding's flow-share/competitor-inference axis. This
    finding's own v0.2.0 candidate remains unattacked by any measured M1 entry.
 
-*Resolved negatives*
+*Resolved negatives* — items 3–4 unconditionally; item 5's concentration half is
+provisional pending WHI-1273 (its shock-surcharge half is resolved).
 
 3. **Floor subtraction on the own-trade-impact signal is dead in this harness.**
    `results/2026-08-22-estimator-probe-005b.md` § Added scope measured `004`'s `ewma_vol`
@@ -957,11 +969,27 @@ through `strategies/*/NOTES.md` and closed issues.
    performs strongly on this harness: validation avg edge **503.907498**, the largest margin
    over the current leader of any M1 entry (paired **+57.61** `[53.21, 62.01]` over `004`,
    n=1,000).
-5. **Two axes measured net-harmful, so nobody retries them.** Concentration / virtual-reserve
-   amplification (`007`, WHI-1219): net-harmful at every tested point; the family closed at
-   its own `k = 1` CPMM boundary (`results/2026-08-21-grid-007-dodo-pmm.md`,
-   `strategies/007-dodo-pmm/NOTES.md` § Negative result) — this also closes the v0.2.0
-   earmark §6.2 recorded when `002` was cancelled, per §6.2's own update above.
+5. **Concentration closed on an unfitted 1-axis probe (under re-measurement by
+   WHI-1273); shock surcharge measured net-harmful.** Concentration / virtual-reserve
+   amplification (`007`, WHI-1219): the v1 close was a pre-registered 1-axis probe at
+   `FEE_BPS=66` (copied from `001`'s own fitted fee-on-input optimum), not a §2.5 joint
+   search of the declared `(K_BPS, FEE_BPS)` space — 0 of the 300-point budget was spent,
+   and the probe skipped `k ∈ (0.25, 1)` (nothing in `K_BPS ∈ (2500, 10_000)`). Interior
+   `k<1` quotes still ran `after_swap`'s general recursive `i_old * R_f` path, the same
+   non-self-correcting structure that produced the k=1 runaway (special-cased only at the
+   boundary); NOTES.md § Step 0.5 #4's own per-seed re-check found the mildest interior
+   loss (`K_BPS=2500`) was not primarily an artifact of that path (the other two rest on
+   an a-fortiori argument, not their own re-check). What v1 actually measured, labelled
+   as an unfitted boundary point: the family closed at `(K_BPS=10_000, FEE_BPS=66)`, a
+   small consistent edge win over `001` (validation 403.26; 24/27 grid cells favor `007`
+   with a CI excluding 0; `results/2026-08-21-grid-007-dodo-pmm.md`,
+   `strategies/007-dodo-pmm/NOTES.md` § Negative result / § Step 0.5 #4), while the three
+   interior probe points at that same unfitted `FEE_BPS=66` were large net losses
+   (screening vs. `001`: `K_BPS=2500` −215.76, `400` −2,117.68, `100` −5,535.48). This
+   qualification opens **no** v0.2.0 candidate and does **not** reopen the §2.10 freeze;
+   §8 finding 2's orphan rule stands. WHI-1273 supersedes this qualification with a
+   jointly-fitted result when it completes.
+
    Event-driven shock surcharge (`004`'s own search): ablated to exactly 0 by the search
    (`SHOCK_FEE_PER_STEP_BPS = 0` at the fitted point, `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`;
    `strategies/004-ewma-shock-decay-fee/NOTES.md` § Search), with a mechanism — it re-arms
@@ -1000,7 +1028,9 @@ through `strategies/*/NOTES.md` and closed issues.
    `004b`'s numeric kill rule literally fired (WHI-1223); `005b`'s Probe A survived its own
    literal kill conditions, but a paired `bench compare` CI computed at the probe stage
    showed a real net loss (WHI-1225); `007` closed at its own Step 0.5 boundary hit
-   (WHI-1219). In each of these three, a number produced before the search phase — not a
+   (WHI-1219) — a protocol-lesson fact that stands, even though that stop rule itself
+   probed only one axis of a 2-dimensional family (`FEE_BPS` pinned at 66) and skipped
+   `k ∈ (0.25, 1)`. In each of these three, a number produced before the search phase — not a
    subjective argument — is what closed the lane. `002` is a fourth, differently-mechanised
    case: it never reached a probe at all, being struck by **owner decision** before any
    measurement (§2.10's removal clause, §6.2) — worth keeping distinct from the other three,
@@ -1054,7 +1084,7 @@ rely on this issue's table — verify it" instruction) gives:
 | 004 EWMA Dynamic Fee | 446.297129 | `results/2026-08-21-fit-004-ewma-shock-decay-fee.md` |
 | 003 Piecewise Linear | 432.445900 | `results/2026-08-21-fit-003-piecewise-linear.md` |
 | 005 Vol-Adaptive CPMM Fee | 425.946116 | `results/2026-08-21-fit-005-vol-adaptive-cpmm-fee.md` |
-| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its own Step 0.5 boundary hit without running the 300-point search (§2.9, §8 finding 6) |
+| 007 DODO PMM | 403.26 | `strategies/007-dodo-pmm/NOTES.md` § Consolidated segment table — no dedicated `fit-007` report exists, since `007` closed at its own Step 0.5 boundary hit without running the 300-point search (§2.9, §8 finding 6); the 403.26 is the unfitted `(K_BPS=10_000, FEE_BPS=66)` point (under re-measurement by WHI-1273) |
 | 001 CPMM @66 (0-line) | 401.800851 | `results/2026-08-20-fit-001-cpmm-fee.md` |
 | 006 Hedged PnL | 379.350266 | `results/2026-08-21-fit-006-hedged-pnl.md` |
 
@@ -1294,3 +1324,43 @@ own sampled fee/liquidity; (3) that content generalizes to any oracle-centered q
 carries little content specific to the ported curve itself. Every reported ceiling number
 must repeat constraint (1) explicitly — a ceiling read as a two-sided bound would overstate
 how much headroom a real, front-runnable mechanism could actually reach.
+
+## 11. Out-of-competition oracle-aware research crate
+
+`tools/research` (workspace package `prop-amm-research`), `gas-harness/`, and
+`research-out/` are an imported, out-of-competition oracle-aware curve comparison
+from `origin/research/oracle-aware-curve-benchmark` @ `1856c8c`. The crate lives
+under `tools/` rather than `crates/` because `crates/**` is upstream-owned
+(§3.2): a local crate there would be reverted by the next sync and would mix
+research instrumentation with the simulator that produces every ranked number.
+
+**Why this is not a strategy, not a ceiling probe, and not on the §6.2 list.**
+Nothing under `tools/research` is a submittable `lib.rs`. The package's binary
+is `research`, not `prop-amm` / `bench`. It is not a `C-*` ceiling probe (those
+live under `ceilings/` and run through `bench ceiling`, §10), and it is not an
+entry on the frozen §6.2 family list. Layout guards in
+`tools/research/tests/layout_guards.rs` enforce that `crates/research/` does not
+exist, that the research binary is `research`, and that
+`research-out/README.md` carries the literal `out_of_competition: true`.
+
+**Three number streams must never share a table.** (1) Ranked bench:
+submittable `lib.rs` files under `strategies/`, measured by `tools/bench` into
+`results/`. (2) Ceiling lane: spread-bearing Orbic with a host-side re-anchor
+the arb cannot front-run, paired against the 0-line `001-cpmm-fee` (`bench
+ceiling`, §10). (3) This crate: zero-fee DODO PMM vs Flashbots ExamplePropAmm vs
+Uni V2/V3, under a shared zero-latency oracle published before arb and retail.
+Those protocols are not interchangeable. Numbers in `research-out/` are **not**
+§2 ranked results and **must not** be cited in `strategies/**/NOTES.md`,
+`ceilings/**/NOTES.md`, or any `results/compare-*.md`. Committed numbers and
+the citation ban live in `research-out/README.md`.
+
+**Pins.** Flashbots is `flashbots/priority-update-registry` @
+`da53117870c7bec96d71caebe1b3f94370aba3d6`, the same pin as
+`docs/references/002-orbic-flashbots/`. DODO is `DODOEX/contractV2` @
+`8da3ee1ec50966fca9a2c80d424040c45c0f785e`. That is **not** the pin `007` used
+(`2f1bcdac7ef1beee7599a756e2eed26732c2536d`, `docs/references/007-dodo-pmm/`).
+The disagreement is recorded, not reconciled: this import does not retarget
+either side.
+
+This section is the record that the crate exists. §4.2's module-layout tree,
+§6.2, and §10 are deliberately not edited to mention it.

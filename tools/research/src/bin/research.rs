@@ -1,0 +1,575 @@
+//! Research-only CLI. Separate binary from `prop-amm`, so the challenge CLI's
+//! behaviour is untouched.
+//!
+//! ```text
+//! research equilibrium                 # mid price at the unified initial state
+//! research quote-matrix                # quotes across order sizes
+//! research bench --simulations 20 --steps 1000
+//! ```
+
+use std::path::PathBuf;
+use std::time::Instant;
+
+use clap::{Parser, Subcommand};
+
+use prop_amm_research::experiment::{self, BatchConfig, Competitor};
+use prop_amm_research::manifest;
+use prop_amm_research::metrics::StrategySummary;
+use prop_amm_research::paired;
+use prop_amm_research::probe;
+use prop_amm_research::provenance::Provenance;
+use prop_amm_research::report::{self, RunMeta};
+use prop_amm_research::strategies::{self, Strategy, StrategySet};
+use prop_amm_research::wad::price_to_wad;
+
+#[derive(Parser)]
+#[command(
+    name = "research",
+    about = "Oracle-aware AMM curve comparison benchmark (research only)"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Print the mid price of every curve at the unified initial state.
+    Equilibrium {
+        /// Fair price to publish.
+        #[arg(long, default_value = "100")]
+        price: f64,
+        #[arg(long, default_value = "100")]
+        reserve_x: f64,
+        #[arg(long, default_value = "10000")]
+        reserve_y: f64,
+        /// `legacy` (DODO / Flashbots / UniV2) or `with-v3` (adds the two
+        /// Uniswap V3 arms).
+        #[arg(long, default_value = "legacy")]
+        strategy_set: String,
+        /// Optional directory for `mid-price.json`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Print the quote matrix across several order sizes.
+    QuoteMatrix {
+        #[arg(long, default_value = "100")]
+        price: f64,
+        #[arg(long, default_value = "100")]
+        reserve_x: f64,
+        #[arg(long, default_value = "10000")]
+        reserve_y: f64,
+        /// `legacy` or `with-v3`.
+        #[arg(long, default_value = "legacy")]
+        strategy_set: String,
+        /// Optional directory for `quote-matrix.csv` / `.json`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Run the paired benchmark.
+    Bench {
+        #[arg(long, default_value = "20")]
+        simulations: u32,
+        #[arg(long, default_value = "1000")]
+        steps: u32,
+        #[arg(long, default_value = "0")]
+        seed_start: u64,
+        #[arg(long, default_value = "1")]
+        seed_stride: u64,
+        /// `paired` (vs the challenge normalizer) or `solo` (no competitor).
+        #[arg(long, default_value = "paired")]
+        mode: String,
+        /// 0 = all available cores.
+        #[arg(long, default_value = "0")]
+        workers: usize,
+        /// `legacy` (DODO / Flashbots / UniV2, the phase-1 and phase-2
+        /// catalogue) or `with-v3` (adds the full-range and concentrated
+        /// Uniswap V3 arms). Ignored when `--strategy` is given.
+        #[arg(long, default_value = "legacy")]
+        strategy_set: String,
+        /// Restrict to specific strategy ids (repeatable). Overrides
+        /// `--strategy-set`.
+        #[arg(long)]
+        strategy: Vec<String>,
+        /// Run even when the binary's commit, the repository HEAD or the
+        /// working tree disagree.
+        ///
+        /// Without this the run refuses to start, because a mismatch cannot be
+        /// repaired afterwards: the output would carry a provenance it does not
+        /// have. Results produced with this flag are marked
+        /// `publishable: false`.
+        #[arg(long)]
+        allow_provenance_mismatch: bool,
+        /// Output directory for JSON / CSV / Markdown.
+        #[arg(long, default_value = "research-out")]
+        out: PathBuf,
+    },
+}
+
+fn parse_strategy_set(text: &str) -> anyhow::Result<StrategySet> {
+    StrategySet::parse(text).ok_or_else(|| {
+        anyhow::anyhow!("unknown strategy set `{text}` (expected legacy or with-v3)")
+    })
+}
+
+fn selected_strategies(set: StrategySet, filter: &[String]) -> anyhow::Result<Vec<Strategy>> {
+    if filter.is_empty() {
+        return Ok(strategies::strategies_for(set));
+    }
+    let mut selected = Vec::new();
+    for id in filter {
+        let strategy = strategies::strategy_by_id(id)
+            .ok_or_else(|| anyhow::anyhow!("unknown strategy id `{id}`"))?;
+        selected.push(strategy);
+    }
+    Ok(selected)
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Equilibrium {
+            price,
+            reserve_x,
+            reserve_y,
+            strategy_set,
+            out,
+        } => equilibrium(
+            price,
+            reserve_x,
+            reserve_y,
+            parse_strategy_set(&strategy_set)?,
+            out,
+        ),
+        Command::QuoteMatrix {
+            price,
+            reserve_x,
+            reserve_y,
+            strategy_set,
+            out,
+        } => quote_matrix(
+            price,
+            reserve_x,
+            reserve_y,
+            parse_strategy_set(&strategy_set)?,
+            out,
+        ),
+        Command::Bench {
+            simulations,
+            steps,
+            seed_start,
+            seed_stride,
+            mode,
+            workers,
+            strategy_set,
+            strategy,
+            allow_provenance_mismatch,
+            out,
+        } => bench(BenchOptions {
+            simulations,
+            steps,
+            seed_start,
+            seed_stride,
+            mode,
+            workers,
+            set: parse_strategy_set(&strategy_set)?,
+            strategy_filter: strategy,
+            allow_provenance_mismatch,
+            out,
+        }),
+    }
+}
+
+fn equilibrium(
+    price: f64,
+    reserve_x: f64,
+    reserve_y: f64,
+    set: StrategySet,
+    out: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let expected =
+        price_to_wad(price).ok_or_else(|| anyhow::anyhow!("price {price} cannot be quantised"))?;
+    println!("published price (WAD): {expected}");
+    println!("inventory: reserveX = {reserve_x}, reserveY = {reserve_y}\n");
+    println!("{:<28} {:<12} mid price (WAD)", "strategy", "parameter");
+
+    let mut rows = Vec::new();
+    let mut all_equal = true;
+    for strategy in strategies::strategies_for(set) {
+        let mid =
+            probe::mid_price_wad(&strategy, price, reserve_x, reserve_y).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}: no mid price is defined at price {price} \
+                 (a Uniswap V3 arm is minted at the benchmark's opening price only)",
+                    strategy.id
+                )
+            })?;
+        all_equal &= mid == expected;
+        println!("{:<28} {:<12} {mid}", strategy.id, strategy.parameter);
+        rows.push((strategy.id.clone(), mid));
+    }
+    println!(
+        "\nall curves agree with the published price: {}",
+        if all_equal { "yes" } else { "NO" }
+    );
+
+    if let Some(dir) = out {
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("mid-price.json");
+        std::fs::write(&path, report::mid_price_json(&rows, expected))?;
+        println!("wrote {}", path.display());
+    }
+    if !all_equal {
+        anyhow::bail!("mid prices disagree at the equilibrium point");
+    }
+    Ok(())
+}
+
+fn quote_matrix(
+    price: f64,
+    reserve_x: f64,
+    reserve_y: f64,
+    set: StrategySet,
+    out: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let strategies = strategies::strategies_for(set);
+    let buy_sizes = probe::default_buy_sizes_y();
+    let sell_sizes = probe::default_sell_sizes_x();
+    let rows = probe::quote_matrix(
+        &strategies,
+        price,
+        reserve_x,
+        reserve_y,
+        &buy_sizes,
+        &sell_sizes,
+    );
+
+    for side in ["buy_x", "sell_x"] {
+        let sizes: &[f64] = if side == "buy_x" {
+            &buy_sizes
+        } else {
+            &sell_sizes
+        };
+        println!(
+            "\n=== {} (fair price {price}, reserveX {reserve_x}, reserveY {reserve_y}) ===",
+            if side == "buy_x" {
+                "spend Y, receive X — slippage in bps"
+            } else {
+                "spend X, receive Y — slippage in bps"
+            }
+        );
+        print!("{:<28}", "strategy");
+        for size in sizes {
+            print!("{size:>12}");
+        }
+        println!();
+        for strategy in &strategies {
+            print!("{:<28}", strategy.id);
+            for size in sizes {
+                let row = rows
+                    .iter()
+                    .find(|r| r.strategy_id == strategy.id && r.side == side && r.input == *size);
+                match row {
+                    Some(row) if row.slippage_bps.is_finite() => {
+                        print!("{:>12.2}", row.slippage_bps)
+                    }
+                    _ => print!("{:>12}", "n/a"),
+                }
+            }
+            println!();
+        }
+    }
+
+    if let Some(dir) = out {
+        std::fs::create_dir_all(&dir)?;
+        let csv_path = dir.join("quote-matrix.csv");
+        std::fs::write(&csv_path, report::quote_matrix_csv(&rows))?;
+        let json_path = dir.join("quote-matrix.json");
+        std::fs::write(
+            &json_path,
+            report::quote_matrix_json(&rows, price, reserve_x, reserve_y),
+        )?;
+        println!("\nwrote {}", csv_path.display());
+        println!("wrote {}", json_path.display());
+    }
+    Ok(())
+}
+
+struct BenchOptions {
+    simulations: u32,
+    steps: u32,
+    seed_start: u64,
+    seed_stride: u64,
+    mode: String,
+    workers: usize,
+    set: StrategySet,
+    strategy_filter: Vec<String>,
+    allow_provenance_mismatch: bool,
+    out: PathBuf,
+}
+
+fn bench(options: BenchOptions) -> anyhow::Result<()> {
+    let BenchOptions {
+        simulations,
+        steps,
+        seed_start,
+        seed_stride,
+        mode,
+        workers,
+        set,
+        strategy_filter,
+        allow_provenance_mismatch,
+        out,
+    } = options;
+    let mode = mode.as_str();
+    let strategy_filter = strategy_filter.as_slice();
+
+    // Provenance is captured and checked BEFORE any work. A mismatch found
+    // after a forty-minute run cannot be repaired, only re-run.
+    let mut run_provenance = Provenance::begin();
+    println!("{}", run_provenance.start_line());
+    if !run_provenance.start_mismatch_reasons().is_empty() {
+        let reasons = run_provenance
+            .start_mismatch_reasons()
+            .iter()
+            .map(|reason| format!("  - {reason}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if allow_provenance_mismatch {
+            println!(
+                "WARNING: provenance does not agree, continuing because \
+                 --allow-provenance-mismatch was given:\n{reasons}\n\
+                 This result set will be marked publishable: false."
+            );
+        } else {
+            anyhow::bail!(
+                "refusing to start: provenance does not agree.\n{reasons}\n\n\
+                 Commit or stash your changes and rebuild, so the binary, HEAD and the \
+                 working tree agree. To run anyway and accept a provisional result set, \
+                 pass --allow-provenance-mismatch."
+            );
+        }
+    }
+
+    let competitor = Competitor::parse(mode)
+        .ok_or_else(|| anyhow::anyhow!("unknown mode `{mode}` (expected `paired` or `solo`)"))?;
+    let strategies = selected_strategies(set, strategy_filter)?;
+    let batch = BatchConfig {
+        simulations,
+        steps,
+        seed_start,
+        seed_stride,
+        competitor,
+        workers,
+    };
+
+    println!(
+        "running {} strategies ({}) x {} simulations x {} steps (mode {}, workers {})",
+        strategies.len(),
+        if strategy_filter.is_empty() {
+            set.as_str()
+        } else {
+            "explicit --strategy list"
+        },
+        simulations,
+        steps,
+        competitor.as_str(),
+        if workers == 0 {
+            rayon::current_num_threads()
+        } else {
+            workers
+        }
+    );
+
+    let start = Instant::now();
+    let results = experiment::run_all(&strategies, &batch)?;
+    let elapsed = start.elapsed().as_secs_f64();
+
+    let mut summaries: Vec<StrategySummary> = Vec::new();
+    let mut all_runs = Vec::new();
+    for (strategy, runs) in &results {
+        summaries.push(StrategySummary::from_runs(
+            &strategy.id,
+            strategy.family.as_str(),
+            &strategy.parameter,
+            runs,
+        ));
+        all_runs.extend(runs.iter().cloned());
+    }
+
+    let flashbots_minus_dodo = paired::flashbots_minus_dodo(&results);
+    let versus_univ2 = paired::versus_univ2(&results);
+    let attributions = paired::attribute_versus_univ2(&results);
+    let univ3_attributions = paired::attribute_univ3_concentration(&results);
+    let versus_univ3 = paired::versus_univ3_full_range(&results);
+    let univ3_minus_univ2 = paired::univ3_full_range_minus_univ2(&results);
+    let univ3_capacity_deltas = paired::univ3_capacity_deltas(&results);
+    let sanity = paired::univ3_full_range_sanity(&results);
+
+    run_provenance.finish();
+    let meta = RunMeta::from_batch_with_provenance(&batch, elapsed, set, run_provenance);
+
+    // The static probes describe the curves the numbers came from, and the
+    // focused reports quote them, so they are built before `write_all`.
+    let quote_rows = probe::quote_matrix(
+        &strategies,
+        meta.initial_price,
+        meta.initial_x,
+        meta.initial_y,
+        &probe::default_buy_sizes_y(),
+        &probe::default_sell_sizes_x(),
+    );
+
+    let mut written = report::write_all(
+        &out,
+        &meta,
+        &report::Artefacts {
+            summaries: &summaries,
+            runs: &all_runs,
+            flashbots_minus_dodo: &flashbots_minus_dodo,
+            versus_univ2: &versus_univ2,
+            attributions: &attributions,
+            univ3_attributions: &univ3_attributions,
+            versus_univ3: &versus_univ3,
+            univ3_minus_univ2: &univ3_minus_univ2,
+            univ3_capacity_deltas: &univ3_capacity_deltas,
+            quote_rows: &quote_rows,
+            univ3_sanity: sanity.as_ref(),
+        },
+    )?;
+
+    let mid_rows: Vec<(String, prop_amm_research::u256::U256)> = strategies
+        .iter()
+        .filter_map(|strategy| {
+            probe::mid_price_wad(strategy, meta.initial_price, meta.initial_x, meta.initial_y)
+                .map(|mid| (strategy.id.clone(), mid))
+        })
+        .collect();
+    if let Some(expected) = price_to_wad(meta.initial_price) {
+        let path = out.join("mid-price.json");
+        std::fs::write(&path, report::mid_price_json(&mid_rows, expected))?;
+        written.push(path);
+    }
+    let path = out.join("quote-matrix.csv");
+    std::fs::write(&path, report::quote_matrix_csv(&quote_rows))?;
+    written.push(path);
+    let path = out.join("quote-matrix.json");
+    std::fs::write(
+        &path,
+        report::quote_matrix_json(
+            &quote_rows,
+            meta.initial_price,
+            meta.initial_x,
+            meta.initial_y,
+        ),
+    )?;
+    written.push(path);
+
+    if let Some(sanity) = &sanity {
+        println!("\n{}", sanity.summary_line());
+    }
+
+    println!(
+        "\n{:<28} {:>14} {:>14} {:>14} {:>10}",
+        "strategy", "netEdge mean", "retailEdge", "arbEdge", "net>0 rate"
+    );
+    let mut ranked: Vec<&StrategySummary> = summaries.iter().collect();
+    ranked.sort_by(|a, b| {
+        b.net_edge
+            .mean
+            .partial_cmp(&a.net_edge.mean)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for summary in ranked {
+        println!(
+            "{:<28} {:>14.4} {:>14.4} {:>14.4} {:>9.1}%",
+            summary.strategy_id,
+            summary.net_edge.mean,
+            summary.retail_edge.mean,
+            summary.arbitrage_edge.mean,
+            summary.positive_net_rate * 100.0
+        );
+    }
+    let net_deltas: Vec<&paired::PairedDelta> = flashbots_minus_dodo
+        .iter()
+        .filter(|d| d.metric == "netEdge")
+        .collect();
+    if !net_deltas.is_empty() {
+        println!(
+            "\npaired netEdge delta (Flashbots - DODO), per pairing row, 95% CI on per-seed differences:"
+        );
+        println!(
+            "{:<10} {:>12} {:>26} {:>8} {:>10} verdict",
+            "pairing", "mean", "95% CI", "t", "win rate"
+        );
+        for delta in net_deltas {
+            println!(
+                "{:<10} {:>12.5} {:>12.5} {:>12.5} {:>8.2} {:>9.1}% {}",
+                delta
+                    .pairing_index
+                    .map(|i| format!("#{i}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                delta.mean,
+                delta.ci95_low,
+                delta.ci95_high,
+                delta.t_stat,
+                delta.paired_win_rate * 100.0,
+                if delta.is_significant() {
+                    "significant"
+                } else {
+                    "not distinguishable"
+                }
+            );
+        }
+    }
+
+    let total_reverts: u64 = summaries.iter().map(|s| s.total_curve_reverts).sum();
+    if total_reverts == 0 {
+        println!(
+            "\ncurve reverts: 0 (the ported pricing functions never hit a revert branch; \
+this is not a claim that a full on-chain swap would succeed \u{2014} pool-level guards are out of scope)"
+        );
+    } else {
+        println!(
+            "\nWARNING: {total_reverts} curve reverts — the ledger and a curve's integer state disagreed; \
+             see the curve_reverts column in summary.csv before trusting these numbers"
+        );
+    }
+    println!("finished in {elapsed:.1}s");
+    for path in &written {
+        println!("wrote {}", path.display());
+    }
+
+    // Written last, over everything else, and excluded from itself.
+    let manifest_path = manifest::write(&out)?;
+    println!("wrote {}", manifest_path.display());
+
+    let publishable = report::publishable(&meta, &summaries);
+    println!(
+        "\nprovenance: binary {} | run start {} | run end {} | match: {}",
+        &meta
+            .provenance
+            .binary_commit
+            .chars()
+            .take(12)
+            .collect::<String>(),
+        meta.provenance.run_start.short(),
+        meta.provenance.run_end.short(),
+        if meta.provenance_match() { "yes" } else { "NO" }
+    );
+    for reason in meta.provenance.mismatch_reasons() {
+        println!("  - {reason}");
+    }
+    println!(
+        "publishable: {}  (provenanceMatch && curveReverts=={} && capacityProbeReverts=={} \
+         && fullRangeCapacityLimited=={})",
+        if publishable { "YES" } else { "NO" },
+        report::total_curve_reverts(&summaries),
+        report::total_capacity_probe_reverts(&summaries),
+        report::full_range_capacity_limited(&summaries)
+    );
+    if !publishable {
+        println!("  -> this result set may be READ but must not be published as a deliverable");
+    }
+    Ok(())
+}
