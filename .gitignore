@@ -8,3 +8,15 @@
 
 # Per-machine config overrides (see config/README.md)
 config/*.local.toml
+
+# Fresh research-run dirs. Committed snapshots stay tracked; never ignore
+# `/research-out` itself (that would hide the imported artefacts).
+/research-out/*
+!/research-out/README.md
+!/research-out/s6-final.log
+!/research-out/final-paired-with-v3/
+!/research-out/final-paired-with-v3/**
+!/research-out/final-solo-with-v3/
+!/research-out/final-solo-with-v3/**
+!/research-out/gas/
+!/research-out/gas/**

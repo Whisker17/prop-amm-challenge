@@ -1,0 +1,177 @@
+# Gas harness for the oracle-aware AMM curve comparison.
+#
+# One forge project, four compilers. Every source file carries an EXACT pragma so
+# nothing silently drifts onto the newest installed solc. Each vendored upstream
+# tree is additionally pinned here to the compiler configuration its own upstream
+# build system used, so the measured bytecode is the bytecode upstream ships.
+#
+# The EXECUTION spec (the EVM revm runs) is the single profile-level `evm_version`
+# below -- identical for every algorithm, so cold/warm SLOAD (EIP-2929) and refund
+# rules (EIP-3529) are the same for all of them. Only the CODEGEN target differs
+# per cell, because solc 0.5.16 cannot target prague. Disclosed in README.md.
+
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+auto_detect_solc = true
+optimizer = true
+optimizer_runs = 200
+evm_version = "prague"
+bytecode_hash = "none"
+cbor_metadata = false
+offline = true
+ffi = false
+fs_permissions = [
+  { access = "read-write", path = "../research-out/gas" },
+  { access = "read", path = "./src" },
+  { access = "read", path = "./out" },
+  # lib/ holds the pinned upstream sources fetched by script/fetch-vendor.sh.
+  # VendorPins.t.sol hashes them, so it has to be able to read them.
+  { access = "read", path = "./lib" },
+  { access = "read", path = "./types" },
+]
+
+# forge 1.4.1's built-in lint rejects legacy Yul in uniswap v2-core with exit 1.
+# There is no `--no-lint` flag; this is the documented switch.
+[lint]
+lint_on_build = false
+
+# ============================ compiler profiles =============================
+# Candidate settings sets. `compilation_restrictions` below select which files
+# must be built with settings satisfying which constraints; forge then picks a
+# profile (default profile included) that satisfies them.
+
+# uniswap v2-core .waffle.json and v2-periphery .waffle.json:
+#   optimizer on, runs 999999, evmVersion istanbul
+[[profile.default.additional_compiler_profiles]]
+name = "uniswap-v2"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+bytecode_hash = "None"
+cbor_metadata = false
+via_ir = false
+
+# uniswap v3-core hardhat.config.ts:
+#   solc 0.7.6, optimizer on, runs 800, metadata.bytecodeHash none
+[[profile.default.additional_compiler_profiles]]
+name = "uniswap-v3"
+optimizer = true
+optimizer_runs = 800
+evm_version = "istanbul"
+bytecode_hash = "None"
+cbor_metadata = false
+via_ir = false
+
+# ========================== compilation restrictions ========================
+
+# ---- uniswap v2-core @ v1.0.1 (4dd59067c76dea4a0e8e4bfdda41877a6b16dedc) ----
+# Only the concrete contracts are pinned to =0.5.16. The `interfaces/` and
+# `libraries/` files carry floating `>=0.5.0` pragmas and are pulled into
+# whichever compilation unit imports them (0.5.16 for the pair, 0.6.6 for the
+# periphery library), which is exactly what upstream does.
+[[profile.default.compilation_restrictions]]
+paths = "lib/vendor/univ2core/contracts/UniswapV2*.sol"
+version = "0.5.16"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+
+# the benchmark-only zero-fee pair: identical compiler configuration to the
+# canonical pair so the only difference between the two numbers is the patch.
+[[profile.default.compilation_restrictions]]
+paths = "src/patched/UniswapV2PairZeroFee.sol"
+version = "0.5.16"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+
+# ---- uniswap v2-periphery @ ed24991304291297c3b4a52818d02f46a17aa9a2 ----
+[[profile.default.compilation_restrictions]]
+paths = "lib/vendor/univ2periphery/**"
+version = "0.6.6"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/patched/UniswapV2LibraryZeroFee.sol"
+version = "0.6.6"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/cells/univ2/**"
+version = "0.6.6"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+
+# ---- uniswap v3-core @ v1.0.0 (e3589b192d0be27e100cd0daaf6c97204fdb1899) ----
+[[profile.default.compilation_restrictions]]
+paths = "lib/vendor/univ3/**"
+version = "0.7.6"
+optimizer = true
+optimizer_runs = 800
+evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/cells/univ3/**"
+version = "0.7.6"
+optimizer = true
+optimizer_runs = 800
+evm_version = "istanbul"
+
+# ---- DODO PMM, via the Mantle vendor copy (mantle-propamm-contracts 07f6797) ----
+# upstream foundry.toml: solc 0.8.28, optimizer on, runs 200, evm prague
+[[profile.default.compilation_restrictions]]
+paths = "lib/vendor/dodo/**"
+version = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+evm_version = "prague"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/cells/dodo/**"
+version = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+evm_version = "prague"
+
+# ---- Flashbots priority-update-registry @ da53117870c7bec96d71caebe1b3f94370aba3d6 ----
+# upstream foundry.toml: optimizer on, runs 200, no pinned solc (pragmas ^0.8.20
+# and 0.8.28); pinned here to 0.8.28 for reproducibility.
+[[profile.default.compilation_restrictions]]
+paths = "lib/vendor/flashbots/**"
+version = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+evm_version = "prague"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/cells/flashbots/**"
+version = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+evm_version = "prague"
+
+# Build-target shims (see src/targets/). They carry no logic; they must simply
+# compile under the same settings as the sources they pull in, so the pinned
+# upstream is built once, with its canonical configuration.
+[[profile.default.compilation_restrictions]]
+paths = "src/targets/BuildUniV2Core.sol"
+version = "0.5.16"
+optimizer = true
+optimizer_runs = 999999
+evm_version = "istanbul"
+
+[[profile.default.compilation_restrictions]]
+paths = "src/targets/BuildUniV3Core.sol"
+version = "0.7.6"
+optimizer = true
+optimizer_runs = 800
+evm_version = "istanbul"

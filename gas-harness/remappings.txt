@@ -1,0 +1,6 @@
+forge-std/=lib/forge-std/src/
+solady/=lib/solady/src/
+@openzeppelin/=lib/openzeppelin-contracts/
+@uniswap/v2-core/=lib/vendor/univ2core/
+vendor/=lib/vendor/
+mantle-types/=lib/
