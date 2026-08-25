@@ -320,10 +320,10 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
         div_ceil(numerator, denom)
     };
 
-    // DODOMath's `V2 > V1 -> return 0` guard is NOT monotone-safe once interior k is
-    // quoted against a raw-ratio mid at dust reserves: a slightly smaller input already
-    // returned ~v, then the b_sig flip yields v_out > v and a 0-hole. Give the
-    // pool-emptying output instead.
+    // DODOMath's `V2 > V1 -> return 0` is not monotone-safe: a slightly smaller input
+    // already returned ~v. Dust (`v < 1e6`) never reaches here; this fires when
+    // `v >= DUST_RESERVE` and ceil-jitter still pushes V2 over v. Cap at the trade's
+    // own fair so the plateau stays monotone in input (`min(fair, v-1)`).
     if v_out >= v {
         return fair.min(v.saturating_sub(1));
     }
@@ -480,6 +480,9 @@ mod tests {
 
     /// Independent of `raw_ratio_price`: quote-per-base at `P_SCALE` from the post-trade
     /// reserves themselves. This is the spec's post-trade mid for every `K_BPS`.
+    /// `after_swap` does not read `K_BPS`; these tests therefore cover all k. Restoring
+    /// a `K_BPS >= K_DEN` branch would make them pass at the committed 10_000 even if
+    /// the k<1 path were recursive again — re-run at `K_BPS=2500` if that branch returns.
     fn spec_raw_ratio(rx: u128, ry: u128) -> u128 {
         ry * P_SCALE / rx
     }
@@ -534,12 +537,18 @@ mod tests {
         let mut input = 10_000_000u128;
         let i_fp = raw_ratio_price(rx as u128, ry as u128);
         let i_used = reciprocal_fp(i_fp);
+        let fair = fair_amount(rx as u128, input, i_used);
+        let k1 = fair.saturating_mul(rx as u128) / (rx as u128).saturating_add(fair);
+        let first = solve_quadratic_for_trade(rx as u128, input, i_used, 25);
+        assert_eq!(
+            first, k1,
+            "dust path must equal the k=1 closed form, not the quadratic"
+        );
         while input <= 80_000_000 {
-            // compute_swap uses committed K_BPS=10_000; drive the k<1 path directly.
             let out = solve_quadratic_for_trade(rx as u128, input, i_used, 25);
             assert!(
                 out >= prev,
-                "non-monotone k=25 dust buy: prev_out={prev} input={input} out={out}"
+                "non-monotone dust buy: prev_out={prev} input={input} out={out}"
             );
             prev = out;
             input += 10_000;

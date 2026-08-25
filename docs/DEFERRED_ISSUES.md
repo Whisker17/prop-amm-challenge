@@ -31,9 +31,10 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
-- **`prop-amm validate` 1-nano concavity miss at `K_BPS=5000` and `7500` on the 007 PMM quote path** (Medium, WHI-1272).
+- **`prop-amm validate` 2-nano concavity miss at `K_BPS=5000` and `7500` on the 007 PMM quote path** (Medium, WHI-1272).
   `strategies/007b-grounded-k-anchor/lib.rs::solve_quadratic_for_trade` — WHI-1272's
-  acceptance asked `prop-amm validate` to PASS at `K_BPS ∈ {25, 100, 400, 1000, 2500, 5000, 7500, 10_000}`.
+  acceptance asked `prop-amm validate` (1-nano step tolerance) to PASS at
+  `K_BPS ∈ {25, 100, 400, 1000, 2500, 5000, 7500, 10_000}`.
   Six of those pass; `5000`/`7500` fail with a 2-nano buy-side concavity miss
   (`size=100, step2=9836 > step1=9834` and `size=50, step2=9861 > step1=9859`). The same
   two strings reproduce on an unmodified copy of `strategies/007-dodo-pmm/lib.rs` — parent

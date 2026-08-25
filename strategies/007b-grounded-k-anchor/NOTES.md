@@ -118,7 +118,8 @@ never validated these two k values (its set was `{25, 400, 2500, 10_000}`). `ben
 the rounding is not byte-identical to the parent, but the miss is the same 2-nano
 isqrt/formula class the parent already recorded at `K_BPS=2500` before `scaled_isqrt`.
 Logged in `docs/DEFERRED_ISSUES.md` (WHI-1272) rather than treated as an `after_swap`
-defect. WHI-1273 searching these k values inherits this 1-nano probe miss.
+defect. WHI-1273 searching these k values inherits this 2-nano miss against
+`validate`'s 1-nano step tolerance.
 
 ### Expected `K_BPS = 0` monotonicity FAIL
 
@@ -145,8 +146,11 @@ seed `1_000_231` (the parent's high-sigma / low-liq collapse seed).
 | k=1 regression vs parent | 1,000,231 | 10_000 | max factor **1.000**; edge **−378.69** on both `007` and `007b` (parent post-fix was −378.69 vs `001`'s −381.55). |
 
 The parent's pre-fix collapse on this seed at `k=1` was stored <1% of the true ratio
-(factor >100, edge −12,402). This variant stays at factor 1 by construction: each
-`after_swap` write is the current reserve ratio, never `i_old * R_f`.
+(factor >100, edge −12,402). Factor 1 rules that signature out: each `after_swap`
+write is the current reserve ratio, never `i_old * R_f`. It does **not** by itself
+prove the `K_BPS=2500` −20,235 edge is "not a runaway of some other kind" — it only
+proves the stored mid tracks the reserve ratio. The economic reading (adverse
+selection at low k, parent Step 0.5 #4) is unchanged and is WHI-1273's to re-measure.
 
 ## Measurement provenance
 
