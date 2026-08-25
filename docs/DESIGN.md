@@ -967,23 +967,26 @@ through `strategies/*/NOTES.md` and closed issues.
    performs strongly on this harness: validation avg edge **503.907498**, the largest margin
    over the current leader of any M1 entry (paired **+57.61** `[53.21, 62.01]` over `004`,
    n=1,000).
-5. **Two axes measured net-harmful, so nobody retries them.** Concentration / virtual-reserve
-   amplification (`007`, WHI-1219; **under re-measurement by WHI-1273**): the v1 close was
-   a pre-registered 1-axis probe at `FEE_BPS=66` (copied from `001`'s own fitted
-   fee-on-input optimum), not a §2.5 joint search of the declared `(K_BPS, FEE_BPS)` space
-   — 0 of the 300-point budget was spent, and the probe skipped `k ∈ (0.25, 1)` (nothing
-   in `K_BPS ∈ (2500, 10_000)`). Interior `k<1` quotes still ran `after_swap`'s general
-   recursive `i_old * R_f` path, the same non-self-correcting structure that produced the
-   k=1 runaway (special-cased only at the boundary). What v1 actually measured, labelled as
-   an unfitted boundary point: the family closed at `(K_BPS=10_000, FEE_BPS=66)`, a small
-   consistent edge win over `001` (validation 403.26; 24/27 grid cells favor `007` with a
-   CI excluding 0; `results/2026-08-21-grid-007-dodo-pmm.md`,
+5. **Shock surcharge measured net-harmful; concentration closed on an unfitted 1-axis
+   probe (under re-measurement by WHI-1273).** Concentration / virtual-reserve
+   amplification (`007`, WHI-1219): the v1 close was a pre-registered 1-axis probe at
+   `FEE_BPS=66` (copied from `001`'s own fitted fee-on-input optimum), not a §2.5 joint
+   search of the declared `(K_BPS, FEE_BPS)` space — 0 of the 300-point budget was spent,
+   and the probe skipped `k ∈ (0.25, 1)` (nothing in `K_BPS ∈ (2500, 10_000)`). Interior
+   `k<1` quotes still ran `after_swap`'s general recursive `i_old * R_f` path, the same
+   non-self-correcting structure that produced the k=1 runaway (special-cased only at the
+   boundary); NOTES.md § Step 0.5 #4's own per-seed re-check found the interior-probe
+   losses were not primarily an artifact of that path. What v1 actually measured, labelled
+   as an unfitted boundary point: the family closed at `(K_BPS=10_000, FEE_BPS=66)`, a
+   small consistent edge win over `001` (validation 403.26; 24/27 grid cells favor `007`
+   with a CI excluding 0; `results/2026-08-21-grid-007-dodo-pmm.md`,
    `strategies/007-dodo-pmm/NOTES.md` § Negative result / § Step 0.5 #4), while the three
    interior probe points at that same unfitted `FEE_BPS=66` were large net losses
    (screening vs. `001`: `K_BPS=2500` −215.76, `400` −2,117.68, `100` −5,535.48). This
    re-measurement opens **no** v0.2.0 candidate and does **not** reopen the §2.10 freeze;
    §8 finding 2's orphan rule stands. WHI-1273 supersedes this qualification with a
    jointly-fitted result when it completes.
+
    Event-driven shock surcharge (`004`'s own search): ablated to exactly 0 by the search
    (`SHOCK_FEE_PER_STEP_BPS = 0` at the fitted point, `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`;
    `strategies/004-ewma-shock-decay-fee/NOTES.md` § Search), with a mechanism — it re-arms
