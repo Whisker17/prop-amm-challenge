@@ -265,9 +265,9 @@ PASS; 1000/1000 observation seeds agree to `0` relative; fast-path avg **401.28*
 (`results/2026-08-25-compare-007b-grounded-k-anchor-vs-001-cpmm-fee.md`): candidate
 407.55, reference 406.14, paired mean diff **1.401555**, 95% CI **[1.246297, 1.556812]**,
 n=1,000 (excludes 0). Regime slices (equal-width thirds): every populated bin has a
-non-negative mean diff; the three headline-CI-including-zero bins from the parent compare
-(high-fee × mid/high liq × low/mid sigma) reappear with the same CIs. Pooling reproduces
-the headline 1.401555.
+non-negative mean diff; five bins' CIs include zero (`fee=High` × `liq=Mid` all sigma,
+and `liq=High` low/mid sigma) and reappear with the same CIs as the parent compare.
+Pooling reproduces the headline 1.401555.
 
 ### Consolidated segment table
 
@@ -295,5 +295,10 @@ plus the k-sweep both failed to find a better interior `k`.
 - WHI-1272 plumbing measurements remain those recorded above (fuzz / runaway diagnostic)
   from `/tmp/prop-amm-whi-1272-meas`.
 - Unit tests in `lib.rs` (`#[cfg(test)]`) are **not** part of `cargo test --workspace`
-  (`strategies/` is not a workspace member, same as `003`/`003b`). WHI-1272: 3 passed
-  against an isolated crate (`/tmp/whi-1272-tdd`).
+  (`strategies/` is not a workspace member, same as `003`/`003b`). WHI-1272 ran them
+  against an isolated crate (`/tmp/whi-1272-tdd`, `cargo test --lib --features
+  no-entrypoint`): **3 passed**
+  (`after_swap_sell_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
+  `after_swap_buy_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
+  `dust_reserve_falls_back_to_k1_and_is_monotone`). Also red-then-green at `K_BPS=2500`
+  on the parent recursive `after_swap` before the helpers were deleted.
