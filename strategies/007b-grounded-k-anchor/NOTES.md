@@ -282,6 +282,121 @@ Same numbers as v1 `007` at this point — expected, because the k=1 quote and a
 write are bit-identical to the parent. The new evidence is that a 170-point joint search
 plus the k-sweep both failed to find a better interior `k`.
 
+## Why smaller `k` lost (process, results, principle, production bound)
+
+A reader who has not seen WHI-1271/1272/1273 can follow this section without the chat.
+Numbers below are **already committed** snapshots — this section does not re-run `bench
+fit`, the k-sweep, grid, parity, or compare.
+
+### Process
+
+1. **WHI-1271** qualified v1's close of `007`: the family was shut on a 1-axis probe at
+   `FEE_BPS=66` copied from `001`, not a §2.5 joint search of the declared
+   `(K_BPS, FEE_BPS)` space (`docs/DESIGN.md` §8 finding 5 as it stood before WHI-1273).
+2. **WHI-1272** opened this directory so interior `k` would not be measured on the parent's
+   recursive `i_old * R_f` `after_swap`. For every `K_BPS`, `after_swap` now writes
+   `raw_ratio_price(rx_post, ry_post)` from current reserves only. On seed `1_000_231` at
+   `K_BPS=2500` the stored-anchor / raw-ratio factor is **1.000** (table above) — the
+   recursive-runaway signature is gone. Constants stayed `(10000, 66)` until the fit.
+3. **WHI-1273** then ran the measurement `007` skipped, in this order, on the grounded
+   variant:
+   - **Containment** at the parent's `(K_BPS=10_000, FEE_BPS=66)` — a blocker, not a
+     ranking snapshot (`results/2026-08-25-fit-007b-k1-containment.md`,
+     `results/2026-08-25-parity-007b-k1-containment.md`).
+   - **Unconditional 300-point** `bench fit` (coarse-grid-then-coordinate-descent, no
+     `--max-points` / `--no-report`)
+     (`results/2026-08-25-fit-007b-grounded-k-anchor.md`).
+   - **k-sweep** at the search's own fitted fee, reporting-only, 12 cells
+     (`results/2026-08-25-ksweep-007b-grounded-k-anchor.md`).
+   - **Grid / parity / compare-train** on the fitted point
+     (`results/2026-08-25-grid-007b-grounded-k-anchor.md`,
+     `results/2026-08-25-parity-007b-grounded-k-anchor.md`,
+     `results/2026-08-25-compare-007b-grounded-k-anchor-vs-001-cpmm-fee.md`).
+   The `test` segment was not read. No second 300-point budget.
+
+### Results
+
+| What | Number | Where |
+| --- | --- | --- |
+| k=1 containment, observation | **401.28** (1000/1000 seeds, max rel 0; matches `prop-amm run`) | `results/2026-08-25-parity-007b-k1-containment.md` |
+| Search | **170/300**, invalid 0, converged | `results/2026-08-25-fit-007b-grounded-k-anchor.md` |
+| Winner | `(K_BPS=10_000, FEE_BPS=66)` — `K_BPS` upper-bound hit; `FEE_BPS=66` is the search's own fitted fee (screening 65→385.980622, 66→386.052462, 67→385.823268), not `001@66` copied in | same fit report; `lib.rs` `PARAMS` |
+| k-sweep at that fee | every interior `k` strictly worse than the winner; `k≤0.40` screening ≈ **−20,000**; winner screening **386.05** at `k=1`; lesson 7 did not fire | `results/2026-08-25-ksweep-007b-grounded-k-anchor.md` |
+| Train paired vs `001` | **+1.401555 [1.246297, 1.556812]**, n=1,000 | `results/2026-08-25-compare-007b-grounded-k-anchor-vs-001-cpmm-fee.md` |
+| Grid vs `001` | 24/27 cells favor `007b` (CI excludes 0); 3 statistical ties | `results/2026-08-25-grid-007b-grounded-k-anchor.md` |
+
+Step-4 **reading 2** applied: concentration is a **jointly-fitted negative**. The small
+k=1 win over `001` is the fee-on-output vs fee-on-input convention at the CPMM
+containment point (`strategies/007-dodo-pmm/NOTES.md` § Negative result), not a
+concentrated book beating a flat one.
+
+### Principle: smaller `k` deepens a *stale* mid
+
+The user's reading of `k` is the same as DODO's published PMM and this port's quote:
+smaller `k` makes the curve smoother around the quoted mid, so the same reserves offer
+more depth / less slippage near that mid — amplification of local depth is on the order
+of **`1/k`** relative to `k=1` (a CPMM). At `k=0.25` that is ~4×; at `k=0.04` ~25×; at
+`k=0.0025` ~400× (`strategies/007-dodo-pmm/NOTES.md` § Negative result).
+
+In **this harness** that mid is not the GBM fair price. Each step is: fair moves → the
+arbitrageur, who sees fair, trades first → retail is routed leftover. This port has
+**no pre-arbitrage `i` feed**. `007b` pins the quoted mid to the last post-trade
+reserve ratio on every trade (`after_swap` writes `raw_ratio_price` unconditionally).
+After a GBM jump, extra depth is inventory offered **at a stale price**. The same `1/k`
+that would help uninformed flow near a *correct* mid scales the arbitrageur's
+extractable size against a *wrong* mid.
+
+Retail does not collect a matching `1/k` benefit. The router only sends flow the
+normalizer cannot absorb — a minority of typical sizes (same NOTES § Negative result).
+So the pool pays ~`1/k` adverse-selection inventory for a partial extra slice of noise
+flow. That is why “more liquidity near the quoted price” is net-harmful here: the
+quoted price is last trade's reserve ratio, not fair.
+
+This is **not** the recursive-runaway bug. Seed `1_000_231` at interior `k`
+(`K_BPS=2500`): stored-anchor / raw-ratio max factor **1.000**, ~400k quotes, edge
+−20,235.34 — economic, not plumbing (table under § Runaway diagnostic). The k-sweep's
+flat ≈−20,000 plateau for `k≤0.40` at the fitted fee is the same reading saturating:
+once the arb can drain what the book will give each step, still-smaller `k` cannot get
+much worse. Higher fees on interior `k` were searched (the 12×12 grid) and still lost
+to `k=1` @ 66.
+
+### Production bound — oracle-fed `i` is specified, not measured on this stack
+
+The claim “in production a market maker can chase fair, so concentrated PMM might do
+better” is **directionally the published design**, and it is **not a result of this
+experiment**.
+
+- **Specified.** DODO's PMM write-up treats `i` as a guide price the curve is
+  concentrated around, and `k` as the slippage factor that piles depth at that price
+  ([PMM Algorithm](https://docs.dodoex.io/en/product/pmm-algorithm);
+  [The Math Behind](https://docs.dodoex.io/en/product/pmm-algorithm/the-mathematical-principle-of-pmm):
+  `P = i R`, `i` the initial guide price). Private-pool operators can reset the
+  external guide price `I` on-chain
+  ([Market Making](https://docs.dodoex.io/en/developer/contracts/dodo-v1-v2/guides/market-making)).
+  The oracle variant of the pinned source
+  (`docs/references/007-dodo-pmm/DPPOracle-Storage.sol`) reads
+  `state.i = IOracle(_O_).prices(base)` at quote time when `_IS_ORACLE_ENABLED` is
+  set — a pre-trade mid, not a post-trade reserve ratio.
+- **This port is not that variant.** `docs/references/007-dodo-pmm/README.md` § Port
+  target records `DPPOracle` as unportable: this harness has no pre-arbitrage price
+  feed. The port is DPP two-sided PMM collapsed to `R = ONE` with the **arbitrageur as
+  the oracle**; `007b` further grounds `i` to the reserve ratio after every trade. The
+  `k<1` toxicity measured above is **this harness's** result.
+- **Qualified, not claimed.** If production `i` is timely (oracle or an active MM
+  reset ahead of informed flow), the stale-mid `1/k` channel this experiment isolated
+  would be reduced or absent — that is why “might perform better” is a fair *hypothesis*.
+  It is **not measured** on the ranked stack. This repo's out-of-competition ceiling
+  lane states a second, independent bound (`docs/DESIGN.md` §10 honesty constraint
+  (3)): once the oracle is held fixed so the arb cannot front-run the re-anchor,
+  remaining content is mostly the router's flow-share-vs-spread curve and
+  **generalizes to any oracle-centered quoter**, carrying little that is specific to
+  the ported curve. That is the opposite of “we measured concentrated PMM beating
+  CPMM under a live oracle.” `docs/DESIGN.md` §11 is the pointer to the third,
+  out-of-competition number stream; its snapshots are not cited here.
+
+No v0.2.0 frozen-list row is opened. v1 `007` files and `results/2026-08-21-*-007-dodo-pmm.md`
+stay the unfitted 1-axis-probe record.
+
 ## Measurement provenance
 
 - Build profile: `target/release/` — binaries
