@@ -31,6 +31,18 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Open
 
+- **`prop-amm validate` 1-nano concavity miss at `K_BPS=5000` and `7500` on the 007 PMM quote path** (Medium, WHI-1272).
+  `strategies/007b-grounded-k-anchor/lib.rs::solve_quadratic_for_trade` — WHI-1272's
+  acceptance asked `prop-amm validate` to PASS at `K_BPS ∈ {25, 100, 400, 1000, 2500, 5000, 7500, 10_000}`.
+  Six of those pass; `5000`/`7500` fail with a 2-nano buy-side concavity miss
+  (`size=100, step2=9836 > step1=9834` and `size=50, step2=9861 > step1=9859`). The same
+  two strings reproduce on an unmodified copy of `strategies/007-dodo-pmm/lib.rs` — parent
+  Step 0.5 never validated these k values (its set was `{25, 400, 2500, 10_000}`).
+  `bench fuzz` (the §2.9 4-nano gate) PASSes both. Deferred rather than expanding this
+  issue into a k<1 bisection rewrite of the quadratic (a named parent fallback that a
+  first attempt here made `K_BPS=25` *worse*). Fix belongs with WHI-1273 if that search
+  actually lands on 5000/7500, or a dedicated quote-path ticket; do not treat it as an
+  `after_swap` runaway.
 - **`resolve_ceiling_segment` re-implements part of `SegmentSelector::resolve`'s single-use
   check, and `VariantArg` carries its `OracleVariant` mapping and its report-slug string as
   two separate hand-written `match`es** (Low, WHI-1247). Both flagged in round-1 review of

@@ -44,7 +44,9 @@ const MODEL_USED: &str = "Claude Sonnet 5";
 // state is a pure function of trade size: monotone and concave in input for k in (0,1].
 // Interior-k numerical guards (dust fallback to the k=1 closed form below 0.001 tokens;
 // multiply-first disc_term; empty-pool instead of a V2>V1 0-hole) do not change the k=1
-// path and are not a second re-grounding family.
+// path and are not a second re-grounding family. The k<1 quadratic's in-range return is
+// still `v - v_out`, same as the parent — no k=0-style `min(fair, v)` cap on the
+// normal path.
 //
 // PARITY. The BPF tag-2 path decodes storage from data[42..], runs the SAME after_swap on
 // a local buffer, then persists via set_storage — identical to `005`'s pattern.
@@ -325,10 +327,7 @@ fn solve_quadratic_for_trade(v: u128, delta: u128, i_fp: u128, k_bps: u128) -> u
     if v_out >= v {
         return fair.min(v.saturating_sub(1));
     }
-    let gross = v - v_out;
-    // Never exceed the k=0 hard cap `min(fair, v)` (source's own k=0 branch) — a
-    // monotone-safe upper bound the curved book must sit under.
-    gross.min(fair).min(v.saturating_sub(1))
+    v - v_out
 }
 
 pub fn compute_swap(data: &[u8]) -> u64 {
@@ -526,9 +525,9 @@ mod tests {
     }
 
     #[test]
-    fn interior_k_dust_reserve_buy_is_monotone() {
-        // Seed-9008 parity panic: rx=8291 nano, k=25, i=live ratio. The k<1 quadratic
-        // 0-holed; the dust fallback must be monotone in input.
+    fn dust_reserve_falls_back_to_k1_and_is_monotone() {
+        // Seed-9008 parity panic: rx=8291 nano (< DUST_RESERVE), so k_bps is not read —
+        // this asserts the k-independent k=1 fallback, not the interior-k quadratic.
         let rx = 8_291u64;
         let ry = 35_386_792u64;
         let mut prev = 0u128;

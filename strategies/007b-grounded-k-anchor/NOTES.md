@@ -68,7 +68,9 @@ and the interior-k numerical guards it forced:
      floor to 0 at dust `v` (`v^2 / K_DEN^2 == 0`). Divide-first remains the overflow
      fallback at `RESERVE_CLAMP`.
   3. *Empty-pool instead of `V2>V1 → 0`.* Returning 0 after a near-full fill is not
-     monotone-safe; return `min(fair, v-1)` instead.
+     monotone-safe; return `min(fair, v-1)` **only on that out-of-range branch**. The
+     in-range return is still `v - v_out` (parent). No k=0-style `min(fair, v)` cap on
+     the normal path (that flattening is what makes `K_BPS=0` fail `validate`).
 
 ## Shape-safety / cold start / error paths
 
@@ -107,13 +109,16 @@ no `results/` report (§2.9). Release profile; detached checkout
 | 7,500 | FAIL — concavity 2-nano (see below) | PASS — zero shape violations |
 | 10,000 | PASS (incl. native/BPF parity) | PASS — zero shape violations |
 
-**`K_BPS=5000/7500` 2-nano concavity is the parent quote path, not this `after_swap`.**
+**`K_BPS=5000/7500` 2-nano concavity is inherited from the parent quote path.**
 Reproduced on an unmodified copy of `strategies/007-dodo-pmm/lib.rs` at the same two
 points: `FAIL: Concavity violation (buy side). At size=100, step2=9836 > step1=9834`
 (`K_BPS=5000`) and `At size=50, step2=9861 > step1=9859` (`K_BPS=7500`). Parent Step 0.5
 never validated these two k values (its set was `{25, 400, 2500, 10_000}`). `bench fuzz`
-(§2.9's 4-nano gate) PASSes both. WHI-1273 searching these k values inherits this
-quote-path 1-nano miss; it is not a recursive-anchor artifact.
+(§2.9's 4-nano gate) PASSes both. 007b's `disc_term` is multiply-first when it fits, so
+the rounding is not byte-identical to the parent, but the miss is the same 2-nano
+isqrt/formula class the parent already recorded at `K_BPS=2500` before `scaled_isqrt`.
+Logged in `docs/DEFERRED_ISSUES.md` (WHI-1272) rather than treated as an `after_swap`
+defect. WHI-1273 searching these k values inherits this 1-nano probe miss.
 
 ### Expected `K_BPS = 0` monotonicity FAIL
 
@@ -152,3 +157,10 @@ The parent's pre-fix collapse on this seed at `k=1` was stored <1% of the true r
   (worktree `.claude/worktrees/whi-1272`).
 - No `results/` ranking snapshot was written by this issue (no `bench fit` / `grid` /
   `compare`).
+- Unit tests in `lib.rs` (`#[cfg(test)]`) are **not** part of `cargo test --workspace`
+  (`strategies/` is not a workspace member, same as `003`/`003b`). Run manually against
+  an isolated crate (`/tmp/whi-1272-tdd`, `cargo test --lib --features no-entrypoint`):
+  **3 passed** (`after_swap_sell_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
+  `after_swap_buy_side_snaps_stale_anchor_to_post_trade_reserve_ratio`,
+  `dust_reserve_falls_back_to_k1_and_is_monotone`). Also red-then-green at `K_BPS=2500`
+  on the parent recursive `after_swap` before the helpers were deleted.
