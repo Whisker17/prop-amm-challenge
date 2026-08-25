@@ -70,6 +70,12 @@ fn tools_research_has_no_submission_shaped_lib_rs() {
             let entry = entry.expect("failed to read dir entry");
             let path = entry.path();
             if path.is_dir() {
+                // Workspace builds land in repo-root target/; a nested
+                // CARGO_TARGET_DIR=tools/research/target must not trip the
+                // "only src/lib.rs" assertion.
+                if path.file_name().and_then(|n| n.to_str()) == Some("target") {
+                    continue;
+                }
                 stack.push(path);
                 continue;
             }
