@@ -414,6 +414,22 @@ soon — anything touching a declared high-risk path defaults to at least High),
   line item stays open for that reason, tracked at the ceiling-lane level in
   `ceilings/C-orbic-oracle/NOTES.md`'s WHI-1250 section rather than reopened as a new
   ticket, since no further work on it is currently planned.
+- **`007b-grounded-k-anchor` has no row in `strategies/README.md`** (Low, WHI-1272).
+  `strategies/README.md` — `docs/DESIGN.md` §4.2 and the registry's own rule give every
+  candidate directory a row, and `007b` is the only directory without one. Deferred rather
+  than fixed because WHI-1272's own Out of scope and Acceptance name this exclusion
+  explicitly ("No `strategies/README.md` row"; "no 007b row until WHI-1273 has a fitted
+  point"). The directory has no terminal or ranked state — constants stay pinned at the
+  parent's `(K_BPS=10_000, FEE_BPS=66)` and this issue's only new number is "the `k<1` path
+  no longer runs away" — so the row's Status and Current numbers columns would have nothing
+  truthful to record. `005b` is not a counter-precedent: its row carries no committed
+  `lib.rs` but does record a *terminal* negative result, whereas `007b` is mid-flight
+  plumbing for WHI-1273. `strategies/README.md` is also being edited by parallel sibling
+  WHI-1271 in this same wave, so writing the row here would collide. The state is not
+  undiscoverable in the meantime: `strategies/007b-grounded-k-anchor/NOTES.md` § Provenance
+  records it in the directory itself. Closes when WHI-1273 commits a fitted point and adds
+  the row — or, if WHI-1273 is abandoned, when `007b` is marked Canceled per
+  `docs/DESIGN.md` §2.10's removal clause rather than left as a pinned `(10000, 66)`.
 
 ---
 
