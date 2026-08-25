@@ -1,0 +1,25 @@
+[package]
+name = "prop-amm-research"
+version = "0.1.0"
+edition = "2021"
+
+# Research-only crate: oracle-aware AMM curve comparison benchmark.
+# It never participates in the challenge submission API or the `prop-amm` CLI.
+# Deliberately dependency-free apart from the workspace crates it observes, so
+# that adding it cannot break an offline build of the submission toolchain.
+
+[lib]
+name = "prop_amm_research"
+path = "src/lib.rs"
+
+[[bin]]
+name = "research"
+path = "src/bin/research.rs"
+
+[dependencies]
+prop-amm-shared = { workspace = true }
+prop-amm-executor = { workspace = true }
+prop-amm-sim = { workspace = true }
+rayon = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

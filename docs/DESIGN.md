@@ -1294,3 +1294,43 @@ own sampled fee/liquidity; (3) that content generalizes to any oracle-centered q
 carries little content specific to the ported curve itself. Every reported ceiling number
 must repeat constraint (1) explicitly — a ceiling read as a two-sided bound would overstate
 how much headroom a real, front-runnable mechanism could actually reach.
+
+## 11. Out-of-competition oracle-aware research crate
+
+`tools/research` (workspace package `prop-amm-research`), `gas-harness/`, and
+`research-out/` are an imported, out-of-competition oracle-aware curve comparison
+from `origin/research/oracle-aware-curve-benchmark` @ `1856c8c`. The crate lives
+under `tools/` rather than `crates/` because `crates/**` is upstream-owned
+(§3.2): a local crate there would be reverted by the next sync and would mix
+research instrumentation with the simulator that produces every ranked number.
+
+**Why this is not a strategy, not a ceiling probe, and not on the §6.2 list.**
+Nothing under `tools/research` is a submittable `lib.rs`. The package's binary
+is `research`, not `prop-amm` / `bench`. It is not a `C-*` ceiling probe (those
+live under `ceilings/` and run through `bench ceiling`, §10), and it is not an
+entry on the frozen §6.2 family list. Layout guards in
+`tools/research/tests/layout_guards.rs` enforce that `crates/research/` does not
+exist, that the research binary is `research`, and that
+`research-out/README.md` carries the literal `out_of_competition: true`.
+
+**Three number streams must never share a table.** (1) Ranked bench:
+submittable `lib.rs` files under `strategies/`, measured by `tools/bench` into
+`results/`. (2) Ceiling lane: spread-bearing Orbic with a host-side re-anchor
+the arb cannot front-run, paired against the 0-line `001-cpmm-fee` (`bench
+ceiling`, §10). (3) This crate: zero-fee DODO PMM vs Flashbots ExamplePropAmm vs
+Uni V2/V3, under a shared zero-latency oracle published before arb and retail.
+Those protocols are not interchangeable. Numbers in `research-out/` are **not**
+§2 ranked results and **must not** be cited in `strategies/**/NOTES.md`,
+`ceilings/**/NOTES.md`, or any `results/compare-*.md`. Committed numbers and
+the citation ban live in `research-out/README.md`.
+
+**Pins.** Flashbots is `flashbots/priority-update-registry` @
+`da53117870c7bec96d71caebe1b3f94370aba3d6`, the same pin as
+`docs/references/002-orbic-flashbots/`. DODO is `DODOEX/contractV2` @
+`8da3ee1ec50966fca9a2c80d424040c45c0f785e`. That is **not** the pin `007` used
+(`2f1bcdac7ef1beee7599a756e2eed26732c2536d`, `docs/references/007-dodo-pmm/`).
+The disagreement is recorded, not reconciled: this import does not retarget
+either side.
+
+This section is the record that the crate exists. §4.2's module-layout tree,
+§6.2, and §10 are deliberately not edited to mention it.
