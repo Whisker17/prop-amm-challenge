@@ -699,8 +699,10 @@ v1's `007` close (WHI-1219) was a pre-registered 1-axis probe at `FEE_BPS=66` co
 WHI-1273 ran the missing §2.5 joint search of `(K_BPS, FEE_BPS)` on `007b` (grounded
 `after_swap`, WHI-1272): spent **170/300**, converged to `(K_BPS=10_000, FEE_BPS=66)` — a
 `K_BPS` upper-bound hit; `FEE_BPS=66` is the search's own fitted fee, not a copy of `001`.
-All four k-bands were evaluated; a 12-point log-spaced k-sweep at that fee is strictly
-worse than the winner at every interior `k` (lesson 7 did not fire). "Virtual-reserve
+All four k-bands were evaluated (the linear grid's `[25, 400]` node is `K_BPS=25`
+only — small-`k` coverage is the k-sweep, not extra grid points); the spec's 12-point
+k-sweep (denser at small `k`) is strictly worse than the winner at every interior `k`
+(lesson 7 did not fire). "Virtual-reserve
 amplification at a real spread" is therefore a **jointly-fitted negative**. This does
 **not** reopen the §2.10 freeze or stand the absorbed earmark back up as a live v0.2.0
 candidate. §8 finding 2's orphan rule stands. v1's `007` snapshots stay the unfitted
@@ -976,19 +978,23 @@ provisional pending WHI-1273 (its shock-surcharge half is resolved).
    `(K_BPS=10_000, FEE_BPS=66)` — `K_BPS` is a range-boundary hit; `FEE_BPS=66` is the
    search's own fitted fee (coincidentally equal to `001`'s fee-on-input optimum, not
    copied from it). Every k-band `[25, 400]`, `(400, 2500]`, `(2500, 9000]`, `10_000`
-   was actually evaluated. The 12-point log-spaced k-sweep at that fitted fee is monotone
-   toward `k=1`; no sweep cell beat the search winner on screening, so lesson 7 did not
-   fire (`results/2026-08-25-fit-007b-grounded-k-anchor.md`,
+   was actually evaluated; `[25, 400]` is the single linear-grid node `K_BPS=25`
+   (small-`k` is undersampled there — the k-sweep is the compensatory control). The
+   spec's 12-point k-sweep (denser at small `k`) is strictly worse than the winner at
+   every interior `k`; no sweep cell beat the search winner on screening, so lesson 7
+   did not fire (`results/2026-08-25-fit-007b-grounded-k-anchor.md`,
    `results/2026-08-25-ksweep-007b-grounded-k-anchor.md`,
    `strategies/007b-grounded-k-anchor/NOTES.md`). Interior `k` at the fitted fee is
-   economically large-negative (screening at `K_BPS=2500`: −20,028.53) with a grounded
-   raw-ratio mid (max stored-anchor/raw-ratio factor 1.000 on seed `1_000_231`,
-   WHI-1272). v1's `007` close at the same point was an unfitted 1-axis probe
-   (WHI-1219/WHI-1271); the joint search confirms that reading. At the committed k=1
-   point the family still posts a small consistent edge win over `001` (validation
-   403.26; 24/27 grid cells favor `007b` with a CI excluding 0; train paired **+1.401555
-   [1.246297, 1.556812]**, n=1,000). This finding opens **no** v0.2.0 candidate and does
-   **not** reopen the §2.10 freeze; §8 finding 2's orphan rule stands.
+   economically large-negative on the **grounded** mid (screening at `K_BPS=2500`:
+   −20,028.53; max stored-anchor/raw-ratio factor 1.000 on seed `1_000_231`, WHI-1272)
+   — not the same number as v1's recursive-`after_swap` 1-axis probe at that fee
+   (screening vs. `001`: `K_BPS=2500` −215.76, `400` −2,117.68, `100` −5,535.48). v1's
+   `007` close at the k=1 point was that unfitted probe (WHI-1219/WHI-1271); the joint
+   search confirms the collapse. At the committed k=1 point the family still posts a
+   small consistent edge win over `001` (validation 403.26; 24/27 grid cells favor
+   `007b` with a CI excluding 0; train paired **+1.401555 [1.246297, 1.556812]**,
+   n=1,000). This finding opens **no** v0.2.0 candidate and does **not** reopen the
+   §2.10 freeze; §8 finding 2's orphan rule stands.
 
    Event-driven shock surcharge (`004`'s own search): ablated to exactly 0 by the search
    (`SHOCK_FEE_PER_STEP_BPS = 0` at the fitted point, `results/2026-08-21-fit-004-ewma-shock-decay-fee.md`;

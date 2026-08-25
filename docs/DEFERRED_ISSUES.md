@@ -420,10 +420,6 @@ soon — anything touching a declared high-risk path defaults to at least High),
 
 ## Resolved
 
-- **`007b-grounded-k-anchor` has no row in `strategies/README.md`** (Low, WHI-1272).
-  Resolved by WHI-1273, which committed the fitted point `(K_BPS=10_000, FEE_BPS=66)` and
-  added the registry row. The WHI-1272 exclusion ("no 007b row until WHI-1273 has a fitted
-  point") is closed rather than left as a pinned `(10000, 66)` without a row.
 - **`docs/DESIGN.md` cites `WHI-` issue ids while `AGENTS.md`/`docs/agents/**` still name
   `.scratch/` as the tracker of record** (Low, WHI-1192). `docs/DESIGN.md` §6.1, §8 —
   inconsistent tracker naming across the repo, owned by the separate governance issue
@@ -485,3 +481,8 @@ soon — anything touching a declared high-risk path defaults to at least High),
   (`docs/GIT_WORKFLOW.md` § Repo-wide governance carve-out) and WHI-1199's diff was
   non-carve-out only. Resolved by WHI-1200 (`b767dbc`), which updated all three sites to
   past tense. Entry moved here by WHI-1214.
+- **`007b-grounded-k-anchor` has no row in `strategies/README.md`** (Low, WHI-1272).
+  Resolved by WHI-1273 (this PR), which committed the fitted point
+  `(K_BPS=10_000, FEE_BPS=66)` and added the registry row. The WHI-1272 exclusion ("no
+  007b row until WHI-1273 has a fitted point") is closed rather than left as a pinned
+  `(10000, 66)` without a row.

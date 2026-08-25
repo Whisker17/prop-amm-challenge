@@ -7,8 +7,9 @@
 - Execution path: native (fast path)
 - Fitted fee held fixed: `FEE_BPS* = 66` (the 300-point search's own winner, not 66-by-default)
 
-Colleague-facing log-spaced-in-`k` evidence table (docs/DESIGN.md §2.2 reporting only — not a
-decision input). Each interior cell is a genuine degenerate-range `bench fit` (ranges
+Colleague-facing k-sweep (the issue's exact 12-point set, denser at small `k`; not a
+strict geometric sequence). Reporting only — not a decision input (docs/DESIGN.md §2.2).
+Each interior cell is a genuine degenerate-range `bench fit` (ranges
 collapsed to `MIN==MAX` at that `(K_BPS, 66)`, report on, no `--max-points` / `--no-report`).
 The `k = 1` cell is the search winner, reproduced by the same method.
 

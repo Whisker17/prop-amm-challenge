@@ -243,9 +243,10 @@ fit`s, plus the recorded `k=0` validate FAIL.
 `k=0`: `FAIL: Monotonicity violation (sell side). size=200 output=9934000000000 <= prev_output=9934000000000`.
 
 **Lesson 7 did not fire:** no sweep cell beat the search winner on screening. The table did
-not silently displace `(10000, 66)`. At this fitted fee the response is monotone toward
-`k=1`; interior `k ≤ 0.40` is a ~−20,000 screening wipeout even with a grounded anchor
-(economic, not plumbing — WHI-1272 factor 1.000 on seed `1_000_231` at `K_BPS=2500`).
+not silently displace `(10000, 66)`. Interior `k ≤ 0.40` is a ~−20,000 screening plateau
+(the low-`k` cells wiggle by tens, they do not rise toward `k=1`); from `k=0.60` the
+response then rises toward the winner. Economic, not plumbing — WHI-1272 factor 1.000 on
+seed `1_000_231` at `K_BPS=2500`.
 
 ### Step 6 — grid / parity / compare on the fitted point
 
